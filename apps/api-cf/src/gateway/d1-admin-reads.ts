@@ -120,18 +120,20 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
       const [usage, models, platform, scoped] = await db.batch([
         db
           .prepare(
-            `SELECT COUNT(*) AS requests, COALESCE(SUM(amount_micro_credits), 0) AS spent,
-                    COALESCE(SUM(CASE WHEN status IN ('settled', 'partial') THEN 0 ELSE 1 END), 0) AS failed
+            `SELECT COALESCE(SUM(kind = 'settle'), 0) AS requests,
+                    COALESCE(SUM(CASE kind WHEN 'settle' THEN amount_micro_credits ELSE -amount_micro_credits END), 0) AS spent,
+                    COALESCE(SUM(CASE WHEN kind = 'refund' THEN 1
+                                      WHEN status IN ('settled', 'partial') THEN 0 ELSE 1 END), 0) AS failed
                FROM gateway_usage_ledger
-              WHERE kind = 'settle' AND occurred_at >= ?2 AND (?1 IS NULL OR tenant_id = ?1)`,
+              WHERE kind IN ('settle', 'refund') AND occurred_at >= ?2 AND (?1 IS NULL OR tenant_id = ?1)`,
           )
           .bind(tenant, since),
         db
           .prepare(
-            `SELECT COALESCE(model_code, '') AS model_code, COUNT(*) AS requests,
-                    COALESCE(SUM(amount_micro_credits), 0) AS spent
+            `SELECT COALESCE(model_code, '') AS model_code, COALESCE(SUM(kind = 'settle'), 0) AS requests,
+                    COALESCE(SUM(CASE kind WHEN 'settle' THEN amount_micro_credits ELSE -amount_micro_credits END), 0) AS spent
                FROM gateway_usage_ledger
-              WHERE kind = 'settle' AND occurred_at >= ?2 AND (?1 IS NULL OR tenant_id = ?1)
+              WHERE kind IN ('settle', 'refund') AND occurred_at >= ?2 AND (?1 IS NULL OR tenant_id = ?1)
               GROUP BY model_code ORDER BY spent DESC, requests DESC LIMIT 5`,
           )
           .bind(tenant, since),

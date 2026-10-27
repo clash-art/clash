@@ -248,8 +248,13 @@ business journal for product status. Infrastructure failures exhaust into retain
 failed queue jobs and need operational intervention.
 
 `start()` starts consumers and the dispatch loop; `close()` stops acquisition and
-worker threads. The shipped `worker:outbox` CLI supplies checkpoint ports and,
-when `RENDER_SERVER_URL` is set, the Timeline render ports (see Timeline render).
+worker threads. The shipped `worker:outbox` CLI supplies checkpoint ports, the
+model gateway's `api-node:gateway-settle` runs (#399: the postpaid text charge
+and the failed-media refund the api role journals), and, when
+`RENDER_SERVER_URL` is set, the Timeline render ports (see Timeline render).
+`routeRunCoordinators` sends each run to its journaled owner's coordinator, so
+both owners share one BullMQ queue and recovery sweep. Run it wherever the api
+role serves the gateway, or charges stay journaled until it does.
 Model generation admission routes, credential resolution and their Project
 publication are **not wired into that CLI**. The generation adapter is validated
 with fixture ports and real PostgreSQL, including a killed worker process. It is

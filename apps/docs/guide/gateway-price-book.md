@@ -92,8 +92,9 @@ A deployment with a payments plugin works differently; see
 Grant credits for a period are consumed before any other credits in the
 wallet. When a period closes, the expired amount is
 `min(grant − spend settled on the wallet in the period, current balance)`.
-The expiry therefore never removes top-up credits, and never removes credits
-that back an open hold.
+The expiry therefore never removes top-up credits, and never expires anything
+from a wallet that postpaid text charges took below zero: that overdraft is
+carried into the next period.
 
 ### Idempotency and atomicity
 

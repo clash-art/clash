@@ -409,9 +409,7 @@ function TeamWalletSection({
               <div className="font-display text-2xl font-semibold tabular-nums">{formatCredits(wallet.availableMicroCredits)}</div>
             </div>
             <div className="text-sm">Credits {formatCredits(wallet.limitMicroCredits)}</div>
-            <div className="text-sm">
-              Used {formatCredits(wallet.spentMicroCredits)} · reserved {formatCredits(wallet.reservedMicroCredits)}
-            </div>
+            <div className="text-sm">Used {formatCredits(wallet.spentMicroCredits)}</div>
             <div>
               <StatusPill tone={wallet.status === "active" ? "ok" : "warn"}>{wallet.status}</StatusPill>
             </div>
@@ -489,7 +487,6 @@ function BudgetTable({ label, budgets, subjectName }: { label: string; budgets: 
         { header: "Status", cell: (row) => <StatusPill tone={row.status === "active" ? "ok" : "warn"}>{row.status}</StatusPill> },
         { header: "Limit", cell: (row) => formatCredits(row.limitMicroCredits), align: "right" },
         { header: "Used", cell: (row) => formatCredits(row.spentMicroCredits), align: "right" },
-        { header: "Reserved", cell: (row) => formatCredits(row.reservedMicroCredits), align: "right" },
         { header: "Left", cell: (row) => formatCredits(row.availableMicroCredits), align: "right" },
         { header: "Alert at", cell: (row) => (row.alertThresholdPct ?? (row.enforcement === "alert" ? 100 : null)) === null ? "—" : `${row.alertThresholdPct ?? 100}%` },
       ]}

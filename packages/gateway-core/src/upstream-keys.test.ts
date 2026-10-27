@@ -176,7 +176,8 @@ describe("key rotation in the data plane", () => {
     expect(res.status).toBeGreaterThanOrEqual(500);
     expect(["GATEWAY_KEY_UNAVAILABLE", "GATEWAY_ROUTES_EXHAUSTED"]).toContain(code(res));
     expect(refusing.keys).toEqual([PRIMARY_NEW, PRIMARY_OLD]);
-    expect(await ledgerOf(single.memory, res)).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
+    // A failed text request owes nothing, so postpay writes no ledger row (#399).
+    expect(await ledgerOf(single.memory, res)).toBeNull();
     await expectNoKeyMaterial(single.memory, res, await res.text());
 
     const upstream = recordingUpstream((key) => (key === SECONDARY ? ok() : new Response("no", { status: 401 })));
@@ -206,7 +207,7 @@ describe("key rotation in the data plane", () => {
       code: "GATEWAY_KEY_UNAVAILABLE",
       reason: "decrypt_failed",
     });
-    expect(await ledgerOf(memory, res)).toMatchObject({ status: "gateway_failed", costMicroCredits: 0 });
+    expect(await ledgerOf(memory, res)).toBeNull();
     await expectNoKeyMaterial(memory, res, body);
   });
 
@@ -327,7 +328,7 @@ describe("circuit breaker", () => {
     expect(retryAfter).toBeGreaterThan(0);
     expect(retryAfter).toBeLessThanOrEqual(Math.ceil(circuit.cooldownMs / 1000));
     expect(upstream.keys.length).toBe(calls);
-    expect(await ledgerOf(memory, res)).toMatchObject({ status: "gateway_failed", costMicroCredits: 0 });
+    expect(await ledgerOf(memory, res)).toBeNull();
   });
 
   it("does not count a caller's 4xx, and a success with no failures on record writes nothing", async () => {

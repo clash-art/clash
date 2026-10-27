@@ -61,9 +61,7 @@ export function AdminBudgets({
                 <div className="font-display text-2xl font-semibold tabular-nums">{formatCredits(wallet.availableMicroCredits)}</div>
               </div>
               <div className="text-sm">Limit {formatCredits(wallet.limitMicroCredits)}</div>
-              <div className="text-sm">
-                Spent {formatCredits(wallet.spentMicroCredits)} · held {formatCredits(wallet.reservedMicroCredits)}
-              </div>
+              <div className="text-sm">Spent {formatCredits(wallet.spentMicroCredits)}</div>
               <div>
                 <StatusPill tone={wallet.status === "active" ? "ok" : "warn"}>{wallet.status}</StatusPill>
               </div>
@@ -87,7 +85,6 @@ export function AdminBudgets({
             { header: "Enforcement", cell: (row) => row.enforcement ?? "hard" },
             { header: "Limit", cell: (row) => formatCredits(row.limitMicroCredits), align: "right" },
             { header: "Spent", cell: (row) => formatCredits(row.spentMicroCredits), align: "right" },
-            { header: "Held", cell: (row) => formatCredits(row.reservedMicroCredits), align: "right" },
           ]}
         />
       </AdminSection>

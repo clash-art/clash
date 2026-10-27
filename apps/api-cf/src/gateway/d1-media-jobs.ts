@@ -152,15 +152,15 @@ export function createD1GatewayMediaJobStore(db: D1Database, deps: { now: () => 
       return winner;
     },
 
-    /** Whether the job's request holds anything (a reservation made before a crash). */
-    async held(job: GatewayMediaJob): Promise<boolean> {
+    /** Whether the job's request was debited (its prepay `settle` row, written before a crash, #399). */
+    async debited(job: GatewayMediaJob): Promise<boolean> {
       const row = await db
         .prepare(
-          `SELECT 1 AS held FROM gateway_usage_ledger
-            WHERE request_id = ? AND tenant_id = ? AND kind = 'hold' LIMIT 1`,
+          `SELECT 1 AS debited FROM gateway_usage_ledger
+            WHERE request_id = ? AND tenant_id = ? AND kind = 'settle' LIMIT 1`,
         )
         .bind(job.requestId, job.identity.tenantId)
-        .first<{ held: number }>();
+        .first<{ debited: number }>();
       return row !== null;
     },
 

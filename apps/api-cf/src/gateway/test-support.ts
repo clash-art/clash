@@ -7,7 +7,8 @@
  *
  * The text model is a built-in shared-types card with an official
  * OpenAI-compatible route, and the messages model one with an official
- * anthropic-compatible route (#349), both published through
+ * anthropic-compatible route (#349), and an official image card priced per
+ * image (the prepaid media case, #399), all published through
  * `gateway_model.card_json`: the catalog stays data. Seeded amounts are fixture inputs; the contract derives
  * every expectation from the ports, never from these numbers.
  */
@@ -16,6 +17,8 @@ import type { GatewayContractHarness } from "@clash/gateway-core/contract";
 import type { BudgetEnforcement, GatewayClock, GatewayPorts } from "@clash/gateway-core";
 import { listDeclaredModelUpstreamRoutes, MODEL_CARDS, type ModelCard } from "@clash/shared-types";
 
+import type { CloudDurableWorkflowBinding } from "../cloud-runs/cloud-durable-dispatcher";
+import { runCloudDurableWorkflow } from "../cloud-runs/cloud-durable-workflow";
 import { sha256Hex } from "../services/api-token";
 import { createGatewayTokenStore, type GatewayTokenScope } from "../services/gateway-tokens";
 import { toSeconds } from "./d1-common";
@@ -45,6 +48,40 @@ export function createMemoryBucket(): GatewayBlobBucket & { objects: Map<string,
     },
     async delete(key) {
       objects.delete(key);
+    },
+  };
+}
+
+export type InlineSettleWorkflow = CloudDurableWorkflowBinding & { pause(paused: boolean): void };
+
+/**
+ * The Durable Run Workflow binding for tests: `create` drives a gateway settle
+ * run to its end inline (steps run at once, sleeps return at once), so the
+ * ledger is written when dispatch resolves. Paused, the first start of each
+ * instance is lost (it rejects, as after a failed Workflow.create) and only a
+ * later start, i.e. cron recovery, runs it.
+ */
+export function inlineSettleWorkflow(db: D1Database, clock: GatewayClock = { now: () => Date.now() }): InlineSettleWorkflow {
+  const lost = new Set<string>();
+  let paused = false;
+  return {
+    pause(next) {
+      paused = next;
+    },
+    async create({ id, params }) {
+      if (paused && !lost.has(id)) {
+        lost.add(id);
+        throw new Error("inline workflow: start lost while paused");
+      }
+      const { createGatewaySettleCoordinator } = await import("./settle-runs");
+      await runCloudDurableWorkflow({
+        coordinator: createGatewaySettleCoordinator({ db, clock, logger: { info() {}, warn() {}, error() {} } }),
+        identity: params,
+        step: { do: (_name, _config, callback) => callback(), sleepUntil: async () => {} },
+        now: () => clock.now(),
+        maxSteps: 32,
+      });
+      return {};
     },
   };
 }
@@ -91,6 +128,19 @@ export function officialMessagesCard(): ModelCard {
   return card;
 }
 
+/**
+ * A built-in image card with an official route, published so the contract's
+ * media prepay/refund case (#399) runs on D1; undefined when shared-types has
+ * none (the case then skips, as on the memory harness).
+ */
+export function officialImageCard(): ModelCard | undefined {
+  return MODEL_CARDS.find(
+    (candidate) =>
+      candidate.kind === "image" &&
+      listDeclaredModelUpstreamRoutes([candidate]).some((route) => route.providerId === "official"),
+  );
+}
+
 export interface TenantTokenOptions {
   modelAllowlist?: string[];
   scopes?: GatewayTokenScope[];
@@ -102,10 +152,14 @@ export interface SeededGateway {
   /** Blob storage behind the seeded ports, when the run has one. */
   bucket?: GatewayBlobBucket;
   clock: GatewayClock;
+  /** Settle runs of `ports()`, inline on the seeded clock. */
+  workflow: InlineSettleWorkflow;
   encryptionKey: string;
   textModel: string;
   /** Served over the Anthropic Messages route (#349). */
   messagesModel: string;
+  /** A prepaid media model (#399), priced per image; absent when shared-types has no official image card. */
+  mediaModel?: { code: string; kind: ModelCard["kind"] };
   catalogVersion: string;
   upstreamAccountId: string;
   upstreamApiKey: string;
@@ -136,8 +190,43 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
   const messagesCard = officialMessagesCard();
   const messagesAccountId = `${upstreamAccountId}_messages`;
   const published = messagesCard.id === card.id ? [card] : [card, messagesCard];
+  const mediaCard = officialImageCard();
+  const mediaRoute = mediaCard && listDeclaredModelUpstreamRoutes([mediaCard]).find((route) => route.providerId === "official")!;
 
   await db.batch([
+    ...(mediaCard && mediaRoute
+      ? [
+          db
+            .prepare(
+              `INSERT INTO gateway_model (id, catalog_version, model_code, kind, enabled, card_json, published_at)
+               VALUES (?, ?, ?, ?, 1, ?, ?)`,
+            )
+            .bind(`gwm_${run}_media`, catalogVersion, mediaCard.id, mediaCard.kind, JSON.stringify(mediaCard), nowS - 60),
+          db
+            .prepare(
+              `INSERT INTO gateway_price (id, price_version, model_code, upstream_id, unit, amount_micro, per, effective_from, published_at)
+               VALUES (?, ?, ?, '', 'image', 40000, 1, ?, ?)`,
+            )
+            .bind(`gwp_${run}_media_image`, `price-${run}`, mediaCard.id, nowS - 60, nowS - 60),
+          // Serves only the media model, so text planning never sees it.
+          db
+            .prepare(
+              `INSERT INTO gateway_upstream_account
+                 (id, provider_id, upstream_id, api_shape, region, enabled, supported_model_ids_json,
+                  encrypted_credentials, configured_credentials)
+               VALUES (?, 'official', ?, ?, ?, 1, ?, ?, ?)`,
+            )
+            .bind(
+              `${upstreamAccountId}_media`,
+              mediaRoute.upstreamId,
+              mediaRoute.apiShape ?? null,
+              mediaRoute.region ?? "",
+              JSON.stringify([mediaCard.id]),
+              await sealGatewayUpstreamCredentials({ apiKey: `sk-media-contract-${hex(12)}` }, encryptionKey),
+              JSON.stringify([...(mediaRoute.requiredCredentials ?? []), ...(mediaRoute.credentialRequirements?.anyOf?.[0] ?? [])]),
+            ),
+        ]
+      : []),
     ...published.flatMap((model, index) => [
       db
         .prepare(
@@ -174,6 +263,7 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
   ]);
 
   const tokens = createGatewayTokenStore(db, { clock });
+  const workflow = inlineSettleWorkflow(db, clock);
 
   async function tenantToken(tokenOptions: TenantTokenOptions = {}) {
     const userId = `gw-user-${hex(8)}`;
@@ -254,9 +344,11 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
     db,
     ...(options.bucket ? { bucket: options.bucket } : {}),
     clock,
+    workflow,
     encryptionKey,
     textModel: card.id,
     messagesModel: messagesCard.id,
+    ...(mediaCard ? { mediaModel: { code: mediaCard.id, kind: mediaCard.kind } } : {}),
     catalogVersion,
     upstreamAccountId,
     upstreamApiKey,
@@ -268,6 +360,7 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
         ...(options.bucket ? { bucket: options.bucket } : {}),
         secrets: { encryptionKey, secret: () => undefined },
         logger: { info() {}, warn() {}, error() {} },
+        workflow,
       }),
       ...overrides,
     }),
@@ -284,7 +377,11 @@ export const gatewayRequest = (token?: string) =>
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 
-/** The gateway-core contract over the D1 ports: every capability but scheduler and audit (blobs when seeded with a bucket), abuse included. */
+/**
+ * The gateway-core contract over the D1 ports: every capability but scheduler
+ * and audit (blobs when seeded with a bucket), abuse included; settle runs go
+ * through the real journal and coordinator on the inline Workflow.
+ */
 export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayContractHarness> {
   const tenantA = await seeded.tenantToken();
   const tenantB = await seeded.tenantToken();
@@ -303,6 +400,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       "limits.concurrency": "supported",
       blobs: seeded.bucket ? "supported" : "unavailable",
       retention: "supported",
+      settlement: "supported",
       scheduler: "unavailable",
       audit: "unavailable",
       abuse: "supported",
@@ -313,6 +411,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       anonymousRequest: () => gatewayRequest(),
       textModel: seeded.textModel,
       messagesModel: seeded.messagesModel,
+      ...(seeded.mediaModel ? { mediaModel: { ...seeded.mediaModel, units: { image: 2 } } } : {}),
       rateLimited: { request: () => gatewayRequest(rateLimited), limit: 3 },
       concurrencyLimited: { request: () => gatewayRequest(concurrencyLimited), limit: 2 },
       memberBudget: async (enforcement) => gatewayRequest((await seeded.memberBudgetToken(enforcement)).token),
@@ -320,6 +419,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
         const subjects = await seeded.abuseSubjectTokens();
         return { first: () => gatewayRequest(subjects.first), second: () => gatewayRequest(subjects.second) };
       },
+      settlementDelivery: { pause: (paused) => seeded.workflow.pause(paused) },
     },
   };
 }

@@ -27,6 +27,8 @@ import { GATEWAY_BUDGET_HEADER } from "@clash/gateway-core";
 
 import { createApp } from "../../app";
 import { createSqliteD1 } from "../../../../web/app/test-support/sqlite-d1";
+import { GATEWAY_CREDIT_FLOOR } from "../../gateway";
+import { createD1GatewayBudgetPorts } from "../../gateway/d1-budgets";
 import { seedGateway, type SeededGateway } from "../../gateway/test-support";
 import { createGatewayTokenStore } from "../../services/gateway-tokens";
 import { tenantRolePermissions, type GatewayTenantPermission } from "../../services/gateway-authz";
@@ -48,6 +50,7 @@ const env = () => ({
   BETTER_AUTH_URL: ORIGIN,
   BETTER_AUTH_SECRET: "test-secret-for-gateway-team-0123456789",
   GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
+  GENERATION_WORKFLOW: gateway.workflow,
 });
 
 /** A product user: a users row (with an email) and a clsh_ token. */
@@ -333,6 +336,26 @@ describe("owner budget allocation and enforcement", () => {
     return { ...t, gatewayToken: minted.token };
   }
 
+  /** A postpaid charge on one budget, as a text request's settle run writes it. */
+  async function overdraw(t: { tenantId: string; member: User }, budgetId: string, costMicroCredits: number) {
+    await createD1GatewayBudgetPorts(d1, { clock: gateway.clock }).budgets.charge({
+      requestId: `gwr_overdraw_${hex()}`,
+      tenantId: t.tenantId,
+      userId: t.member.userId,
+      modelCode: gateway.textModel,
+      kind: "text",
+      upstreamId: "team-test",
+      credentialScope: "official",
+      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" },
+      costMicroCredits,
+      priceVersion: "team-test",
+      catalogVersion: "team-test",
+      status: "settled",
+      occurredAt: gateway.clock.now(),
+      budgetIds: [budgetId],
+    });
+  }
+
   const chatBody = (stream: boolean) => ({
     model: gateway.textModel,
     messages: [{ role: "user", content: "hello" }],
@@ -375,12 +398,14 @@ describe("owner budget allocation and enforcement", () => {
     const budgetPath = `${t.base}/budgets/user/${t.member.userId}`;
     const set = (body: Record<string, unknown>) => call("PUT", budgetPath, t.owner.auth, body);
     for (const stream of [false, true]) {
-      // Hard at zero: refused before any upstream call, naming the member budget.
+      // Hard at zero: text is postpaid (#399), so it is refused once the balance
+      // is at -floor, before any upstream call, naming the member budget.
       // (The second round's budget already has spend: a zero limit needs an override.)
       const { budget } = await json<{ budget: { id: string; enforcement: string } }>(
         await set({ limitMicroCredits: 0, enforcement: "hard", override: true, reason: "freeze" }),
       );
       expect(budget.enforcement).toBe("hard");
+      await overdraw(t, budget.id, GATEWAY_CREDIT_FLOOR);
       const spy = stubUpstream(stream);
       const refused = await chat(t.gatewayToken, stream);
       await expectCode(refused, 402, "GATEWAY_BUDGET_EXCEEDED");

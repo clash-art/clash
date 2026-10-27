@@ -10,7 +10,9 @@
  *   POST /prompts/:requestId/access       view a retained prompt + response    prompts.view
  *   POST /retention/purge                 purge expired retained bodies now    retention.purge
  *   POST /retention/enforce               30-day metadata / 13-month ledger    retention.purge
- *   POST /holds/sweep                     expire stale budget holds now        holds.sweep
+ *
+ * There is no hold sweep any more (#399): no request holds budget, and
+ * settle runs recover through the Durable Run cron.
  *
  * Prompt access is hosted-only behind GATEWAY_STAFF_PROMPT_ACCESS=enabled
  * (default off, self-host unchanged). Every access, whatever its outcome, is
@@ -31,7 +33,6 @@ import { z } from "zod";
 import type { Env } from "../../../config";
 import {
   GatewayAuditQuerySchema,
-  GatewayHoldSweepRequestSchema,
   GatewayPromptAccessRequestSchema,
   GatewayRetentionEnforceRequestSchema,
   GatewayRetentionPurgeRequestSchema,
@@ -41,7 +42,6 @@ import {
 import { staffPromptAccessEnabled } from "../../../gateway";
 import { adminAuditStatement } from "../../../gateway/d1-admin-audit";
 import { createD1AdminReads } from "../../../gateway/d1-admin-reads";
-import { sweepGatewayHolds } from "../../../gateway/d1-budgets";
 import { monotonicClock, toSeconds } from "../../../gateway/d1-common";
 import { enforceGatewayDataRetention, gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
 import {
@@ -198,26 +198,6 @@ adminInsightRoutes.post(
         cause: refusal,
       });
     return ok(c, { prompt: promptView(exchange) });
-  }),
-);
-
-adminInsightRoutes.post(
-  "/holds/sweep",
-  platformRoute("holds.sweep", async (c, actor) => {
-    const body = await readGatewayJson(c, GatewayHoldSweepRequestSchema);
-    const result = await sweepGatewayHolds(c.env, body.limit !== undefined ? { limit: body.limit } : {});
-    // Like every mutation, a sweep that changed nothing records nothing.
-    if (result.expired || result.failed)
-      await adminAuditStatement(c.env.DB, {
-        tenantId: "",
-        actor,
-        action: "holds.sweep",
-        targetType: "gateway_hold",
-        targetId: "expired",
-        after: result,
-        nowS: toSeconds(Date.now()),
-      }).run();
-    return ok(c, { sweep: result });
   }),
 );
 

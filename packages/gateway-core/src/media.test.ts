@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { settleMediaGeneration } from "./admission.js";
 import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
 import { GatewayError, isGatewayError } from "./errors.js";
-import { sweepExpiredGatewayHolds } from "./holds.js";
 import {
   admitGatewayMediaJob,
   deliveredMediaUnits,
@@ -82,21 +81,22 @@ describe.skipIf(!media)("official media jobs", () => {
     expect(job).toMatchObject({ modelCode: shared.modelCode, catalogVersion: shared.catalogVersion, pricedAt: ports.clock.now() });
   });
 
-  it("holds the units the price book charges, in credits, and only those", async () => {
+  it("debits the units the price book charges, in credits, and only those", async () => {
     const quantities = { image: 1, request: 1, character: 12 };
     for (const rates of [[imageRate], [{ unit: "request", microCredits: 75_000, per: 1 }] as GatewayPriceRate[]]) {
       const { ports, wallet } = gateway(rates);
       const job = await plan(ports, quantities);
-      const admission = await admitGatewayMediaJob(ports, job, { holdTtlMs: 60_000 });
+      const admission = await admitGatewayMediaJob(ports, job);
       const units = pricedMediaUnits(admission.price, quantities);
       expect(Object.keys(units)).toEqual(rates.map((rate) => rate.unit));
       expect(admission.request.requestedUnits).toEqual(units);
-      expect(admission.holdMicroCredits).toBe(priceUsage({ ...emptyUsage(), units }, admission.price).microCredits);
-      expect((await wallet()).reservedMicroCredits).toBe(admission.holdMicroCredits);
+      const price = priceUsage({ ...emptyUsage(), units }, admission.price).microCredits;
+      expect(admission.payment).toEqual({ mode: "prepaid", debitMicroCredits: price });
+      expect(await wallet()).toMatchObject({ spentMicroCredits: price, reservedMicroCredits: 0 });
     }
   });
 
-  it("refuses a priced unit the job cannot measure, before anything is held", async () => {
+  it("refuses a priced unit the job cannot measure, before anything is debited", async () => {
     const { ports, wallet } = gateway([{ unit: "video_second", microCredits: 10_000, per: 1 }]);
     const before = await wallet();
     const error = await expectCode(plan(ports, { image: 1, request: 1 }), "GATEWAY_PRICE_UNAVAILABLE");
@@ -122,75 +122,57 @@ describe.skipIf(!media)("official media jobs", () => {
     );
   });
 
-  it("a hard wallet the hold does not fit refuses, holding nothing", async () => {
+  it("a hard wallet the debit does not fit refuses, debiting nothing", async () => {
     const { ports, wallet } = gateway([imageRate], 0);
-    const job = await plan(ports, { image: 1 });
-    await expectCode(admitGatewayMediaJob(ports, job, { holdTtlMs: 60_000 }), "GATEWAY_BUDGET_EXCEEDED");
-    expect((await wallet()).reservedMicroCredits).toBe(0);
-  });
-
-  it("a provider failure after acceptance settles zero, and no later delivery charges it", async () => {
-    const { ports, wallet } = gateway([imageRate]);
     const before = await wallet();
     const job = await plan(ports, { image: 1 });
-    const admitted = await admitGatewayMediaJob(ports, job, { holdTtlMs: 60_000 });
+    await expectCode(admitGatewayMediaJob(ports, job), "GATEWAY_BUDGET_EXCEEDED");
+    expect(await wallet()).toEqual(before);
+  });
+
+  it("a provider failure after acceptance refunds the debit in full, once", async () => {
+    const { memory, ports, wallet } = gateway([imageRate]);
+    const before = await wallet();
+    const job = await plan(ports, { image: 1 });
+    const admitted = await admitGatewayMediaJob(ports, job);
     // The upstream accepted the job; it fails in a later step, settled from the job alone.
     const restored = await restoreGatewayMediaAdmission(ports, job, { leaseId: admitted.leaseId });
-    expect(restored.holdMicroCredits).toBe(admitted.holdMicroCredits);
+    expect(restored.payment).toEqual(admitted.payment);
     const failed = await settleMediaGeneration(ports, restored, {
       attempt: job.attempt,
       result: { status: "failed", error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
     });
-    expect(failed.result).toMatchObject({ costMicroCredits: 0, duplicate: false });
+    expect(failed.dispatch).toEqual({ requestId: job.requestId, kind: "refund", scheduled: true });
+    expect(memory.settlementState(job.requestId, "refund")).toBe("applied");
     expect(await ports.ledger.get({ tenantId: identity.tenantId, requestId: job.requestId })).toMatchObject({
       status: "upstream_failed",
       costMicroCredits: 0,
       errorCode: "GATEWAY_UPSTREAM_ERROR",
       kind: media!.kind,
     });
-    // A retried step, or a provider that reports success after all: never a second charge.
-    for (const result of [
-      { status: "failed" as const, error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
-      { status: "succeeded" as const, units: restored.request.requestedUnits },
-    ]) {
-      const again = await settleMediaGeneration(ports, await restoreGatewayMediaAdmission(ports, job), {
-        attempt: job.attempt,
-        result,
-      });
-      expect(again.result).toMatchObject({ duplicate: true, costMicroCredits: 0 });
-    }
+    // A retried step dispatches the same refund run: nothing moves twice.
+    await settleMediaGeneration(ports, await restoreGatewayMediaAdmission(ports, job), {
+      attempt: job.attempt,
+      result: { status: "failed", error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
+    });
     expect(await wallet()).toMatchObject({
       spentMicroCredits: before.spentMicroCredits,
       reservedMicroCredits: before.reservedMicroCredits,
     });
   });
 
-  it("a success is charged its delivered units once", async () => {
-    const { ports, wallet } = gateway([imageRate]);
-    const job = await plan(ports, { image: 1 });
-    await admitGatewayMediaJob(ports, job, { holdTtlMs: 60_000 });
-    const restored = await restoreGatewayMediaAdmission(ports, job);
-    const units = deliveredMediaUnits(restored);
-    const first = await settleMediaGeneration(ports, restored, { attempt: job.attempt, result: { status: "succeeded", units } });
-    const cost = priceUsage({ ...emptyUsage(), units }, restored.price).microCredits;
-    expect(first.result).toMatchObject({ costMicroCredits: cost, duplicate: false });
-    const second = await settleMediaGeneration(ports, restored, { attempt: job.attempt, result: { status: "succeeded", units } });
-    expect(second.result).toMatchObject({ costMicroCredits: cost, duplicate: true });
-    expect(await wallet()).toMatchObject({ spentMicroCredits: cost, reservedMicroCredits: 0 });
-  });
-
-  it("an abandoned job's hold is released by the sweeper at zero; a late success is a duplicate", async () => {
+  it("a success writes no follow-up money: the prepaid debit is the charge", async () => {
     const { memory, ports, wallet } = gateway([imageRate]);
     const job = await plan(ports, { image: 1 });
-    await admitGatewayMediaJob(ports, job, { holdTtlMs: 60_000 });
-    memory.advance(60_001);
-    expect((await sweepExpiredGatewayHolds(ports)).expired).toBe(1);
-    const late = await settleMediaGeneration(ports, await restoreGatewayMediaAdmission(ports, job), {
-      attempt: job.attempt,
-      result: { status: "succeeded", units: { image: 1 } },
-    });
-    expect(late.result).toMatchObject({ duplicate: true, costMicroCredits: 0 });
-    expect(await wallet()).toMatchObject({ spentMicroCredits: 0, reservedMicroCredits: 0 });
+    const admitted = await admitGatewayMediaJob(ports, job);
+    const restored = await restoreGatewayMediaAdmission(ports, job);
+    const units = deliveredMediaUnits(restored);
+    const done = await settleMediaGeneration(ports, restored, { attempt: job.attempt, result: { status: "succeeded", units } });
+    expect(done.dispatch).toBeNull();
+    expect(memory.settlementState(job.requestId, "refund")).toBeUndefined();
+    expect(memory.settlementState(job.requestId, "charge")).toBeUndefined();
+    const debit = admitted.payment.mode === "prepaid" ? admitted.payment.debitMicroCredits : Number.NaN;
+    expect(await wallet()).toMatchObject({ spentMicroCredits: debit, reservedMicroCredits: 0 });
   });
 });
 

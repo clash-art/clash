@@ -74,6 +74,40 @@ function reached(run: DurableRunRecord, stage: Stage): boolean {
   return false;
 }
 
+/**
+ * One coordinator over several Durable Run owners on the same journal, as
+ * the task runtime takes one: `advance` goes to the coordinator of the run's
+ * journaled owner (never one derived from the identity), `recoverable` lists
+ * every owner's due runs. Runs are created by their owner's service.
+ */
+export function routeRunCoordinators(
+  journal: CloudDurableRunJournal,
+  owners: Readonly<Record<string, CloudDurableRunCoordinator>>,
+): CloudDurableRunCoordinator {
+  return {
+    async coordinate(command) {
+      if (command.type === "recoverable") {
+        const identities: DurableRunIdentity[] = [];
+        for (const coordinator of Object.values(owners)) {
+          const due = await coordinator.coordinate(command);
+          if (due.kind === "recoverable") identities.push(...due.identities);
+        }
+        return { kind: "recoverable", identities };
+      }
+      if (command.type === "advance") {
+        const run = await journal.load(command.identity);
+        const coordinator = run ? owners[run.owner.id] : undefined;
+        if (!coordinator)
+          throw Error(
+            `No run owner serves ${command.identity.actionRunId}/${command.identity.outputSlot}`,
+          );
+        return coordinator.coordinate(command);
+      }
+      throw Error("The task runtime never creates runs");
+    },
+  };
+}
+
 /** BullMQ owns jobs/dependencies. The shared engine remains the only business state machine. */
 export function createNodeTaskRuntime(options: {
   connectionString: string;

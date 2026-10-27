@@ -335,11 +335,6 @@ export const GatewaySuspendRequestSchema = z
 /** POST /api/v1/admin/gateway/abuse/suspensions/:suspensionId/lift (#356). */
 export const GatewayLiftSuspensionRequestSchema = z.object({ reason: reason() }).strict();
 
-/** POST /api/v1/admin/gateway/holds/sweep: expire stale budget holds now. */
-export const GatewayHoldSweepRequestSchema = z
-  .object({ limit: z.number().int().min(1).max(1000).optional() })
-  .strict();
-
 const queryLimit = (max: number, fallback: number) => z.coerce.number().int().min(1).max(max).default(fallback);
 const queryInstant = () => isoInstant().optional();
 

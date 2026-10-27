@@ -1,27 +1,30 @@
 /**
  * Request admission and settlement over GatewayPorts: authenticate -> catalog
- * policy -> (protocol model mapping) -> allowlist -> plan -> price -> hold ->
- * limits -> reserve, then exactly one settlement.
+ * policy -> (protocol model mapping) -> allowlist -> plan -> price -> limits
+ * -> money (#399), then at most one follow-up.
+ *
+ * Money at admission: a media/AIGC request is prepaid (one atomic debit of
+ * its exact price); a text request is postpaid (a read-only check that every
+ * hard budget is above the credit floor). Follow-up when the request ends
+ * (settleGatewayRequest): a text request that owes something dispatches a
+ * `charge` settle run for its actual cost; a failed media request dispatches
+ * a `refund` settle run; a media success needs nothing (settlement.ts).
  * Adapters wrap these around the upstream call; HTTP shells live elsewhere.
  */
-import {
-  computeHold,
-  settleRequest,
-  type GatewayOutcome,
-  type Settlement,
-} from "./budget.js";
+import { computeMediaDebit, settleRequest, type BudgetFlag, type GatewayOutcome, type Settlement } from "./budget.js";
 import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
 import { GatewayError, toGatewayError } from "./errors.js";
 import { requireAdmission, type GatewayRateLimitHeaders } from "./limits.js";
 import {
   ledgerStatus,
+  type BudgetAdmission,
   type GatewayIdentity,
   type GatewayPorts,
-  type Reservation,
-  type SettleResult,
+  type SettlementDispatch,
+  type UsageEvent,
 } from "./ports.js";
 import { assertPriceCovers, type GatewayPrice, type MicroCredits } from "./pricing.js";
-import { holdUnits, type GatewayRequest } from "./request.js";
+import { pricedUnits, type GatewayRequest } from "./request.js";
 import {
   planGatewayRoutes,
   type GatewayCatalog,
@@ -30,19 +33,26 @@ import {
   type GatewayRoutePlan,
   type PlanGatewayRoutesInput,
 } from "./routing.js";
+import { GATEWAY_SETTLEMENT_DEFAULTS, resolveCreditFloor, type GatewayCreditFloor } from "./settlement.js";
 import { emptyUsage, type Usage } from "./usage.js";
+
+/** How the request pays: prepaid at admission (media) or postpaid after it ends (text). */
+export type GatewayPayment =
+  | { mode: "prepaid"; debitMicroCredits: MicroCredits }
+  | { mode: "postpaid"; floorMicroCredits: MicroCredits };
 
 export interface GatewayAdmission {
   requestId: string;
   identity: GatewayIdentity;
   request: GatewayRequest;
   plan: GatewayRoutePlan;
-  /** Price of the first attempt; the hold is computed from it. */
+  /** Price of the first attempt; a media debit is computed from it. */
   price: GatewayPrice;
   /** Epoch ms the request was priced at; failover attempts are priced at the same instant. */
   pricedAt: number;
-  holdMicroCredits: MicroCredits;
-  reservation: Reservation;
+  payment: GatewayPayment;
+  /** Budget flags admission raised; reported on the answer. */
+  flags: BudgetFlag[];
   leaseId: string;
   /** OpenAI-style rate-limit state from admission; set on every answer. */
   limitHeaders?: GatewayRateLimitHeaders;
@@ -50,8 +60,14 @@ export interface GatewayAdmission {
 }
 
 export interface AdmitOptions {
-  /** How long a hold may stay open before the sweeper expires it. */
-  holdTtlMs: number;
+  /** Text/LLM credit floor (settlement.ts); GATEWAY_SETTLEMENT_DEFAULTS when absent. */
+  creditFloor?: GatewayCreditFloor;
+  /**
+   * How long an Idempotency-Key's claim may stay open (ports.ts
+   * IdempotencyClaim); it must outlive the request. GATEWAY_SETTLEMENT_DEFAULTS
+   * when absent.
+   */
+  idempotencyTtlMs?: number;
   routing?: Pick<
     PlanGatewayRoutesInput,
     "isRouteExecutable" | "mayRetryAmbiguousSubmit" | "firstByteTimeoutMs" | "maxAttempts"
@@ -100,15 +116,49 @@ export async function planForIdentity(
   throw last ?? new GatewayError("GATEWAY_NO_ROUTE", { details: { model: input.modelCode } });
 }
 
-/** Admit or reject with a coded error; on rejection nothing stays held or leased. */
+/** Admit or reject with a coded error; on rejection nothing is debited or leased. */
 export function admitGatewayRequest(
   ports: GatewayPorts,
   input: { httpRequest: Request; request: GatewayRequest },
-  options: AdmitOptions,
+  options: AdmitOptions = {},
 ): Promise<GatewayAdmission> {
   return admit(ports, input, options).catch((error: unknown) => {
     throw toGatewayError(error);
   });
+}
+
+/** The ledger event of a request priced on `attempt`. */
+function usageEvent(
+  ports: GatewayPorts,
+  admission: Pick<GatewayAdmission, "requestId" | "identity" | "plan">,
+  input: {
+    attempt: GatewayRouteAttempt;
+    usage: Usage;
+    costMicroCredits: MicroCredits;
+    priceVersion: string;
+    status: UsageEvent["status"];
+    errorCode?: string;
+  },
+): UsageEvent {
+  const { identity } = admission;
+  return {
+    requestId: admission.requestId,
+    tenantId: identity.tenantId,
+    userId: identity.userId,
+    ...(identity.keyId ? { keyId: identity.keyId } : {}),
+    modelCode: admission.plan.modelCode,
+    kind: input.attempt.route.kind,
+    upstreamId: input.attempt.route.upstreamId,
+    ...(input.attempt.route.accountId ? { accountId: input.attempt.route.accountId } : {}),
+    credentialScope: input.attempt.scope,
+    usage: input.usage,
+    costMicroCredits: input.costMicroCredits,
+    priceVersion: input.priceVersion,
+    catalogVersion: admission.plan.catalogVersion,
+    status: input.status,
+    ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+    occurredAt: ports.clock.now(),
+  };
 }
 
 async function admit(
@@ -136,24 +186,34 @@ async function admit(
     route: plan.attempts[0]!.route,
     at: pricedAt,
   });
-  return reserveAdmission(ports, {
-    requestId: ports.ids.requestId(),
-    identity,
-    request,
-    plan,
-    price,
-    pricedAt,
-    holdTtlMs: options.holdTtlMs,
-  });
+  return payAdmission(
+    ports,
+    { requestId: ports.ids.requestId(), identity, request, plan, price, pricedAt },
+    options,
+  );
+}
+
+/** How a request pays (#399): media is prepaid its exact price, text is postpaid above the credit floor. */
+export async function gatewayPayment(
+  request: GatewayRequest,
+  price: GatewayPrice,
+  identity: GatewayIdentity,
+  creditFloor?: GatewayCreditFloor,
+): Promise<GatewayPayment> {
+  assertPriceCovers(price, pricedUnits(request));
+  return request.protocol === "media"
+    ? { mode: "prepaid", debitMicroCredits: computeMediaDebit(request, price) }
+    : { mode: "postpaid", floorMicroCredits: await resolveCreditFloor(creditFloor, identity) };
 }
 
 /**
- * The reservation half of admission, for a request already planned and
- * priced: the hold, the limits lease and the hold on every budget under
- * `requestId`. On refusal nothing stays held or leased. Media jobs
- * (media.ts) call it with the request id and price instant their job froze.
+ * The money half of admission, for a request already planned and priced: the
+ * limits lease, then the media debit or the text floor check on every budget
+ * under `requestId`. On refusal nothing is debited or leased. Media jobs
+ * (media.ts) call it with the request id and price instant their job froze;
+ * a repeated debit under that id is a no-op (charge-once).
  */
-export async function reserveAdmission(
+export async function payAdmission(
   ports: GatewayPorts,
   input: {
     requestId: string;
@@ -162,20 +222,19 @@ export async function reserveAdmission(
     plan: GatewayRoutePlan;
     price: GatewayPrice;
     pricedAt: number;
-    holdTtlMs: number;
   },
+  options: Pick<AdmitOptions, "creditFloor" | "idempotencyTtlMs"> = {},
 ): Promise<GatewayAdmission> {
   const { requestId, identity, request, plan, price, pricedAt } = input;
   // The budget learns the one scope the request is served from; a plan that
-  // mixed scopes could reach an official key on a BYOK-exempt reservation.
+  // mixed scopes could reach an official key on a BYOK-exempt admission.
   const credentialScope = plan.attempts[0]?.scope ?? identity.credentialScope;
   if (plan.attempts.some((attempt) => attempt.scope !== credentialScope))
     throw new GatewayError("GATEWAY_INTERNAL", {
       message: "A route plan mixes credential scopes.",
       details: { reason: "mixed_credential_scope" },
     });
-  assertPriceCovers(price, holdUnits(request));
-  const holdMicroCredits = computeHold(request, price);
+  const payment = await gatewayPayment(request, price, identity, options.creditFloor);
   const limitDecision = await ports.limits.admit({
     tenantId: identity.tenantId,
     userId: identity.userId,
@@ -187,18 +246,39 @@ export async function reserveAdmission(
   const leaseId = requireAdmission(limitDecision);
   const admittedAt = ports.clock.now();
   try {
-    const reservation = await ports.budgets.reserve({
-      requestId,
-      tenantId: identity.tenantId,
-      budgetIds: identity.budgetIds,
-      credentialScope,
-      holdMicroCredits,
-      expiresAt: admittedAt + input.holdTtlMs,
-      ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
-    });
+    const idempotency = request.idempotencyKey
+      ? {
+          idempotency: {
+            key: request.idempotencyKey,
+            expiresAt: admittedAt + (options.idempotencyTtlMs ?? GATEWAY_SETTLEMENT_DEFAULTS.idempotencyTtlMs),
+          },
+        }
+      : {};
+    const money: BudgetAdmission =
+      payment.mode === "prepaid"
+        ? await ports.budgets.debit({
+            ...usageEvent(ports, { requestId, identity, plan }, {
+              attempt: plan.attempts[0]!,
+              usage: { ...emptyUsage(), units: request.requestedUnits },
+              costMicroCredits: payment.debitMicroCredits,
+              priceVersion: price.version,
+              status: "settled",
+            }),
+            budgetIds: identity.budgetIds,
+            ...idempotency,
+          })
+        : await ports.budgets.check({
+            requestId,
+            tenantId: identity.tenantId,
+            budgetIds: identity.budgetIds,
+            credentialScope,
+            floorMicroCredits: payment.floorMicroCredits,
+            ...idempotency,
+          });
+    const flags = money.flags ?? [];
     // Admitted past a soft limit, or across an alert threshold: recorded by
     // the budgets port, logged here, and reported on the answer.
-    for (const flag of reservation.flags ?? [])
+    for (const flag of flags)
       ports.logger.warn(flag.kind === "soft_exceeded" ? "gateway.budget_soft_exceeded" : "gateway.budget_alert", {
         requestId,
         tenantId: identity.tenantId,
@@ -216,8 +296,8 @@ export async function reserveAdmission(
       plan,
       price,
       pricedAt,
-      holdMicroCredits,
-      reservation,
+      payment,
+      flags,
       leaseId,
       ...(limitDecision.allowed && limitDecision.headers ? { limitHeaders: limitDecision.headers } : {}),
       admittedAt,
@@ -238,9 +318,16 @@ export interface SettleGatewayInput {
   error?: GatewayError;
 }
 
+export interface GatewaySettleResult {
+  settlement: Settlement;
+  /** The follow-up settle run journaled for this request; null when none is owed. */
+  dispatch: SettlementDispatch | null;
+}
+
 /**
  * How an accepted media/AIGC generation ended. `units` are what the upstream
- * delivered (for example images produced), priced from the price book.
+ * delivered (for example images produced); the admission debit already paid
+ * for what was requested.
  */
 export type MediaGenerationResult =
   | { status: "succeeded"; units: Usage["units"] }
@@ -248,15 +335,15 @@ export type MediaGenerationResult =
 
 /**
  * Settle a media/AIGC generation after the upstream accepted it (the hook a
- * media route calls when its job ends). Only a success is charged; a failure
- * after acceptance settles `upstream_failed` at cost zero, whatever units were
- * requested or partly produced, and records the failure's code.
+ * media route calls when its job ends). A success needs no money write: the
+ * debit was exact. A failure, whatever was requested or partly produced,
+ * dispatches the full refund as `upstream_failed` with the failure's code.
  */
 export function settleMediaGeneration(
   ports: GatewayPorts,
   admission: GatewayAdmission,
   input: { attempt: GatewayRouteAttempt; result: MediaGenerationResult; price?: GatewayPrice },
-): Promise<{ settlement: Settlement; result: SettleResult }> {
+): Promise<GatewaySettleResult> {
   if (admission.request.protocol !== "media")
     return Promise.reject(
       new GatewayError("GATEWAY_INTERNAL", {
@@ -274,12 +361,17 @@ export function settleMediaGeneration(
   });
 }
 
-/** Settle exactly once and end the concurrency lease, whatever happens. */
+/**
+ * End a request once: dispatch the follow-up it owes (journaled before this
+ * resolves), and end the concurrency lease whatever happens. Rejects with the
+ * coded error when the follow-up could not be journaled; nothing else is
+ * retried here, the settle run owns that.
+ */
 export async function settleGatewayRequest(
   ports: GatewayPorts,
   admission: GatewayAdmission,
   input: SettleGatewayInput,
-): Promise<{ settlement: Settlement; result: SettleResult }> {
+): Promise<GatewaySettleResult> {
   try {
     const settlement = settleRequest({
       request: admission.request,
@@ -288,28 +380,51 @@ export async function settleGatewayRequest(
       price: input.price ?? admission.price,
     });
     const { identity } = admission;
-    const result = await ports.budgets.settle({
-      requestId: admission.requestId,
-      tenantId: identity.tenantId,
-      userId: identity.userId,
-      ...(identity.keyId ? { keyId: identity.keyId } : {}),
-      modelCode: admission.plan.modelCode,
-      kind: input.attempt.route.kind,
-      upstreamId: input.attempt.route.upstreamId,
-      ...(input.attempt.route.accountId ? { accountId: input.attempt.route.accountId } : {}),
-      credentialScope: input.attempt.scope,
-      usage: settlement.usage,
-      costMicroCredits: settlement.costMicroCredits,
-      priceVersion: settlement.priced.priceVersion,
-      catalogVersion: admission.plan.catalogVersion,
-      status: ledgerStatus(input.outcome),
-      ...(input.error ? { errorCode: input.error.code } : {}),
-      occurredAt: ports.clock.now(),
+    const status = ledgerStatus(input.outcome);
+    // Admitted with no budget (a BYOK caller the adapter lets pay its own
+    // upstream, #369): no money was written and none is owed.
+    if (identity.budgetIds.length === 0) return { settlement, dispatch: null };
+    if (admission.payment.mode === "prepaid") {
+      if (status === "settled") return { settlement, dispatch: null };
+      const dispatch = await ports.settlement.dispatch({
+        kind: "refund",
+        requestId: admission.requestId,
+        tenantId: identity.tenantId,
+        status,
+        ...(input.error ? { errorCode: input.error.code } : {}),
+        occurredAt: ports.clock.now(),
+      });
+      return { settlement, dispatch };
+    }
+    // Postpaid: nothing owed, nothing written.
+    if (settlement.costMicroCredits === 0) return { settlement, dispatch: null };
+    const dispatch = await ports.settlement.dispatch({
+      kind: "charge",
+      event: usageEvent(ports, admission, {
+        attempt: input.attempt,
+        usage: settlement.usage,
+        costMicroCredits: settlement.costMicroCredits,
+        priceVersion: settlement.priced.priceVersion,
+        status,
+        ...(input.error ? { errorCode: input.error.code } : {}),
+      }),
+      budgetIds: [...identity.budgetIds],
     });
-    return { settlement, result };
+    return { settlement, dispatch };
   } catch (error) {
     throw toGatewayError(error);
   } finally {
+    // After the follow-up is journaled: a retry under the key is then
+    // already settled. A failure here leaves the claim to its expiry.
+    if (admission.request.idempotencyKey)
+      await ports.budgets
+        .endIdempotency({ requestId: admission.requestId, tenantId: admission.identity.tenantId })
+        .catch((error: unknown) =>
+          ports.logger.warn("gateway.idempotency_end_failed", {
+            requestId: admission.requestId,
+            cause: toGatewayError(error).code,
+          }),
+        );
     await ports.limits.release({ leaseId: admission.leaseId }).catch(() => undefined);
   }
 }

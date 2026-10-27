@@ -32,6 +32,7 @@ import {
   runGatewayDrain,
   type GatewayDrainController,
 } from "./gateway-health.ts";
+import { inlinePgSettlement } from "./gateway-settle-test-support.ts";
 import { migrateDatabase } from "./migrations.ts";
 import { createMockUpstreamApp, type MockUpstreamApp } from "./mock-upstream/index.ts";
 
@@ -151,7 +152,7 @@ beforeEach(async () => {
     credentials,
     limits: createPgGatewayLimitPort(db),
     upstream: { fetch: (request) => Promise.resolve(mock.app.fetch(request)) },
-    settleRetryDelaysMs: [1, 1, 1],
+    settlement: inlinePgSettlement({ db }),
   });
   mount();
 });

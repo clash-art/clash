@@ -8,6 +8,11 @@
  *
  * abuse: observations per minute, thresholds from `abuseThresholds`,
  * alerts and suspensions in memory; suspensions append to `audit`.
+ *
+ * Settlement runs inline: `dispatch` journals the intent and applies it
+ * before it resolves, unless paused (pauseSettlement), when only `recover`
+ * applies it. A failed apply stays journaled and pending, like a settle run
+ * waiting for its retry.
  */
 import type {
   ModelUpstreamRoute,
@@ -21,12 +26,21 @@ import type {
   GatewaySuspension,
   GatewaySuspendInput,
 } from "../abuse.js";
-import { planReserve, planSettle, type BudgetHold, type BudgetState } from "../budget.js";
+import {
+  budgetFlags,
+  planCharge,
+  planCheck,
+  planDebit,
+  planRefund,
+  type BudgetFlag,
+  type BudgetState,
+} from "../budget.js";
 import type { GatewayUpstreamHealth } from "../circuit.js";
-import { GatewayError } from "../errors.js";
+import { GatewayError, toGatewayError } from "../errors.js";
 import { fixedWindowDecision, fixedWindowStart } from "../limits.js";
 import {
   unavailablePort,
+  type BudgetRefundInput,
   type GatewayAuditEvent,
   type GatewayBlob,
   type GatewayIdentity,
@@ -34,11 +48,17 @@ import {
   type GatewayPorts,
   type GatewayRetentionEntry,
   type GatewayUpstreamPort,
+  type IdempotencyClaim,
   type UsageEvent,
 } from "../ports.js";
 import type { GatewayPrice } from "../pricing.js";
 import type { GatewayCatalog, GatewayCredentialScope } from "../routing.js";
-import { emptyUsage } from "../usage.js";
+import {
+  applyGatewaySettlement,
+  gatewaySettlementRunKey,
+  parseGatewaySettlementIntent,
+  type GatewaySettlementIntent,
+} from "../settlement.js";
 
 export interface MemoryIdentity extends GatewayIdentity {
   /** Epoch ms after which the bearer token is expired. */
@@ -68,19 +88,29 @@ export interface MemoryGatewayOptions {
   abuseThresholds?: GatewayAbuseThresholds;
 }
 
-interface OpenReservation {
-  tenantId: string;
-  holds: BudgetHold[];
-  idempotencyKey?: string;
-  expiresAt: number;
-  state: "open" | "settle_failed" | "settled";
+/** A request's money rows: its `settle` (debit or charge) per budget, then at most one refund. */
+interface MoneyEntry {
+  event: UsageEvent;
+  budgetIds: string[];
+  refund?: { status: BudgetRefundInput["status"]; errorCode?: string };
+}
+
+interface JournaledSettlement {
+  intent: GatewaySettlementIntent;
+  applied: boolean;
 }
 
 export interface MemoryGateway {
   ports: GatewayPorts;
   advance(ms: number): void;
-  /** Reservation state of a request, for tests; undefined when never reserved. */
-  reservationState(requestId: string): OpenReservation["state"] | undefined;
+  /**
+   * Stop (true) or resume (false) running settle runs at dispatch: while
+   * paused, an intent is journaled and reported `scheduled: false`, and only
+   * `ports.settlement.recover()` applies it, as after a lost Workflow start.
+   */
+  pauseSettlement(paused: boolean): void;
+  /** A journaled settle run's state, for tests; undefined when never journaled. */
+  settlementState(requestId: string, kind: GatewaySettlementIntent["kind"]): "pending" | "applied" | undefined;
   /** Add a credential and its budgets after creation (fresh fixtures per test). */
   addIdentity(token: string, identity: MemoryIdentity, budgets: Array<BudgetState & { tenantId: string }>): void;
   logs: Array<{ level: "info" | "warn" | "error"; event: string; fields?: GatewayLogFields }>;
@@ -90,9 +120,11 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
   let now = options.startAt ?? 0;
   let sequence = 0;
   const budgets = new Map(options.budgets.map((budget) => [budget.id, { ...budget }]));
-  const reservations = new Map<string, OpenReservation>();
-  const idempotency = new Map<string, string>();
-  const ledger = new Map<string, UsageEvent>();
+  const money = new Map<string, MoneyEntry>();
+  const claims = new Map<string, { requestId: string; expiresAt: number; ended: boolean }>();
+  const claimOf = new Map<string, string>();
+  const journal = new Map<string, JournaledSettlement>();
+  let settlementPaused = false;
   const windows = new Map<string, number>();
   const budgetEvents = new Set<string>();
   const blobs = new Map<string, GatewayBlob>();
@@ -141,6 +173,83 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
     (["official", "tenant"] as const).find((scope) =>
       options.providers[scope].some((provider) => provider.id === accountId),
     );
+
+  /** The caller's budgets, all present under the tenant; a missing budget is never unlimited. */
+  const rowsOf = (tenantId: string, budgetIds: readonly string[]) =>
+    [...new Set(budgetIds)].map((id) => {
+      const budget = budgets.get(id);
+      if (!budget || budget.tenantId !== tenantId)
+        throw new GatewayError("GATEWAY_INTERNAL", {
+          message: "Budget not found for tenant; a missing budget is never unlimited.",
+          details: { budgetId: id },
+        });
+      return budget;
+    });
+
+  const store = (tenantId: string, next: readonly BudgetState[]) => {
+    for (const budget of next) budgets.set(budget.id, { ...budget, tenantId });
+  };
+
+  /** Recorded flags only: soft once per request and budget, an alert once per budget and dedupe key. */
+  const record = (flags: readonly BudgetFlag[]) =>
+    flags.filter((flag) => {
+      const key = `${flag.budgetId}\u0000${flag.kind}\u0000${flag.dedupeKey}`;
+      if (budgetEvents.has(key)) return false;
+      budgetEvents.add(key);
+      return true;
+    });
+
+  /** Throws when another request holds the key's claim; see IdempotencyClaim. */
+  const assertClaimFree = (tenantId: string, requestId: string, claim: IdempotencyClaim | undefined) => {
+    const prior = claim ? claims.get(`${tenantId}\u0000${claim.key}`) : undefined;
+    if (prior && prior.requestId !== requestId)
+      throw new GatewayError(
+        !prior.ended && now < prior.expiresAt ? "GATEWAY_IDEMPOTENCY_IN_PROGRESS" : "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED",
+        { details: { requestId: prior.requestId } },
+      );
+  };
+
+  const takeClaim = (tenantId: string, requestId: string, claim: IdempotencyClaim | undefined) => {
+    if (!claim) return;
+    const id = `${tenantId}\u0000${claim.key}`;
+    claims.set(id, { requestId, expiresAt: claim.expiresAt, ended: false });
+    claimOf.set(requestId, id);
+  };
+
+  const budgetsRequired = (budgetIds: readonly string[]) => {
+    if (budgetIds.length === 0)
+      throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
+  };
+
+  /** The ledger's one event per request: a refunded debit reads as its refund, at zero. */
+  const ledgerEvent = (entry: MoneyEntry): UsageEvent => {
+    const event = structuredClone(entry.event);
+    if (!entry.refund) return event;
+    const { errorCode: _errorCode, ...rest } = event;
+    return {
+      ...rest,
+      status: entry.refund.status,
+      costMicroCredits: 0,
+      ...(entry.refund.errorCode ? { errorCode: entry.refund.errorCode } : {}),
+    };
+  };
+
+  const journalKey = (intent: GatewaySettlementIntent) => {
+    const { requestId, kind } = gatewaySettlementRunKey(intent);
+    return `${requestId}\u0000${kind}`;
+  };
+
+  /** One settle run: apply the journaled intent; a failure stays pending for recovery. */
+  const run = async (entry: JournaledSettlement): Promise<boolean> => {
+    try {
+      await applyGatewaySettlement(ports, parseGatewaySettlementIntent(entry.intent));
+      entry.applied = true;
+      return true;
+    } catch (error) {
+      logs.push({ level: "error", event: "gateway.settle_run_failed", fields: { cause: toGatewayError(error).code } });
+      return false;
+    }
+  };
 
   const ports: GatewayPorts = {
     clock: { now: () => now },
@@ -240,90 +349,63 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
       },
     },
     budgets: {
-      async reserve(input) {
-        const idempotencyId = input.idempotencyKey
-          ? `${input.tenantId}\u0000${input.idempotencyKey}`
-          : undefined;
-        const prior = idempotencyId ? idempotency.get(idempotencyId) : undefined;
-        if (prior !== undefined) {
-          const settled = reservations.get(prior)?.state === "settled";
-          throw new GatewayError(
-            settled ? "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED" : "GATEWAY_IDEMPOTENCY_IN_PROGRESS",
-            { details: { requestId: prior } },
-          );
-        }
-        if (reservations.has(input.requestId))
-          throw new GatewayError("GATEWAY_INTERNAL", {
-            message: "Request id already reserved.",
-            details: { requestId: input.requestId },
-          });
-        const rows = input.budgetIds.map((id) => {
-          const budget = budgets.get(id);
-          if (!budget || budget.tenantId !== input.tenantId)
-            throw new GatewayError("GATEWAY_INTERNAL", {
-              message: "Budget not found for tenant; a missing budget is never unlimited.",
-              details: { budgetId: id },
-            });
-          return budget;
-        });
-        const planned = planReserve(rows, input.holdMicroCredits, input.requestId);
-        for (const budget of planned.budgets)
-          budgets.set(budget.id, { ...budget, tenantId: input.tenantId });
-        // Recorded flags only: an alert once per budget and dedupe key.
-        const flags = planned.flags.filter((flag) => {
-          const key = `${flag.budgetId}\u0000${flag.kind}\u0000${flag.dedupeKey}`;
-          if (budgetEvents.has(key)) return false;
-          budgetEvents.add(key);
-          return true;
-        });
-        reservations.set(input.requestId, {
-          tenantId: input.tenantId,
-          holds: planned.holds,
-          ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-          expiresAt: input.expiresAt,
-          state: "open",
-        });
-        if (idempotencyId) idempotency.set(idempotencyId, input.requestId);
-        return {
-          requestId: input.requestId,
-          holds: planned.holds,
-          expiresAt: input.expiresAt,
-          ...(flags.length ? { flags } : {}),
-        };
+      async check(input) {
+        budgetsRequired(input.budgetIds);
+        assertClaimFree(input.tenantId, input.requestId, input.idempotency);
+        const { flags } = planCheck(rowsOf(input.tenantId, input.budgetIds), input.floorMicroCredits, input.requestId);
+        const recorded = record(flags);
+        takeClaim(input.tenantId, input.requestId, input.idempotency);
+        return recorded.length ? { flags: recorded } : {};
       },
-      async settle(event) {
-        const existing = ledger.get(event.requestId);
-        if (existing)
-          return {
-            requestId: event.requestId,
-            costMicroCredits: existing.costMicroCredits,
-            duplicate: true,
-          };
-        const reservation = reservations.get(event.requestId);
-        if (!reservation || reservation.tenantId !== event.tenantId)
+      async debit({ budgetIds, idempotency, ...event }) {
+        budgetsRequired(budgetIds);
+        assertClaimFree(event.tenantId, event.requestId, idempotency);
+        if (money.has(event.requestId))
           throw new GatewayError("GATEWAY_INTERNAL", {
-            message: "Settlement for a request that was never reserved.",
+            message: "Request id already debited.",
             details: { requestId: event.requestId },
           });
-        const next = reservation.holds.map((hold) => {
-          const budget = budgets.get(hold.budgetId)!;
-          return { ...planSettle(budget, hold, event.costMicroCredits).budget, tenantId: budget.tenantId };
-        });
-        for (const budget of next) budgets.set(budget.id, budget);
-        reservation.state = "settled";
-        ledger.set(event.requestId, structuredClone(event));
-        return { requestId: event.requestId, costMicroCredits: event.costMicroCredits, duplicate: false };
+        const rows = rowsOf(event.tenantId, budgetIds);
+        const planned = planDebit(rows, event.costMicroCredits, event.requestId);
+        store(event.tenantId, planned.budgets);
+        const recorded = record(planned.flags);
+        money.set(event.requestId, { event: structuredClone(event), budgetIds: rows.map((budget) => budget.id) });
+        takeClaim(event.tenantId, event.requestId, idempotency);
+        return recorded.length ? { flags: recorded } : {};
       },
-      async markSettleFailed({ requestId, tenantId }) {
-        const reservation = reservations.get(requestId);
-        if (!reservation || reservation.tenantId !== tenantId)
+      async charge({ budgetIds, ...event }) {
+        const existing = money.get(event.requestId);
+        if (existing)
+          return { requestId: event.requestId, kind: "charge", costMicroCredits: existing.event.costMicroCredits, duplicate: true };
+        const rows = rowsOf(event.tenantId, budgetIds);
+        record(rows.flatMap((budget) => budgetFlags(budget, event.costMicroCredits, event.requestId)));
+        store(
+          event.tenantId,
+          rows.map((budget) => planCharge(budget, event.costMicroCredits)),
+        );
+        money.set(event.requestId, { event: structuredClone(event), budgetIds: rows.map((budget) => budget.id) });
+        return { requestId: event.requestId, kind: "charge", costMicroCredits: event.costMicroCredits, duplicate: false };
+      },
+      async refund(input) {
+        const entry = money.get(input.requestId);
+        if (!entry || entry.event.tenantId !== input.tenantId)
           throw new GatewayError("GATEWAY_INTERNAL", {
-            message: "Settlement failure for a request that was never reserved.",
-            details: { requestId },
+            message: "Refund for a request that recorded no money.",
+            details: { requestId: input.requestId },
           });
-        if (reservation.state === "settled") return { status: "settled" };
-        reservation.state = "settle_failed";
-        return { status: "settle_failed" };
+        const amount = entry.event.costMicroCredits;
+        if (entry.refund) return { requestId: input.requestId, kind: "refund", costMicroCredits: amount, duplicate: true };
+        store(
+          input.tenantId,
+          entry.budgetIds.map((id) => planRefund(budgets.get(id)!, amount)),
+        );
+        entry.refund = { status: input.status, ...(input.errorCode ? { errorCode: input.errorCode } : {}) };
+        return { requestId: input.requestId, kind: "refund", costMicroCredits: amount, duplicate: false };
+      },
+      async endIdempotency({ requestId }) {
+        const id = claimOf.get(requestId);
+        const claim = id ? claims.get(id) : undefined;
+        if (claim?.requestId === requestId) claim.ended = true;
       },
       async snapshot({ tenantId, budgetIds }) {
         return [...budgets.values()]
@@ -331,38 +413,28 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
           .filter((budget) => !budgetIds || budgetIds.includes(budget.id))
           .map(({ tenantId: _tenantId, ...budget }) => budget);
       },
-      async expiredHolds({ before, limit }) {
-        return [...reservations.entries()]
-          .filter(([, reservation]) => reservation.state === "open" && reservation.expiresAt <= before)
-          .sort(([, a], [, b]) => a.expiresAt - b.expiresAt)
-          .slice(0, limit)
-          .map(([requestId, reservation]) => ({ requestId, tenantId: reservation.tenantId, expiresAt: reservation.expiresAt }));
+    },
+    settlement: {
+      async dispatch(intent) {
+        const parsed = parseGatewaySettlementIntent(intent);
+        const key = journalKey(parsed);
+        let entry = journal.get(key);
+        if (entry && JSON.stringify(entry.intent) !== JSON.stringify(parsed))
+          throw new GatewayError("GATEWAY_INTERNAL", {
+            message: "A different settlement is already journaled for this request.",
+            details: gatewaySettlementRunKey(parsed),
+          });
+        if (!entry) journal.set(key, (entry = { intent: structuredClone(parsed), applied: false }));
+        const runKey = gatewaySettlementRunKey(parsed);
+        if (settlementPaused) return { ...runKey, scheduled: false };
+        if (!entry.applied) await run(entry);
+        return { ...runKey, scheduled: true };
       },
-      async expire({ requestId, tenantId, before }) {
-        const reservation = reservations.get(requestId);
-        if (!reservation || reservation.tenantId !== tenantId || reservation.state !== "open" || reservation.expiresAt > before)
-          return { expired: false };
-        for (const hold of reservation.holds) {
-          const budget = budgets.get(hold.budgetId)!;
-          budgets.set(budget.id, { ...planSettle(budget, hold, 0).budget, tenantId: budget.tenantId });
-        }
-        reservation.state = "settled";
-        ledger.set(requestId, {
-          requestId,
-          tenantId,
-          userId: "",
-          modelCode: "",
-          kind: "text",
-          upstreamId: "",
-          credentialScope: "official",
-          usage: emptyUsage(),
-          costMicroCredits: 0,
-          priceVersion: "",
-          catalogVersion: "",
-          status: "expired",
-          occurredAt: now,
-        });
-        return { expired: true };
+      async recover() {
+        const due = [...journal.values()].filter((entry) => !entry.applied);
+        let scheduled = 0;
+        for (const entry of due) if (await run(entry)) scheduled += 1;
+        return { scanned: due.length, scheduled, failed: due.length - scheduled };
       },
     },
     limits: {
@@ -391,19 +463,19 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
     },
     ledger: {
       async get({ tenantId, requestId }) {
-        const event = ledger.get(requestId);
-        return event && event.tenantId === tenantId ? structuredClone(event) : null;
+        const entry = money.get(requestId);
+        return entry && entry.event.tenantId === tenantId ? ledgerEvent(entry) : null;
       },
       async query(filter) {
-        return [...ledger.values()]
+        return [...money.values()]
+          .map(ledgerEvent)
           .filter((event) => event.tenantId === filter.tenantId)
           .filter((event) => !filter.userId || event.userId === filter.userId)
           .filter((event) => !filter.keyId || event.keyId === filter.keyId)
           .filter((event) => filter.from === undefined || event.occurredAt >= filter.from)
           .filter((event) => filter.to === undefined || event.occurredAt < filter.to)
           .sort((a, b) => b.occurredAt - a.occurredAt)
-          .slice(0, filter.limit ?? Number.POSITIVE_INFINITY)
-          .map((event) => structuredClone(event));
+          .slice(0, filter.limit ?? Number.POSITIVE_INFINITY);
       },
     },
     blobs: {
@@ -486,7 +558,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
           totals.set(key, total);
         };
         if (signal === "spend") {
-          for (const event of ledger.values())
+          for (const event of [...money.values()].map(ledgerEvent))
             if (event.occurredAt >= since) add({ subjectKind: "tenant", subjectId: event.tenantId, tenantId: event.tenantId }, event.costMicroCredits);
         } else {
           const since0 = fixedWindowStart(since, 60_000);
@@ -597,7 +669,13 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
     advance(ms) {
       now += ms;
     },
-    reservationState: (requestId) => reservations.get(requestId)?.state,
+    pauseSettlement(paused) {
+      settlementPaused = paused;
+    },
+    settlementState(requestId, kind) {
+      const entry = journal.get(`${requestId}\u0000${kind}`);
+      return entry ? (entry.applied ? "applied" : "pending") : undefined;
+    },
     addIdentity(token, identity, added) {
       options.identities[token] = identity;
       for (const budget of added) budgets.set(budget.id, { ...budget });

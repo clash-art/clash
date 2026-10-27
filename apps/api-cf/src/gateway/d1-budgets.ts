@@ -1,42 +1,44 @@
 /**
- * Budgets and ledger over D1 (`gateway_budget`, `gateway_usage_ledger`).
+ * Budgets and ledger over D1 (`gateway_budget`, `gateway_usage_ledger`,
+ * `gateway_idempotency_claim`) under the hybrid settlement model (#399,
+ * gateway-core budget.ts). There are no holds: `reserved_micro_credits` is
+ * the retired reserve path's counter, zero since migration 0042.
  *
- * reserve: one `batch` (a D1 transaction) holds on every budget or none. Per
- * budget: a conditional UPDATE (active, under limit, no hold yet for this
- * request, idempotency key unused), the `hold` row appended only when that
- * UPDATE changed a row, and a guard insert that violates the ledger's
- * `amount >= 0` CHECK when it did not, which rolls the whole batch back. A
- * rejected batch is then explained from a snapshot by gateway-core's own
- * `planReserve`, so the coded error matches every other adapter.
+ * debit (media/AIGC prepay at admission): one `batch` (a D1 transaction)
+ * debits every budget or none. Per budget: a conditional UPDATE (active,
+ * covered unless the budget is not `hard`, no `settle` row yet for this
+ * request), the request's `settle` row appended only when that UPDATE changed
+ * a row, and a guard insert that violates the ledger's `amount >= 0` CHECK
+ * when it did not, which rolls the whole batch back. A rejected batch is then
+ * explained from a snapshot by gateway-core's own `planDebit`, so the coded
+ * error matches every other adapter.
  *
- * settle: one batch per request: each open hold is closed (spent += cost,
- * reserved -= stored hold), its status moves to settled/released and a
- * `settle` row carrying the billing basis is appended, once per budget. A
- * repeated settlement finds no open hold and is a no-op.
+ * check (text/LLM postpay admission): reads the budgets and applies
+ * gateway-core's `planCheck` (every hard budget above `-floor`); it writes no
+ * money, only the idempotency claim and the flags.
  *
- * markSettleFailed: when settle itself fails, the still-open hold rows move to
- * status `settle_failed` (error_code = the failure's code) and the budget
- * keeps the amount reserved. A later settle closes `settle_failed` holds like
- * open ones, under the same once-per-request guards, so a retry never charges
- * twice. `gateway_usage_ledger.status` has no CHECK, so this needs no
- * migration.
+ * charge (a text settle run) and refund (a media settle run): one batch per
+ * request, idempotent through the ledger's unique `(request_id, budget_id,
+ * kind)`: each budget's counter moves only together with the insert of its
+ * `settle` (charge) or `refund` row, so a repeated run moves nothing. A
+ * charge is never refused (the work was done); a refund returns exactly what
+ * each budget's `settle` row recorded and points at it (ref_kind `settle`).
  *
- * expiredHolds / expire (the stale-hold sweeper, #348): `open` hold rows past
- * `expires_at` move to `expired`, their amount leaves `reserved`, and a
- * zero-cost `settle` row of status `expired` is appended in the same batch,
- * written only when a hold actually moved,
- * so a concurrent settlement and the sweeper never both close a request.
- * `sweepGatewayHolds(env)` runs it from the scheduled handler and the admin
- * route.
+ * Idempotency-Key claims (0042) are taken in the admission batch: an
+ * `INSERT OR IGNORE` then a guard that rolls the batch back unless this
+ * request owns the claim. `endIdempotency` closes it after the follow-up is
+ * journaled.
  *
- * Enforcement (#354, 0041): only a `hard` budget's limit refuses the hold. A
- * `soft` or `alert` budget holds past it, and the same batch appends its
+ * Enforcement (#354, 0041): only a `hard` budget's limit refuses. A `soft` or
+ * `alert` budget debits past it, and the same batch appends its
  * `gateway_budget_event` rows (soft_exceeded per request, alert_threshold per
  * limit and threshold, deduplicated by a unique index); the rows it inserted
- * are the reservation's flags.
+ * are the admission's flags. A charge records the flags its cost raises.
  *
  * A caller without any budget row is refused (GATEWAY_BUDGET_EXCEEDED,
- * reason `no_budget`): a missing budget is never unlimited. Periodic reset of
+ * reason `no_budget`): a missing budget is never unlimited. The one exception
+ * is a tenant-scope (BYOK, #369) request, admitted with no money write since
+ * the tenant pays its own upstream. Periodic reset of
  * `daily`/`monthly` budgets is not implemented yet; such budgets keep counting
  * (fail closed) until the reset job lands.
  */
@@ -44,30 +46,23 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import {
   GatewayError,
   assertMicroCredits,
-  planReserve,
-  sweepExpiredGatewayHolds,
+  planCheck,
+  planDebit,
   type BudgetEnforcement,
+  type BudgetEntryInput,
   type BudgetFlag,
   type BudgetScope,
   type BudgetState,
   type GatewayBudgetPort,
   type GatewayClock,
+  type GatewayCredentialScope,
   type GatewayLedgerPort,
   type GatewayLedgerStatus,
-  type GatewayLogger,
-  type HoldSweepResult,
-  type ReserveInput,
+  type IdempotencyClaim,
   type UsageEvent,
 } from "@clash/gateway-core";
 
-import type { Env } from "../config";
-import { monotonicClock, parseJson, toMs, toSeconds } from "./d1-common";
-import { workersLogger } from "./workers-logger";
-
-const IDEMPOTENCY_REF = "idempotency";
-
-/** A hold no settlement has closed yet: open, or marked after a failed settlement. */
-const UNSETTLED_HOLD = "status IN ('open', 'settle_failed')";
+import { parseJson, toMs, toSeconds } from "./d1-common";
 
 interface BudgetRow {
   id: string;
@@ -84,7 +79,7 @@ interface BudgetRow {
   alert_threshold_pct: number | null;
 }
 
-/** A gateway_budget_event row the reservation batch inserted (RETURNING). */
+/** A gateway_budget_event row a money batch inserted (RETURNING). */
 interface BudgetEventRow {
   budget_id: string;
   scope: BudgetScope;
@@ -119,6 +114,10 @@ interface SettleRow {
   account_id: string | null;
   error_code: string | null;
   occurred_at: number;
+  /** The refund row of the same budget, when the debit was refunded. */
+  refund_status: string | null;
+  refund_error_code: string | null;
+  refunded_micro_credits: number;
 }
 
 const BUDGET_COLUMNS = `id, tenant_id, scope, scope_id, status, limit_micro_credits,
@@ -142,10 +141,14 @@ function budgetFlag(row: BudgetEventRow): BudgetFlag {
   };
 }
 
-const SETTLE_COLUMNS = `request_id, tenant_id, user_id, key_id, status, amount_micro_credits,
-  model_code, model_kind, credential_scope, input_tokens, output_tokens, cached_input_tokens,
-  cache_write_tokens, units_json, usage_source, price_version, catalog_version, upstream_id,
-  account_id, error_code, occurred_at`;
+/** A settle row joined with its budget's refund row (alias `r`), if any. */
+const SETTLE_COLUMNS = `l.request_id, l.tenant_id, l.user_id, l.key_id, l.status, l.amount_micro_credits,
+  l.model_code, l.model_kind, l.credential_scope, l.input_tokens, l.output_tokens, l.cached_input_tokens,
+  l.cache_write_tokens, l.units_json, l.usage_source, l.price_version, l.catalog_version, l.upstream_id,
+  l.account_id, l.error_code, l.occurred_at, r.status AS refund_status, r.error_code AS refund_error_code,
+  COALESCE(r.amount_micro_credits, 0) AS refunded_micro_credits`;
+const WITH_REFUND = `gateway_usage_ledger l LEFT JOIN gateway_usage_ledger r
+  ON r.request_id = l.request_id AND r.budget_id = l.budget_id AND r.kind = 'refund'`;
 
 function budgetState(row: BudgetRow): BudgetState {
   return {
@@ -162,8 +165,10 @@ function budgetState(row: BudgetRow): BudgetState {
   };
 }
 
+/** One request's ledger event; a refunded debit reads as its refund at a net cost of zero. */
 function usageEvent(row: SettleRow): UsageEvent {
   const units = parseJson(row.units_json);
+  const errorCode = row.refund_status !== null ? row.refund_error_code : row.error_code;
   return {
     requestId: row.request_id,
     tenantId: row.tenant_id,
@@ -182,11 +187,11 @@ function usageEvent(row: SettleRow): UsageEvent {
       units: units && typeof units === "object" && !Array.isArray(units) ? (units as UsageEvent["usage"]["units"]) : {},
       source: row.usage_source === "estimated" ? "estimated" : "reported",
     },
-    costMicroCredits: row.amount_micro_credits,
+    costMicroCredits: row.amount_micro_credits - row.refunded_micro_credits,
     priceVersion: row.price_version ?? "",
     catalogVersion: row.catalog_version ?? "",
-    status: row.status as GatewayLedgerStatus,
-    ...(row.error_code ? { errorCode: row.error_code } : {}),
+    status: (row.refund_status ?? row.status) as GatewayLedgerStatus,
+    ...(errorCode ? { errorCode } : {}),
     occurredAt: toMs(row.occurred_at),
   };
 }
@@ -194,6 +199,49 @@ function usageEvent(row: SettleRow): UsageEvent {
 /** One settle row per budget carries the same event; reads take the first by budget id. */
 export const ONE_SETTLE_PER_REQUEST = `l.budget_id = (SELECT MIN(s.budget_id) FROM gateway_usage_ledger s
   WHERE s.request_id = l.request_id AND s.kind = 'settle')`;
+
+const SETTLE_INSERT = `INSERT INTO gateway_usage_ledger
+   (id, request_id, budget_id, kind, status, tenant_id, user_id, key_id,
+    amount_micro_credits, model_code, model_kind, credential_scope,
+    input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
+    units_json, usage_source, price_version, catalog_version,
+    upstream_id, account_id, error_code, occurred_at)
+ SELECT ?2 || ':settle:' || ?1, ?2, ?1, 'settle', ?3, ?4, ?5, ?6,
+        ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+  WHERE changes() = 1`;
+
+/** A request's `settle` row on one budget, the event and its billing basis (?1 budget, ?2 request). */
+const settleBinds = (budgetId: string, event: UsageEvent) =>
+  [
+    budgetId,
+    event.requestId,
+    event.status,
+    event.tenantId,
+    event.userId,
+    event.keyId ?? null,
+    event.costMicroCredits,
+    event.modelCode,
+    event.kind,
+    event.credentialScope,
+    event.usage.inputTokens,
+    event.usage.outputTokens,
+    event.usage.cachedInputTokens,
+    event.usage.cacheWriteTokens,
+    JSON.stringify(event.usage.units),
+    event.usage.source,
+    event.priceVersion,
+    event.catalogVersion,
+    event.upstreamId,
+    event.accountId ?? null,
+    event.errorCode ?? null,
+    toSeconds(event.occurredAt),
+  ] as const;
+
+/** The guard row: violates the ledger's CHECK (amount >= 0), rolling the batch back. */
+const refusalGuard = (where: string) => `INSERT INTO gateway_usage_ledger
+   (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits, occurred_at)
+ SELECT ?2 || ':refused:' || ?1, ?2, ?1, 'release', 'refused', ?3, -1, ?4
+  WHERE ${where}`;
 
 export function createD1GatewayBudgetPorts(
   db: D1Database,
@@ -209,344 +257,287 @@ export function createD1GatewayBudgetPorts(
     return results;
   }
 
-  /** Why a reserve batch was refused, as the same coded error every adapter raises. */
-  async function explainRefusal(input: ReserveInput, ids: readonly string[], cause: unknown): Promise<GatewayError> {
-    if (input.idempotencyKey) {
-      const prior = await db
-        .prepare(
-          `SELECT request_id, MAX(${UNSETTLED_HOLD}) AS open FROM gateway_usage_ledger
-            WHERE tenant_id = ? AND kind = 'hold' AND ref_kind = ? AND ref_id = ? AND request_id <> ?
-            GROUP BY request_id LIMIT 1`,
-        )
-        .bind(input.tenantId, IDEMPOTENCY_REF, input.idempotencyKey, input.requestId)
-        .first<{ request_id: string; open: number }>();
-      if (prior)
-        return new GatewayError(
-          prior.open ? "GATEWAY_IDEMPOTENCY_IN_PROGRESS" : "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED",
-          { details: { requestId: prior.request_id } },
-        );
-    }
-    const rows = await budgetRows(input.tenantId, ids);
+  /**
+   * The caller's budget ids, sorted. BYOK (#369): a tenant-scope request with
+   * no budget row is admitted with no money write (the tenant pays its own
+   * upstream, and the core owes it no follow-up). An official-scope request
+   * with no budget never is; a BYOK caller with budgets pays them.
+   */
+  function budgetIdsOf(input: { budgetIds: readonly string[]; credentialScope?: GatewayCredentialScope }): string[] {
+    const ids = [...new Set(input.budgetIds)].sort();
+    if (ids.length === 0 && input.credentialScope !== "tenant")
+      throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
+    return ids;
+  }
+
+  /** The caller's budgets, every one found and active, or the coded refusal. */
+  async function admissibleBudgets(tenantId: string, ids: readonly string[]): Promise<BudgetState[]> {
+    const rows = await budgetRows(tenantId, ids);
     const found = new Set(rows.map((row) => row.id));
     const missing = ids.find((id) => !found.has(id));
     if (missing)
-      return new GatewayError("GATEWAY_INTERNAL", {
+      throw new GatewayError("GATEWAY_INTERNAL", {
         message: "Budget not found for tenant; a missing budget is never unlimited.",
         details: { budgetId: missing },
       });
     const suspended = rows.find((row) => row.status !== "active");
     if (suspended)
-      return new GatewayError("GATEWAY_BUDGET_EXCEEDED", {
+      throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", {
         details: { budgetId: suspended.id, scope: suspended.scope, reason: "suspended" },
       });
-    try {
-      planReserve(rows.map(budgetState), input.holdMicroCredits);
-    } catch (error) {
-      return error as GatewayError;
-    }
-    return new GatewayError("GATEWAY_INTERNAL", {
-      message: "The reservation was refused.",
-      details: { requestId: input.requestId },
-      cause,
+    return rows.map(budgetState);
+  }
+
+  /** Take the Idempotency-Key's claim in the admission batch: rolls back unless this request owns it. */
+  function claimStatements(tenantId: string, requestId: string, claim: IdempotencyClaim | undefined, nowS: number) {
+    if (!claim) return [];
+    return [
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO gateway_idempotency_claim (tenant_id, idempotency_key, request_id, expires_at)
+           VALUES (?1, ?2, ?3, ?4)`,
+        )
+        .bind(tenantId, claim.key, requestId, toSeconds(claim.expiresAt)),
+      db
+        .prepare(
+          refusalGuard(`NOT EXISTS (SELECT 1 FROM gateway_idempotency_claim
+                         WHERE tenant_id = ?3 AND idempotency_key = ?5 AND request_id = ?2)`),
+        )
+        .bind("idempotency", requestId, tenantId, nowS, claim.key),
+    ];
+  }
+
+  /** Another request's claim on the key, as its coded refusal; null when the key is free or ours. */
+  async function claimRefusal(tenantId: string, requestId: string, claim: IdempotencyClaim | undefined) {
+    if (!claim) return null;
+    const prior = await db
+      .prepare(
+        `SELECT request_id, ended_at, expires_at FROM gateway_idempotency_claim
+          WHERE tenant_id = ? AND idempotency_key = ?`,
+      )
+      .bind(tenantId, claim.key)
+      .first<{ request_id: string; ended_at: number | null; expires_at: number }>();
+    if (!prior || prior.request_id === requestId) return null;
+    const open = prior.ended_at === null && prior.expires_at > toSeconds(deps.clock.now());
+    return new GatewayError(open ? "GATEWAY_IDEMPOTENCY_IN_PROGRESS" : "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED", {
+      details: { requestId: prior.request_id },
     });
   }
 
+  /**
+   * The flags a money write (or a text check) raises, in its batch: core
+   * budgetFlags in SQL over the counters after the write. A soft budget past
+   * its limit once per request, an alert threshold once per limit and threshold.
+   */
+  function flagStatements(tenantId: string, requestId: string, ids: readonly string[], nowS: number) {
+    return ids.flatMap((budgetId) => [
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO gateway_budget_event ${EVENT_COLUMNS}
+           SELECT ?3 || ':soft:' || id, tenant_id, id, scope, scope_id, 'soft_exceeded', enforcement, ?3, ?3,
+                  limit_micro_credits, spent_micro_credits, reserved_micro_credits, NULL, ?4
+             FROM gateway_budget
+            WHERE id = ?1 AND tenant_id = ?2 AND enforcement = 'soft' AND limit_micro_credits IS NOT NULL
+              AND spent_micro_credits + reserved_micro_credits > limit_micro_credits
+           ${EVENT_RETURNING}`,
+        )
+        .bind(budgetId, tenantId, requestId, nowS),
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO gateway_budget_event ${EVENT_COLUMNS}
+           SELECT ?3 || ':alert:' || id, tenant_id, id, scope, scope_id, 'alert_threshold', enforcement,
+                  'limit=' || limit_micro_credits || ';pct=' || COALESCE(alert_threshold_pct, 100), ?3,
+                  limit_micro_credits, spent_micro_credits, reserved_micro_credits,
+                  COALESCE(alert_threshold_pct, 100), ?4
+             FROM gateway_budget
+            WHERE id = ?1 AND tenant_id = ?2 AND limit_micro_credits IS NOT NULL
+              AND (alert_threshold_pct IS NOT NULL OR enforcement = 'alert')
+              AND (spent_micro_credits + reserved_micro_credits) * 100
+                  >= limit_micro_credits * COALESCE(alert_threshold_pct, 100)
+           ${EVENT_RETURNING}`,
+        )
+        .bind(budgetId, tenantId, requestId, nowS),
+    ]);
+  }
+
+  const recordedFlags = (results: Awaited<ReturnType<D1Database["batch"]>>, from: number) =>
+    results
+      .slice(from)
+      .flatMap((result) => (result.results ?? []) as BudgetEventRow[])
+      .map(budgetFlag);
+
+  /** What the first write of `kind` recorded for the request, if any. */
+  async function recorded(requestId: string, tenantId: string, kind: "settle" | "refund") {
+    const row = await db
+      .prepare(
+        `SELECT amount_micro_credits FROM gateway_usage_ledger
+          WHERE request_id = ? AND tenant_id = ? AND kind = ? ORDER BY budget_id LIMIT 1`,
+      )
+      .bind(requestId, tenantId, kind)
+      .first<{ amount_micro_credits: number }>();
+    return row?.amount_micro_credits;
+  }
+
   const budgets: GatewayBudgetPort = {
-    async reserve(input) {
-      assertMicroCredits(input.holdMicroCredits, "hold");
-      const ids = [...new Set(input.budgetIds)].sort();
-      // BYOK (#369): a tenant-scope request with no budget row is admitted
-      // without a hold (the tenant pays its own upstream). An official-scope
-      // request with no budget never is; a BYOK caller with budgets holds them.
-      if (ids.length === 0 && input.credentialScope === "tenant")
-        return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
-      if (ids.length === 0)
-        throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
+    async check(input) {
+      assertMicroCredits(input.floorMicroCredits, "floor");
+      const ids = budgetIdsOf(input);
+      if (ids.length > 0)
+        planCheck(await admissibleBudgets(input.tenantId, ids), input.floorMicroCredits, input.requestId);
       const nowS = toSeconds(deps.clock.now());
-      const expiresS = Math.ceil(input.expiresAt / 1000);
-      const key = input.idempotencyKey ?? null;
-      const statements: D1PreparedStatement[] = [];
-      for (const budgetId of ids) {
+      const claim = claimStatements(input.tenantId, input.requestId, input.idempotency, nowS);
+      if (ids.length === 0 && claim.length === 0) return {};
+      let results: Awaited<ReturnType<D1Database["batch"]>>;
+      try {
+        results = await db.batch([...claim, ...flagStatements(input.tenantId, input.requestId, ids, nowS)]);
+      } catch (cause) {
+        throw (
+          (await claimRefusal(input.tenantId, input.requestId, input.idempotency)) ??
+          new GatewayError("GATEWAY_INTERNAL", { message: "The admission check was refused.", cause })
+        );
+      }
+      const flags = recordedFlags(results, claim.length);
+      return flags.length ? { flags } : {};
+    },
+
+    async debit({ budgetIds, idempotency, ...event }) {
+      assertMicroCredits(event.costMicroCredits, "debit");
+      const ids = budgetIdsOf({ budgetIds, credentialScope: event.credentialScope });
+      const nowS = toSeconds(deps.clock.now());
+      const claim = claimStatements(event.tenantId, event.requestId, idempotency, nowS);
+      if (ids.length === 0 && claim.length === 0) return {};
+      const statements: D1PreparedStatement[] = [...claim];
+      for (const budgetId of ids)
         statements.push(
           db
             .prepare(
               `UPDATE gateway_budget
-                  SET reserved_micro_credits = reserved_micro_credits + ?2,
+                  SET spent_micro_credits = spent_micro_credits + ?2,
                       version = version + 1, updated_at = ?4
                 WHERE id = ?1 AND tenant_id = ?5 AND status = 'active'
                   AND (limit_micro_credits IS NULL OR enforcement <> 'hard'
                        OR spent_micro_credits + reserved_micro_credits + ?2 <= limit_micro_credits)
                   AND NOT EXISTS (SELECT 1 FROM gateway_usage_ledger
-                                   WHERE request_id = ?3 AND budget_id = ?1 AND kind = 'hold')
-                  AND (?6 IS NULL OR NOT EXISTS (
-                        SELECT 1 FROM gateway_usage_ledger
-                         WHERE tenant_id = ?5 AND kind = 'hold' AND ref_kind = '${IDEMPOTENCY_REF}'
-                           AND ref_id = ?6 AND request_id <> ?3))`,
+                                   WHERE request_id = ?3 AND budget_id = ?1 AND kind = 'settle')`,
             )
-            .bind(budgetId, input.holdMicroCredits, input.requestId, nowS, input.tenantId, key),
-          db
-            .prepare(
-              `INSERT INTO gateway_usage_ledger
-                 (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits,
-                  ref_kind, ref_id, expires_at, occurred_at)
-               SELECT ?3 || ':hold:' || ?1, ?3, ?1, 'hold', 'open', ?5, ?2,
-                      CASE WHEN ?6 IS NULL THEN NULL ELSE '${IDEMPOTENCY_REF}' END, ?6, ?7, ?4
-                WHERE changes() = 1`,
-            )
-            .bind(budgetId, input.holdMicroCredits, input.requestId, nowS, input.tenantId, key, expiresS),
-          // All or nothing: no hold row above means this insert breaks the
-          // ledger's CHECK (amount_micro_credits >= 0) and the batch rolls back.
-          db
-            .prepare(
-              `INSERT INTO gateway_usage_ledger
-                 (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits, occurred_at)
-               SELECT ?2 || ':refused:' || ?1, ?2, ?1, 'release', 'refused', ?3, -1, ?4
-                WHERE changes() = 0`,
-            )
-            .bind(budgetId, input.requestId, input.tenantId, nowS),
+            .bind(budgetId, event.costMicroCredits, event.requestId, nowS, event.tenantId),
+          db.prepare(SETTLE_INSERT).bind(...settleBinds(budgetId, event)),
+          // All or nothing: no settle row above means this guard rolls the batch back.
+          db.prepare(refusalGuard("changes() = 0")).bind(budgetId, event.requestId, event.tenantId, nowS),
         );
-      }
-      // Flags, recorded in the same transaction as the holds (core budgetFlags,
-      // in SQL over the counters after the hold): a soft budget past its limit
-      // once per request, an alert threshold once per limit and threshold.
-      const eventStatements = ids.flatMap((budgetId) => [
-        db
-          .prepare(
-            `INSERT OR IGNORE INTO gateway_budget_event ${EVENT_COLUMNS}
-             SELECT ?3 || ':soft:' || id, tenant_id, id, scope, scope_id, 'soft_exceeded', enforcement, ?3, ?3,
-                    limit_micro_credits, spent_micro_credits, reserved_micro_credits, NULL, ?4
-               FROM gateway_budget
-              WHERE id = ?1 AND tenant_id = ?2 AND enforcement = 'soft' AND limit_micro_credits IS NOT NULL
-                AND spent_micro_credits + reserved_micro_credits > limit_micro_credits
-             ${EVENT_RETURNING}`,
-          )
-          .bind(budgetId, input.tenantId, input.requestId, nowS),
-        db
-          .prepare(
-            `INSERT OR IGNORE INTO gateway_budget_event ${EVENT_COLUMNS}
-             SELECT ?3 || ':alert:' || id, tenant_id, id, scope, scope_id, 'alert_threshold', enforcement,
-                    'limit=' || limit_micro_credits || ';pct=' || COALESCE(alert_threshold_pct, 100), ?3,
-                    limit_micro_credits, spent_micro_credits, reserved_micro_credits,
-                    COALESCE(alert_threshold_pct, 100), ?4
-               FROM gateway_budget
-              WHERE id = ?1 AND tenant_id = ?2 AND limit_micro_credits IS NOT NULL
-                AND (alert_threshold_pct IS NOT NULL OR enforcement = 'alert')
-                AND (spent_micro_credits + reserved_micro_credits) * 100
-                    >= limit_micro_credits * COALESCE(alert_threshold_pct, 100)
-             ${EVENT_RETURNING}`,
-          )
-          .bind(budgetId, input.tenantId, input.requestId, nowS),
-      ]);
       let results: Awaited<ReturnType<D1Database["batch"]>>;
       try {
-        results = await db.batch([...statements, ...eventStatements]);
+        results = await db.batch([...statements, ...flagStatements(event.tenantId, event.requestId, ids, nowS)]);
       } catch (cause) {
-        throw await explainRefusal(input, ids, cause);
+        const refused = await claimRefusal(event.tenantId, event.requestId, idempotency);
+        if (refused) throw refused;
+        planDebit(await admissibleBudgets(event.tenantId, ids), event.costMicroCredits, event.requestId);
+        throw new GatewayError("GATEWAY_INTERNAL", {
+          message: "The debit was refused.",
+          details: { requestId: event.requestId },
+          cause,
+        });
       }
-      const flags = results
-        .slice(statements.length)
-        .flatMap((result) => (result.results ?? []) as BudgetEventRow[])
-        .map(budgetFlag);
-      return {
-        requestId: input.requestId,
-        holds: ids.map((budgetId) => ({ budgetId, microCredits: input.holdMicroCredits })),
-        expiresAt: input.expiresAt,
-        ...(flags.length ? { flags } : {}),
-      };
+      const flags = recordedFlags(results, statements.length);
+      return flags.length ? { flags } : {};
     },
 
-    async settle(event) {
-      assertMicroCredits(event.costMicroCredits, "cost");
-      const existing = await db
-        .prepare(
-          `SELECT amount_micro_credits FROM gateway_usage_ledger
-            WHERE request_id = ? AND tenant_id = ? AND kind = 'settle' LIMIT 1`,
-        )
-        .bind(event.requestId, event.tenantId)
-        .first<{ amount_micro_credits: number }>();
-      if (existing)
-        return { requestId: event.requestId, costMicroCredits: existing.amount_micro_credits, duplicate: true };
-      const { results: holds } = await db
-        .prepare(
-          `SELECT budget_id FROM gateway_usage_ledger
-            WHERE request_id = ? AND tenant_id = ? AND kind = 'hold' AND ${UNSETTLED_HOLD}
-            ORDER BY budget_id`,
-        )
-        .bind(event.requestId, event.tenantId)
-        .all<{ budget_id: string }>();
-      // An unbudgeted BYOK request (#369) was admitted holding nothing: no
-      // budget moves. Official scope with no hold is never settled for free.
-      if (holds.length === 0 && event.credentialScope === "tenant")
-        return { requestId: event.requestId, costMicroCredits: 0, duplicate: false };
-      if (holds.length === 0)
+    async charge({ budgetIds, ...event }: BudgetEntryInput) {
+      assertMicroCredits(event.costMicroCredits, "charge");
+      const ids = budgetIdsOf({ budgetIds });
+      const prior = await recorded(event.requestId, event.tenantId, "settle");
+      if (prior !== undefined)
+        return { requestId: event.requestId, kind: "charge", costMicroCredits: prior, duplicate: true };
+      const nowS = toSeconds(deps.clock.now());
+      const statements: D1PreparedStatement[] = [];
+      for (const budgetId of ids)
+        statements.push(
+          // Never refused: the work was done. Suspension and limits only gate admission.
+          db
+            .prepare(
+              `UPDATE gateway_budget
+                  SET spent_micro_credits = spent_micro_credits + ?2,
+                      version = version + 1, updated_at = ?4
+                WHERE id = ?1 AND tenant_id = ?5
+                  AND NOT EXISTS (SELECT 1 FROM gateway_usage_ledger
+                                   WHERE request_id = ?3 AND budget_id = ?1 AND kind = 'settle')`,
+            )
+            .bind(budgetId, event.costMicroCredits, event.requestId, nowS, event.tenantId),
+          db.prepare(SETTLE_INSERT).bind(...settleBinds(budgetId, event)),
+        );
+      const results = await db.batch([...statements, ...flagStatements(event.tenantId, event.requestId, ids, nowS)]);
+      if (results.some((result, index) => index < statements.length && index % 2 === 1 && result.meta.changes > 0))
+        return { requestId: event.requestId, kind: "charge", costMicroCredits: event.costMicroCredits, duplicate: false };
+      // A concurrent run charged first: report what it recorded.
+      const winner = await recorded(event.requestId, event.tenantId, "settle");
+      if (winner === undefined)
         throw new GatewayError("GATEWAY_INTERNAL", {
-          message: "Settlement for a request with no open reservation.",
+          message: "The charge found none of its budgets.",
           details: { requestId: event.requestId },
         });
+      return { requestId: event.requestId, kind: "charge", costMicroCredits: winner, duplicate: true };
+    },
+
+    async refund(input) {
+      const { results: debited } = await db
+        .prepare(
+          `SELECT budget_id, amount_micro_credits FROM gateway_usage_ledger
+            WHERE request_id = ? AND tenant_id = ? AND kind = 'settle' ORDER BY budget_id`,
+        )
+        .bind(input.requestId, input.tenantId)
+        .all<{ budget_id: string; amount_micro_credits: number }>();
+      if (debited.length === 0)
+        throw new GatewayError("GATEWAY_INTERNAL", {
+          message: "Refund for a request that recorded no money.",
+          details: { requestId: input.requestId },
+        });
+      const amount = debited[0]!.amount_micro_credits;
       const nowS = toSeconds(deps.clock.now());
-      const holdStatus = event.costMicroCredits > 0 ? "settled" : "released";
-      const openHold = `SELECT amount_micro_credits FROM gateway_usage_ledger
-        WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND ${UNSETTLED_HOLD}`;
+      const debitRow = `SELECT amount_micro_credits FROM gateway_usage_ledger
+        WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'settle'`;
       const statements: D1PreparedStatement[] = [];
-      for (const { budget_id: budgetId } of holds)
+      for (const { budget_id: budgetId } of debited)
         statements.push(
           db
             .prepare(
               `UPDATE gateway_budget
-                  SET spent_micro_credits = spent_micro_credits + ?3,
-                      reserved_micro_credits = reserved_micro_credits - (${openHold}),
-                      version = version + 1, updated_at = ?4
-                WHERE id = ?1 AND EXISTS (${openHold})`,
+                  SET spent_micro_credits = spent_micro_credits - (${debitRow}),
+                      version = version + 1, updated_at = ?3
+                WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM gateway_usage_ledger
+                                               WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'refund')`,
             )
-            .bind(budgetId, event.requestId, event.costMicroCredits, nowS),
-          db
-            .prepare(
-              `UPDATE gateway_usage_ledger SET status = ?3
-                WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND ${UNSETTLED_HOLD}`,
-            )
-            .bind(budgetId, event.requestId, holdStatus),
+            .bind(budgetId, input.requestId, nowS),
           db
             .prepare(
               `INSERT INTO gateway_usage_ledger
-                 (id, request_id, budget_id, kind, status, tenant_id, user_id, key_id,
-                  amount_micro_credits, model_code, model_kind, credential_scope,
-                  input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
-                  units_json, usage_source, price_version, catalog_version,
-                  upstream_id, account_id, error_code, occurred_at)
-               SELECT ?2 || ':settle:' || ?1, ?2, ?1, 'settle', ?3, ?4, ?5, ?6,
-                      ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
-                WHERE changes() = 1`,
+                 (id, request_id, budget_id, kind, status, tenant_id, user_id, key_id, amount_micro_credits,
+                  model_code, model_kind, credential_scope, units_json, price_version, catalog_version,
+                  upstream_id, account_id, error_code, ref_kind, ref_id, occurred_at)
+               SELECT ?2 || ':refund:' || ?1, ?2, ?1, 'refund', ?3, s.tenant_id, s.user_id, s.key_id,
+                      s.amount_micro_credits, s.model_code, s.model_kind, s.credential_scope, s.units_json,
+                      s.price_version, s.catalog_version, s.upstream_id, s.account_id, ?4, 'settle', s.id, ?5
+                 FROM gateway_usage_ledger s
+                WHERE s.request_id = ?2 AND s.budget_id = ?1 AND s.kind = 'settle' AND changes() = 1`,
             )
-            .bind(
-              budgetId,
-              event.requestId,
-              event.status,
-              event.tenantId,
-              event.userId,
-              event.keyId ?? null,
-              event.costMicroCredits,
-              event.modelCode,
-              event.kind,
-              event.credentialScope,
-              event.usage.inputTokens,
-              event.usage.outputTokens,
-              event.usage.cachedInputTokens,
-              event.usage.cacheWriteTokens,
-              JSON.stringify(event.usage.units),
-              event.usage.source,
-              event.priceVersion,
-              event.catalogVersion,
-              event.upstreamId,
-              event.accountId ?? null,
-              event.errorCode ?? null,
-              toSeconds(event.occurredAt),
-            ),
+            .bind(budgetId, input.requestId, input.status, input.errorCode ?? null, toSeconds(input.occurredAt)),
         );
       const results = await db.batch(statements);
-      const wrote = results.some((result, index) => index % 3 === 2 && result.meta.changes > 0);
-      if (wrote) return { requestId: event.requestId, costMicroCredits: event.costMicroCredits, duplicate: false };
-      // A concurrent settlement closed the holds first: report its cost.
-      const winner = await db
-        .prepare(
-          `SELECT amount_micro_credits FROM gateway_usage_ledger
-            WHERE request_id = ? AND tenant_id = ? AND kind = 'settle' LIMIT 1`,
-        )
-        .bind(event.requestId, event.tenantId)
-        .first<{ amount_micro_credits: number }>();
-      if (!winner)
-        throw new GatewayError("GATEWAY_INTERNAL", {
-          message: "Settlement wrote nothing.",
-          details: { requestId: event.requestId },
-        });
-      return { requestId: event.requestId, costMicroCredits: winner.amount_micro_credits, duplicate: true };
+      const wrote = results.some((result, index) => index % 2 === 1 && result.meta.changes > 0);
+      return { requestId: input.requestId, kind: "refund", costMicroCredits: amount, duplicate: !wrote };
     },
 
-    async markSettleFailed({ requestId, tenantId, errorCode }) {
-      // Only the hold rows change; budget counters keep the hold reserved.
-      const [, state] = await db.batch([
-        db
-          .prepare(
-            `UPDATE gateway_usage_ledger SET status = 'settle_failed', error_code = ?3
-              WHERE request_id = ?1 AND tenant_id = ?2 AND kind = 'hold' AND status = 'open'`,
-          )
-          .bind(requestId, tenantId, errorCode),
-        db
-          .prepare(
-            `SELECT MAX(kind = 'settle') AS settled, MAX(kind = 'hold' AND status = 'settle_failed') AS failed
-               FROM gateway_usage_ledger WHERE request_id = ?1 AND tenant_id = ?2`,
-          )
-          .bind(requestId, tenantId),
-      ]);
-      const row = (state?.results as Array<{ settled: number | null; failed: number | null }> | undefined)?.[0];
-      if (row?.settled) return { status: "settled" };
-      if (row?.failed) return { status: "settle_failed" };
-      throw new GatewayError("GATEWAY_INTERNAL", {
-        message: "Settlement failure for a request with no reservation.",
-        details: { requestId },
-      });
+    async endIdempotency({ requestId, tenantId }) {
+      await db
+        .prepare(
+          `UPDATE gateway_idempotency_claim SET ended_at = ?3
+            WHERE request_id = ?1 AND tenant_id = ?2 AND ended_at IS NULL`,
+        )
+        .bind(requestId, tenantId, toSeconds(deps.clock.now()))
+        .run();
     },
 
     async snapshot({ tenantId, budgetIds }) {
       return (await budgetRows(tenantId, budgetIds)).map(budgetState);
-    },
-
-    async expiredHolds({ before, limit }) {
-      const { results } = await db
-        .prepare(
-          `SELECT request_id, tenant_id, MIN(expires_at) AS expires_at FROM gateway_usage_ledger
-            WHERE kind = 'hold' AND status = 'open' AND expires_at <= ?1
-            GROUP BY request_id, tenant_id
-            ORDER BY expires_at, request_id LIMIT ?2`,
-        )
-        .bind(toSeconds(before), limit)
-        .all<{ request_id: string; tenant_id: string; expires_at: number }>();
-      return results.map((row) => ({ requestId: row.request_id, tenantId: row.tenant_id, expiresAt: toMs(row.expires_at) }));
-    },
-
-    async expire({ requestId, tenantId, before }) {
-      const beforeS = toSeconds(before);
-      // Only `open` holds past their expiry: settle_failed holds wait for reconciliation.
-      const expiredHold = `SELECT amount_micro_credits FROM gateway_usage_ledger
-        WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND status = 'open' AND expires_at <= ?3`;
-      const { results: holds } = await db
-        .prepare(
-          `SELECT budget_id FROM gateway_usage_ledger
-            WHERE request_id = ? AND tenant_id = ? AND kind = 'hold' AND status = 'open' AND expires_at <= ?
-            ORDER BY budget_id`,
-        )
-        .bind(requestId, tenantId, beforeS)
-        .all<{ budget_id: string }>();
-      if (holds.length === 0) return { expired: false };
-      const nowS = toSeconds(deps.clock.now());
-      const statements: D1PreparedStatement[] = [];
-      for (const { budget_id: budgetId } of holds)
-        statements.push(
-          db
-            .prepare(
-              `UPDATE gateway_budget
-                  SET reserved_micro_credits = reserved_micro_credits - (${expiredHold}),
-                      version = version + 1, updated_at = ?4
-                WHERE id = ?1 AND EXISTS (${expiredHold})`,
-            )
-            .bind(budgetId, requestId, beforeS, nowS),
-          db
-            .prepare(
-              `UPDATE gateway_usage_ledger SET status = 'expired'
-                WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND status = 'open' AND expires_at <= ?3`,
-            )
-            .bind(budgetId, requestId, beforeS),
-          // The request's one settle row, at zero: a late settlement is a duplicate.
-          db
-            .prepare(
-              `INSERT INTO gateway_usage_ledger
-                 (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits, occurred_at)
-               SELECT ?2 || ':settle:' || ?1, ?2, ?1, 'settle', 'expired', ?3, 0, ?4
-                WHERE changes() = 1`,
-            )
-            .bind(budgetId, requestId, tenantId, nowS),
-        );
-      const results = await db.batch(statements);
-      return { expired: results.some((result, index) => index % 3 === 2 && result.meta.changes > 0) };
     },
   };
 
@@ -554,7 +545,7 @@ export function createD1GatewayBudgetPorts(
     async get({ tenantId, requestId }) {
       const row = await db
         .prepare(
-          `SELECT ${SETTLE_COLUMNS} FROM gateway_usage_ledger l
+          `SELECT ${SETTLE_COLUMNS} FROM ${WITH_REFUND}
             WHERE l.tenant_id = ? AND l.request_id = ? AND l.kind = 'settle'
             ORDER BY l.budget_id LIMIT 1`,
         )
@@ -565,7 +556,7 @@ export function createD1GatewayBudgetPorts(
     async query(filter) {
       const { results } = await db
         .prepare(
-          `SELECT ${SETTLE_COLUMNS} FROM gateway_usage_ledger l
+          `SELECT ${SETTLE_COLUMNS} FROM ${WITH_REFUND}
             WHERE l.tenant_id = ?1 AND l.kind = 'settle' AND ${ONE_SETTLE_PER_REQUEST}
               AND (?2 IS NULL OR l.user_id = ?2) AND (?3 IS NULL OR l.key_id = ?3)
               AND (?4 IS NULL OR l.occurred_at >= ?4) AND (?5 IS NULL OR l.occurred_at < ?5)
@@ -585,20 +576,4 @@ export function createD1GatewayBudgetPorts(
   };
 
   return { budgets, ledger };
-}
-
-/**
- * Stale-hold sweep for the Worker `scheduled` handler and the admin route:
- * gateway-core's sweepExpiredGatewayHolds over these ports. Idempotent.
- */
-export function sweepGatewayHolds(
-  env: Pick<Env, "DB">,
-  options: { limit?: number; clock?: GatewayClock; logger?: GatewayLogger } = {},
-): Promise<HoldSweepResult> {
-  const clock = options.clock ?? monotonicClock();
-  const { budgets } = createD1GatewayBudgetPorts(env.DB, { clock });
-  return sweepExpiredGatewayHolds(
-    { budgets, clock, logger: options.logger ?? workersLogger() },
-    options.limit !== undefined ? { limit: options.limit } : {},
-  );
 }

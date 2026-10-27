@@ -412,7 +412,7 @@ describe("claude-agent-acp through the Anthropic Messages gateway", () => {
     }
     expect(calls.some((call) => call.body.includes('"cache_control"'))).toBe(true);
 
-    // Metering: one settled ledger row per message call, on the public code, holds all released.
+    // Metering: one settled ledger row per message call, on the public code, nothing reserved.
     const rows = await memory.ports.ledger.query({ tenantId: tenantOf(handoff), limit: 1000 });
     expect(rows.map((row) => row.requestId).sort()).toEqual(calls.map((call) => call.requestId).sort());
     for (const row of rows) {

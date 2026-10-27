@@ -10,8 +10,13 @@
  *                only; no header (x-user-id included) is read as identity.
  *   routes       gateway_model / gateway_price / gateway_upstream_credential.
  *   credentials  gateway-credentials.ts (#366): one scope per request.
- *   budgets      gateway-budget.ts (#363, N2): text is postpay — `reserve` is
- *                the read-only credit-floor check, `settle` charges once.
+ *   budgets      gateway-budget-port.ts over gateway-budget.ts (#399): media
+ *                prepay `debit`, text `check` against the credit floor, and
+ *                the settle runs' `charge` / `refund`.
+ *   settlement   gateway-settle.ts (#399, N2): each follow-up money write is
+ *                journaled as an `api-node:gateway-settle` Durable Run (with
+ *                its cloud_run_dispatch outbox row) and applied by the outbox
+ *                worker's BullMQ runtime; nothing is retried in process.
  *   limits       gateway-limits.ts (#364).
  * Nothing is kept in process memory between requests (stateless nodes).
  * Ports this adapter does not implement yet are explicit `unavailablePort`s.
@@ -28,7 +33,6 @@ import {
   GATEWAY_REQUEST_ID_HEADER,
   type GatewayApp,
   type GatewayAppOptions,
-  type GatewayBudgetPort,
   type GatewayCatalog,
   type GatewayClock,
   type GatewayCredentialPort,
@@ -42,6 +46,7 @@ import {
   type GatewayPrice,
   type GatewayPriceRate,
   type GatewayRoutesPort,
+  type GatewaySettlementPort,
   type GatewayUpstreamPort,
   type UsageEvent,
 } from "@clash/gateway-core";
@@ -49,13 +54,10 @@ import { ModelCardSchema } from "@clash/shared-types";
 import type { ProviderAccountAvailability } from "@clash/shared-types/model-routing";
 import { Hono } from "hono";
 import { z } from "zod";
-import type {
-  GatewayBudgetDatabase,
-  GatewayBudgetSqlClient,
-  PgGatewayBudgetStore,
-} from "./gateway-budget.ts";
-import { createPgGatewayBudgetStore } from "./gateway-budget.ts";
+import type { GatewayBudgetDatabase, GatewayBudgetSqlClient } from "./gateway-budget.ts";
+import { createPgGatewayBudgetPort } from "./gateway-budget-port.ts";
 import { tenantKeyOf } from "./gateway-credentials.ts";
+import { createPgGatewaySettlementPort } from "./gateway-settle.ts";
 import type { PgGatewayLimitPort } from "./gateway-limits.ts";
 import { apiNodeLog } from "./log.ts";
 import { drainableSseBody, refuseWhenStopped, type GatewayDrainController } from "./gateway-health.ts";
@@ -357,137 +359,11 @@ export function createPgGatewayRoutesPort(deps: {
   };
 }
 
-// ─── Budgets (N2 text postpay over the core reserve/settle contract) ─────────
-
 /**
- * The core's reserve/settle contract mapped onto N2 (#363): `reserve` is the
- * read-only credit-floor check (no hold is written), `settle` is the one
- * postpay charge. Budget ids are re-derived from the ledger owner on settle,
- * so no state lives in this process between the two calls.
+ * Read side of the ledger: one event per request with a money row, a text
+ * `charge` or a media `debit`. A refunded debit reads as its refund (the
+ * refund's status and error code) at a net cost of zero.
  */
-export function createN2GatewayBudgetPort(deps: {
-  db: GatewayBudgetDatabase;
-  store?: PgGatewayBudgetStore;
-  /** Retry backoff for a transiently failed charge; SETTLE_RETRY_DELAYS_MS by default. */
-  settleRetryDelaysMs?: readonly number[];
-}): Pick<GatewayBudgetPort, "reserve" | "settle" | "markSettleFailed" | "snapshot" | "expiredHolds" | "expire"> {
-  const store = deps.store ?? createPgGatewayBudgetStore(deps.db);
-  async function budgetIdsOf(event: UsageEvent): Promise<string[]> {
-    const { rows } = await deps.db.query<{ budget_ids: unknown }>(
-      `SELECT ${BUDGET_IDS_SQL("$1::text", "$2::text", "$3::text")} AS budget_ids`,
-      [event.tenantId, event.userId, event.keyId ?? ""],
-    );
-    return parseList(rows[0]?.budget_ids) ?? [];
-  }
-  return {
-    async reserve(input) {
-      // Fail closed: an official-scope request (any caller: virtual key,
-      // clsh_, session) is admitted only against a real N2 budget row; no
-      // row means no free pass — the coded 402. BYOK (#369): a tenant-scope
-      // request with no row is admitted (the tenant pays its own upstream);
-      // with a row it is held to that budget like any other.
-      if (input.budgetIds.length === 0 && input.credentialScope === "tenant")
-        return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
-      if (input.budgetIds.length === 0)
-        throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
-      await store.admitText({ tenantId: input.tenantId, budgetIds: input.budgetIds });
-      return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
-    },
-    async settle(event) {
-      return settleDurably(() => settleOnce(event), deps.settleRetryDelaysMs ?? SETTLE_RETRY_DELAYS_MS);
-    },
-    // N2 writes no hold, so a failed settlement has nothing reserved to mark.
-    async markSettleFailed() {
-      return { status: "settle_failed" as const };
-    },
-    async snapshot(input) {
-      const rows = await store.snapshot({
-        tenantId: input.tenantId,
-        ...(input.budgetIds?.length ? { budgetIds: input.budgetIds } : {}),
-      });
-      return rows.map((row) => ({
-        id: row.id,
-        scope: row.scope as "tenant" | "user" | "key",
-        scopeId: row.scopeId,
-        limitMicroCredits: row.limitMicroCredits,
-        spentMicroCredits: row.spentMicroCredits,
-        reservedMicroCredits: 0,
-        version: 0,
-        enforcement: row.enforcement as "hard" | "soft" | "alert",
-      }));
-    },
-    async expiredHolds() {
-      return [];
-    },
-    async expire() {
-      return { expired: false };
-    },
-  };
-  async function settleOnce(event: UsageEvent) {
-      const budgetIds = await budgetIdsOf(event);
-      // An unbudgeted BYOK request moves no platform money (#369).
-      if (budgetIds.length === 0 && event.credentialScope === "tenant")
-        return { requestId: event.requestId, costMicroCredits: 0, duplicate: false };
-      // Admission refused budgetless official callers; a budget vanishing
-      // mid-request must not settle for free either.
-      if (budgetIds.length === 0)
-        throw new GatewayError("GATEWAY_INTERNAL", { details: { reason: "settle_without_budget" } });
-      const result = await store.chargeText({
-        requestId: event.requestId,
-        tenantId: event.tenantId,
-        userId: event.userId,
-        ...(event.keyId ? { keyId: event.keyId } : {}),
-        budgetIds,
-        costMicroCredits: event.costMicroCredits,
-        status: event.status,
-        modelCode: event.modelCode,
-        modelKind: event.kind,
-        upstreamId: event.upstreamId,
-        ...(event.accountId ? { accountId: event.accountId } : {}),
-        credentialScope: event.credentialScope,
-        priceVersion: event.priceVersion,
-        catalogVersion: event.catalogVersion,
-        usageSource: event.usage.source,
-        units: event.usage.units,
-        inputTokens: event.usage.inputTokens,
-        outputTokens: event.usage.outputTokens,
-        cachedInputTokens: event.usage.cachedInputTokens,
-        cacheWriteTokens: event.usage.cacheWriteTokens,
-      });
-      return {
-        requestId: event.requestId,
-        costMicroCredits: result.chargedMicroCredits,
-        duplicate: result.duplicate,
-      };
-  }
-}
-
-/**
- * Backoff before each retry of a postpay charge. The charge is one Postgres
- * transaction keyed by the ledger's unique `(request_id, budget_id, kind)`, so
- * a retry after an unacknowledged commit is a recorded no-op (`duplicate`),
- * never a second charge.
- */
-export const SETTLE_RETRY_DELAYS_MS: readonly number[] = [50, 250, 1000];
-
-/**
- * Durable settle (N2): retry a charge that failed for a transient reason
- * (connection loss, serialization failure — anything not a coded
- * GatewayError) before giving up. Coded refusals (budget gone, idempotency
- * conflict) are final and surface at once.
- */
-export async function settleDurably<T>(work: () => Promise<T>, delaysMs: readonly number[]): Promise<T> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await work();
-    } catch (error) {
-      if (error instanceof GatewayError || attempt >= delaysMs.length) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
-    }
-  }
-}
-
-/** Read side of the N2 ledger: one tenant's `charge` rows, one per request. */
 export function createPgGatewayLedgerPort(db: GatewayBudgetSqlClient): GatewayLedgerPort {
   type Row = {
     request_id: string;
@@ -512,10 +388,17 @@ export function createPgGatewayLedgerPort(db: GatewayBudgetSqlClient): GatewayLe
     usage_source: string | null;
     occurred_at: string | number;
   };
-  const COLUMNS = `DISTINCT ON (request_id) request_id, tenant_id, user_id, key_id, model_code, model_kind,
-    upstream_id, account_id, credential_scope, amount_micro_credits, price_version, catalog_version,
-    status, error_code, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens,
-    units_json, usage_source, occurred_at`;
+  const SOURCE = `gateway_usage_ledger l
+    LEFT JOIN gateway_usage_ledger r
+      ON l.kind = 'debit' AND r.kind = 'refund' AND r.request_id = l.request_id AND r.budget_id = l.budget_id`;
+  const COLUMNS = `DISTINCT ON (l.request_id) l.request_id, l.tenant_id, l.user_id, l.key_id, l.model_code,
+    l.model_kind, l.upstream_id, l.account_id, l.credential_scope,
+    CASE WHEN r.id IS NULL THEN l.amount_micro_credits ELSE 0 END AS amount_micro_credits,
+    l.price_version, l.catalog_version,
+    CASE WHEN r.id IS NULL THEN l.status ELSE COALESCE(r.reason, 'upstream_failed') END AS status,
+    CASE WHEN r.id IS NULL THEN l.error_code ELSE r.error_code END AS error_code,
+    l.input_tokens, l.output_tokens, l.cached_input_tokens, l.cache_write_tokens,
+    l.units_json, l.usage_source, l.occurred_at`;
   const toEvent = (row: Row): UsageEvent => ({
     requestId: row.request_id,
     tenantId: row.tenant_id,
@@ -544,20 +427,20 @@ export function createPgGatewayLedgerPort(db: GatewayBudgetSqlClient): GatewayLe
   return {
     async get({ tenantId, requestId }) {
       const { rows } = await db.query<Row>(
-        `SELECT ${COLUMNS} FROM gateway_usage_ledger
-          WHERE tenant_id = $1 AND request_id = $2 AND kind = 'charge'
-          ORDER BY request_id, budget_id`,
+        `SELECT ${COLUMNS} FROM ${SOURCE}
+          WHERE l.tenant_id = $1 AND l.request_id = $2 AND l.kind IN ('charge', 'debit')
+          ORDER BY l.request_id, l.budget_id`,
         [tenantId, requestId],
       );
       return rows[0] ? toEvent(rows[0]) : null;
     },
     async query(filter) {
       const { rows } = await db.query<Row>(
-        `SELECT * FROM (SELECT ${COLUMNS} FROM gateway_usage_ledger
-          WHERE tenant_id = $1 AND kind = 'charge'
-            AND ($2::text IS NULL OR user_id = $2) AND ($3::text IS NULL OR key_id = $3)
-            AND ($4::bigint IS NULL OR occurred_at >= $4) AND ($5::bigint IS NULL OR occurred_at < $5)
-          ORDER BY request_id, budget_id) t
+        `SELECT * FROM (SELECT ${COLUMNS} FROM ${SOURCE}
+          WHERE l.tenant_id = $1 AND l.kind IN ('charge', 'debit')
+            AND ($2::text IS NULL OR l.user_id = $2) AND ($3::text IS NULL OR l.key_id = $3)
+            AND ($4::bigint IS NULL OR l.occurred_at >= $4) AND ($5::bigint IS NULL OR l.occurred_at < $5)
+          ORDER BY l.request_id, l.budget_id) t
           ORDER BY occurred_at DESC, request_id DESC LIMIT $6`,
         [
           filter.tenantId,
@@ -597,7 +480,8 @@ export interface PgGatewayPortsInput {
   clock?: GatewayClock;
   logger?: GatewayLogger;
   upstream?: GatewayUpstreamPort;
-  settleRetryDelaysMs?: readonly number[];
+  /** Settle-run delivery; the Postgres run journal + outbox (gateway-settle.ts) by default. */
+  settlement?: GatewaySettlementPort;
 }
 
 export function createPgGatewayPorts(input: PgGatewayPortsInput): GatewayPorts {
@@ -625,10 +509,8 @@ export function createPgGatewayPorts(input: PgGatewayPortsInput): GatewayPorts {
       }),
       recordSuccess: async () => {},
     },
-    budgets: createN2GatewayBudgetPort({
-      db: input.db,
-      ...(input.settleRetryDelaysMs ? { settleRetryDelaysMs: input.settleRetryDelaysMs } : {}),
-    }),
+    budgets: createPgGatewayBudgetPort({ db: input.db, clock }),
+    settlement: input.settlement ?? createPgGatewaySettlementPort({ db: input.db, clock }),
     limits: input.limits,
     ledger: createPgGatewayLedgerPort(input.db),
     blobs: unavailablePort("blobs"),
@@ -806,8 +688,8 @@ export interface GatewayNodeRoutesOptions {
  * Streams (#368) are gateway-core's relay (stream.ts), unchanged: the core
  * injects `stream_options.include_usage`, tees the upstream body (caller +
  * usage tap), and settles once when the stream ends — completed, truncated,
- * upstream error, timeout or caller disconnect — through the N2 budget port
- * (postpay `charge` of observed usage, estimated from bytes when the upstream
+ * upstream error, timeout or caller disconnect — by journaling a `charge`
+ * settle run for the observed usage (estimated from bytes when the upstream
  * reported none). This layer only adds keep-alives and the TTFT log.
  */
 export function createGatewayNodeRoutes(ports: GatewayPorts, options: GatewayNodeRoutesOptions = {}): Hono {

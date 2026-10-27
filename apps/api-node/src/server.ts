@@ -17,6 +17,7 @@ import {
   createPgGatewayPorts,
   gatewayRole,
 } from "./gateway-node.ts";
+import { readGatewaySettlementFloor } from "./gateway-budget.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
 import { createPgGatewayBilling } from "./gateway-billing.ts";
 import { createGatewayBillingTenantRoutes, gatewayBillingPurchaseConfigFromEnv } from "./gateway-billing-routes.ts";
@@ -128,7 +129,16 @@ export function startServer(
         purchase: gatewayBillingPurchaseConfigFromEnv(env),
       }),
     );
-    app.route("/", createGatewayNodeRoutes(ports, { work: gatewayWork, drain }));
+    app.route(
+      "/",
+      createGatewayNodeRoutes(ports, {
+        work: gatewayWork,
+        drain,
+        // The text credit floor knob (#399): the same gateway_config value the
+        // settle run's postpaid charge caps at.
+        app: { creditFloor: () => readGatewaySettlementFloor(database.db) },
+      }),
+    );
     stopGatewayMaintenance = startGatewayMaintenance({
       db: database.db,
       limits,

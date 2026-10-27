@@ -369,7 +369,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
 
   /**
    * limit += delta on a fundable wallet, chained on the previous write. A
-   * removal (negative delta) never takes the limit below spend + open holds.
+   * removal (negative delta) never takes the limit below spend.
    */
   const moveWalletLimit = (tenantId: string, delta: number, nowS: number) =>
     db
@@ -1107,7 +1107,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
    * Credit correction on the tenant wallet: limit += delta, as a ledger
    * `adjust` entry (amount |delta|; ref_kind `admin_credit` or `admin_debit`
    * gives the direction) carrying the operator's reason, plus the audit row,
-   * in one batch. A debit never takes the wallet below spend + open holds
+   * in one batch. A debit never takes the wallet below spend
    * (GATEWAY_BUDGET_BELOW_USAGE). One idempotency key is one correction.
    */
   async function adjustWallet(input: {
@@ -1133,7 +1133,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
    * the audit row naming provider and event id. One idempotency key (use the
    * provider's refund id) is one refund: a redelivered webhook replays it, the
    * same key with another amount or ref is GATEWAY_IDEMPOTENCY_CONFLICT. Like
-   * an admin debit it never takes the wallet below spend + open holds
+   * an admin debit it never takes the wallet below spend
    * (GATEWAY_BUDGET_BELOW_USAGE: credits already used are not clawed back; the
    * plugin decides, e.g. suspend the wallet with setWalletStatus).
    */

@@ -7,10 +7,13 @@
  */
 export const HOSTED_GENERATION_OWNER = "api-cf:generation" as const;
 export const EXECUTABLE_ACTION_OWNER = "api-cf:executable" as const;
+/** Gateway follow-up money writes (#399, N2): one run per charge or refund. */
+export const GATEWAY_SETTLE_OWNER = "api-cf:gateway-settle" as const;
 
 export const CLOUD_DURABLE_RUN_OWNERS = [
   HOSTED_GENERATION_OWNER,
   EXECUTABLE_ACTION_OWNER,
+  GATEWAY_SETTLE_OWNER,
 ] as const;
 
 export type CloudDurableRunOwner = (typeof CLOUD_DURABLE_RUN_OWNERS)[number];

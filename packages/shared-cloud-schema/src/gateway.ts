@@ -371,11 +371,12 @@ export const GATEWAY_LEDGER_KINDS = [
 
 /**
  * Append-only money journal, one entry per (request_id, budget_id, kind).
- * Only a hold's status changes in place, in the batch that appends its
- * closing entry, or to `settle_failed` (with error_code) when settlement
- * failed, pending reconciliation by a later settle. Operational columns
- * (upstream/account/provider request id, error code) are NULLed after 30
- * days; rows are kept 13 months.
+ * Gateway requests (#399, 0042): `settle` is what a request owes (a media
+ * debit at admission, a text charge by its settle run), `refund` returns a
+ * failed media debit. `hold` rows are history of the retired reserve path;
+ * 0042 closed every one of them. Operational columns (upstream/account/
+ * provider request id, error code) are NULLed after 30 days; rows are kept
+ * 13 months.
  */
 export const gatewayUsageLedger = sqliteTable(
   "gateway_usage_ledger",
@@ -431,16 +432,11 @@ export const gatewayUsageLedger = sqliteTable(
       table.budgetId,
       table.status,
     ),
-    /** Stale-hold sweeper: open holds by expiry (0039). */
-    holdExpiryIdx: index("gateway_usage_ledger_hold_expiry_idx").on(
-      table.kind,
-      table.status,
-      table.expiresAt,
-    ),
     /** Platform-wide explorer reads and the retention job (0052). */
     timeIdx: index("gateway_usage_ledger_time_idx").on(table.occurredAt),
     /** Reconciliation adjustments by run (0052). */
     refIdx: index("gateway_usage_ledger_ref_idx").on(table.refKind, table.refId),
+
     kindCheck: check(
       "gateway_usage_ledger_kind_check",
       sql`${table.kind} IN (${sql.raw(GATEWAY_LEDGER_KINDS.map((kind) => `'${kind}'`).join(", "))})`,
@@ -455,10 +451,10 @@ export const gatewayUsageLedger = sqliteTable(
 export const GATEWAY_BUDGET_EVENT_KINDS = ["soft_exceeded", "alert_threshold"] as const;
 
 /**
- * Budget notifications (0041, #354), written in the reservation's batch:
- * `soft_exceeded` once per request admitted past a soft limit, and
- * `alert_threshold` once per budget, limit and threshold. Counters are the
- * budget's after the hold; metadata only.
+ * Budget notifications (0041, #354), written by the money write (or text
+ * admission check) that raised them: `soft_exceeded` once per request and
+ * budget past a soft limit, and `alert_threshold` once per budget, limit and
+ * threshold. Counters are the budget's after the write; metadata only.
  */
 export const gatewayBudgetEvents = sqliteTable(
   "gateway_budget_event",
@@ -492,6 +488,27 @@ export const gatewayBudgetEvents = sqliteTable(
       "gateway_budget_event_kind_check",
       sql`${table.kind} IN ('soft_exceeded', 'alert_threshold')`,
     ),
+  }),
+);
+
+/**
+ * Idempotency-Key claims (0042, #399), taken at admission: while the claim
+ * is open (`endedAt` NULL, before `expiresAt`) another request under the key
+ * is in progress; after it, the key is settled and never runs again.
+ */
+export const gatewayIdempotencyClaims = sqliteTable(
+  "gateway_idempotency_claim",
+  {
+    tenantId: text("tenant_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestId: text("request_id").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    endedAt: integer("ended_at"),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.tenantId, table.idempotencyKey] }),
+    requestIdx: index("gateway_idempotency_claim_request_idx").on(table.requestId),
   }),
 );
 

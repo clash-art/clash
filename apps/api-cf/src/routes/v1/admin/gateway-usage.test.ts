@@ -13,9 +13,10 @@
  *   platform `adjust` rows idempotently, records a missing report as such,
  *   and is audited; the scheduled handler runs both jobs at their minutes.
  *
- * Ledger rows are written through the real D1 budget port (reserve + settle),
- * so they are what the data plane writes; expected amounts are derived from
- * the price book with gateway-core's priceUsage, never restated.
+ * Ledger rows are written through the real D1 budget port (`charge` for text
+ * postpay; a failed media probe may charge zero so the explorer marks it
+ * notCharged — prepaid debit+refund is covered by d1-gateway / settle-run
+ * tests). Expected amounts come from gateway-core's priceUsage, never restated.
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -138,22 +139,14 @@ function usage(partial: Partial<Usage> = {}): Usage {
   return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported", ...partial };
 }
 
-/** One request through the real budget port: reserve on `budgetIds`, then settle. */
+/** One request through the real budget port: a postpaid `charge` on `budgetIds`. */
 async function settle(
   t: { tenantId: string; budgetId: string },
   event: Partial<UsageEvent> & { userId: string; modelCode: string },
-  options: { budgetIds?: string[]; hold?: number } = {},
+  options: { budgetIds?: string[] } = {},
 ): Promise<string> {
   const requestId = event.requestId ?? `gwr_${hex()}${hex()}`;
-  await budgets.reserve({
-    requestId,
-    tenantId: t.tenantId,
-    budgetIds: options.budgetIds ?? [t.budgetId],
-    credentialScope: "official",
-    holdMicroCredits: options.hold ?? 1_000,
-    expiresAt: Date.now() + 60_000,
-  });
-  await budgets.settle({
+  await budgets.charge({
     requestId,
     tenantId: t.tenantId,
     kind: "text",
@@ -166,7 +159,8 @@ async function settle(
     status: "settled",
     occurredAt: Date.now(),
     ...event,
-  } as UsageEvent);
+    budgetIds: options.budgetIds ?? [t.budgetId],
+  });
   return requestId;
 }
 
@@ -237,6 +231,14 @@ describe("usage explorer", () => {
     const window = `from=${encodeURIComponent(new Date(old - 1000).toISOString())}&to=${encodeURIComponent(new Date(old + 1000).toISOString())}`;
     expect((await explore(`tenantId=${t.enc}&${window}`)).entries.map((e) => e.requestId)).toEqual([earlier]);
     // Without a kind: everything but holds and releases; with one, only it.
+    // New requests write no holds (#399); seed one historical row so the filter is covered.
+    sqlite
+      .prepare(
+        `INSERT INTO gateway_usage_ledger
+           (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits, occurred_at)
+         VALUES (?, ?, ?, 'hold', 'expired', ?, 0, strftime('%s', 'now'))`,
+      )
+      .run(`gwl_hold_${hex()}`, `gwr_hold_${hex()}`, t.budgetId, t.tenantId);
     expect((await explore(`tenantId=${t.enc}`)).entries.every((e) => e.kind !== "hold" && e.kind !== "release")).toBe(true);
     expect((await explore(`tenantId=${t.enc}&kind=hold`)).entries.length).toBeGreaterThan(0);
 
@@ -267,7 +269,7 @@ describe("usage explorer", () => {
     expect(new Set(seen).size).toBe(ids.length);
   });
 
-  it("shows a failed media/AIGC request at zero, never its hold, and charges a partial text request", async () => {
+  it("shows a failed media/AIGC request at zero (notCharged) and charges a partial text request", async () => {
     const t = team();
     // Settled as the data plane settles them (gateway-core settleRequest), at
     // a price under which the produced image and the delivered tokens are not free.
@@ -292,19 +294,15 @@ describe("usage explorer", () => {
       price,
     });
     expect(priceUsage(usage({ units: { image: 1 } }), price).microCredits).toBeGreaterThan(0);
-    const media = await settle(
-      t,
-      {
-        userId: t.member.userId,
-        modelCode: `image-${hex()}`,
-        kind: "image",
-        status: ledgerStatus(failedMedia.outcome),
-        usage: failedMedia.usage,
-        costMicroCredits: failedMedia.costMicroCredits,
-        errorCode: "GATEWAY_UPSTREAM_ERROR",
-      },
-      { hold: 50_000 },
-    );
+    const media = await settle(t, {
+      userId: t.member.userId,
+      modelCode: `image-${hex()}`,
+      kind: "image",
+      status: ledgerStatus(failedMedia.outcome),
+      usage: failedMedia.usage,
+      costMicroCredits: failedMedia.costMicroCredits,
+      errorCode: "GATEWAY_UPSTREAM_ERROR",
+    });
     const partial = await settle(t, {
       userId: t.member.userId,
       modelCode: `text-${hex()}`,

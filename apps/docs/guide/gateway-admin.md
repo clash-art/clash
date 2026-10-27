@@ -125,8 +125,8 @@ Platform permissions, admin accounts only (`platform_admin` holds all;
 `upstreams.write`, `wallet.adjust`, `subscription.limits.write`,
 `admin_accounts.read`, `admin_accounts.write`, `usage.read_all`,
 `audit.read_all`, `abuse.read`, `abuse.suspend`, `abuse.thresholds.write`,
-`prompts.view`, `retention.purge`, `holds.sweep`, `reconciliation.read`,
-`reconciliation.write`.
+`prompts.view`, `retention.purge`, `reconciliation.read`,
+`reconciliation.write`. (`holds.sweep` was retired with holds in #399.)
 
 The admin console authorizes with `platformRoute`: the caller is the admin
 account the middleware verified, and the permission must come from its role.
@@ -211,8 +211,9 @@ billing rollover, subscriptions and top-ups, catalog clone/seed/model
 upsert/remove/publish, upstream create/update/disable/rotate/key revoke, wallet
 corrections and status, subscription rate limits, admin account creation and
 disabling, abuse thresholds (`abuse.threshold`), suspensions and lifts
-(`abuse.suspend`, `abuse.lift`, manual or automatic), retention purges that deleted something, hold sweeps that expired
-something, and every staff prompt view (whatever its outcome). Team settings
+(`abuse.suspend`, `abuse.lift`, manual or automatic), retention purges that
+deleted something, and every staff prompt view (whatever its outcome). Team
+settings
 (#354, written by team owners, [gateway-teams.md](gateway-teams.md)) audit the
 same way: team creation, invites, role changes and removals (the last owner
 is kept, `GATEWAY_LAST_OWNER`), member and key budgets and their overrides,
@@ -242,7 +243,6 @@ Errors are coded (`x-clash-error-code`).
 | Reconciliation | `GET /reconciliation/reports`, `PUT /reconciliation/reports/:day/:source`, `GET/POST /reconciliation/runs`, `GET /reconciliation/runs/:id` ([gateway-usage.md](gateway-usage.md#nightly-reconciliation)) |
 | Abuse          | `GET /abuse`; `PUT /abuse/thresholds/:signal {threshold, reason?}`; `POST /abuse/suspensions {subjectKind, subjectId, reason}`; `POST /abuse/suspensions/:id/lift {reason}` ([Abuse](#abuse)) |
 | Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`; `POST /retention/enforce {limit?}` (metadata/ledger retention)     |
-| Holds          | `POST /holds/sweep {limit?}`: the stale-hold sweeper now ([gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper))                       |
 
 **Catalog.** The data plane routes the newest published catalog version as a
 whole, so a change is: clone the live version into a draft, upsert or remove
@@ -626,8 +626,7 @@ or the coded error (expired, not retained).
   refused), rate-limit validation; staff prompt
   view (admin accounts only, the stored bytes, every view audited without
   the body, nothing disclosed when the audit fails, expiry before purge,
-  idempotent purge, a truncated stream copy); the hold sweep (admin accounts
-  only, expires once, audited only when it changed something).
+  idempotent purge, a truncated stream copy).
 - `packages/gateway-core/src/retention.test.ts` and the contract cases
   (`retention`, data plane): body stored on success and on upstream error,
   credentials never stored, coded failure with unchanged billing, expiry,

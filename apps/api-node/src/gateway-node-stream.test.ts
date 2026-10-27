@@ -1,15 +1,16 @@
 /**
  * Node gateway streaming (#368) on PGlite with the real schema, served by the
  * #378 mock upstream (never a real provider): OpenAI + Anthropic SSE
- * pass-through, injected include_usage, keep-alives, and N2 settlement of
- * every stream ending — completed, upstream error mid-stream, caller
- * disconnect, duration timeout — exactly once.
+ * pass-through, injected include_usage, keep-alives, and settlement of every
+ * stream ending — completed, upstream error mid-stream, caller disconnect,
+ * duration timeout — as one journaled `charge` settle run (#399), driven
+ * inline here as the outbox worker would, charging exactly once.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PGlite } from "@electric-sql/pglite";
-import { GatewayError, type GatewayPorts, type UsageEvent } from "@clash/gateway-core";
+import type { GatewayPorts, UsageEvent } from "@clash/gateway-core";
 import { buildEffectiveModelCards } from "@clash/shared-types/model-routing";
 import { getRequestListener } from "@hono/node-server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,11 +24,11 @@ import {
   createGatewayBackgroundWork,
   createGatewayNodeRoutes,
   createPgGatewayPorts,
-  settleDurably,
   withSseKeepAlive,
   type GatewayBackgroundWork,
   type GatewayNodeRoutesOptions,
 } from "./gateway-node.ts";
+import { inlinePgSettlement } from "./gateway-settle-test-support.ts";
 import { migrateDatabase } from "./migrations.ts";
 import { createMockUpstreamApp, type MockUpstreamApp } from "./mock-upstream/index.ts";
 
@@ -142,7 +143,7 @@ beforeEach(async () => {
     credentials,
     limits: createPgGatewayLimitPort(db),
     upstream: { fetch: (request) => Promise.resolve(mock.app.fetch(request)) },
-    settleRetryDelaysMs: [1, 1, 1],
+    settlement: inlinePgSettlement({ db }),
   });
   mount();
 });
@@ -311,32 +312,24 @@ describe("gateway-node streaming (#368)", () => {
     expect(mock.state.snapshot()).toEqual({});
   });
 
-  it("retries a transiently failed charge and still charges exactly once", async () => {
+  it("answers the stream even when its settle run cannot be journaled (the accepted edge), charging nothing", async () => {
     const token = await virtualKey("tenant-a", "u1");
     await budget("b-a", "tenant-a", 1_000_000_000);
-    // Fail the first two charge transactions (after admission, once the upstream is called).
+    // The journal write is the request path's only transaction once the upstream answers.
     const upstreamFetch = ports.upstream.fetch;
     ports.upstream.fetch = (request) => {
-      failNextTransactions = 2;
+      failNextTransactions = 1;
       return upstreamFetch(request);
     };
     mount();
     const response = await post("/v1/chat/completions", token, openaiBody());
     const text = await response.text();
-    expect(text).not.toContain("x-gateway-settlement");
-    expect(failNextTransactions).toBe(0); // both injected failures were hit and retried
-    expect(await charges("tenant-a")).toHaveLength(1);
-  });
-
-  it("does not retry a coded refusal", async () => {
-    let calls = 0;
-    await expect(
-      settleDurably(async () => {
-        calls += 1;
-        throw new GatewayError("GATEWAY_BUDGET_NOT_FOUND");
-      }, [1, 1, 1]),
-    ).rejects.toBeInstanceOf(GatewayError);
-    expect(calls).toBe(1);
+    expect(text).toContain("data: [DONE]");
+    expect(text).toContain("x-gateway-settlement: failed; code=GATEWAY_SETTLEMENT_FAILED");
+    await work.drain(2000);
+    expect(failNextTransactions).toBe(0);
+    expect(await charges("tenant-a")).toEqual([]);
+    expect(await spent("b-a")).toBe(0);
   });
 
   it("makes a duplicate settle delivery a no-op on the (request_id, kind) ledger key", async () => {
@@ -360,7 +353,8 @@ describe("gateway-node streaming (#368)", () => {
       status: "settled",
       occurredAt: Date.now(),
     };
-    const results = await Promise.all([ports.budgets.settle(event), ports.budgets.settle(event)]);
+    const intent = { ...event, budgetIds: ["b-a"] };
+    const results = await Promise.all([ports.budgets.charge(intent), ports.budgets.charge(intent)]);
     expect(results.every((result) => result.duplicate)).toBe(true);
     expect(await charges("tenant-a")).toHaveLength(1);
     expect(await spent("b-a")).toBe(before);

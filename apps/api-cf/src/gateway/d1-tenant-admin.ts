@@ -780,7 +780,7 @@ export function createD1TenantAdmin(db: D1Database, deps: { clock: GatewayClock 
     /**
      * Set a member (`user`) or key budget: create it under the tenant wallet,
      * or change its limit, status, enforcement or alert threshold. A limit
-     * below spend + open holds is GATEWAY_BUDGET_BELOW_USAGE unless the owner
+     * below spend is GATEWAY_BUDGET_BELOW_USAGE unless the owner
      * overrides it with a reason (`budget.override` in the audit). null is
      * explicitly unlimited (the wallet still caps it).
      */

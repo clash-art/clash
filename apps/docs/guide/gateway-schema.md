@@ -36,7 +36,8 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_model`               | Versioned published catalog: one model card (`card_json`) per model per `catalog_version`.                                                                                                          |
 | `gateway_price`               | Price book: one rate per `(price_version, model_code, upstream_id, unit)`, `amount_micro` per `per` units of `currency` (default `credit`). `published_at` (0035) is `NULL` for a draft, which is never charged. See [gateway-price-book.md](gateway-price-book.md). |
 | `gateway_budget`              | `tenant` = team wallet, `user` = member budget allocated by the owner (`parent_budget_id`), `key` = per-key cap. `NULL` limit is explicitly unlimited. (0041) `enforcement` `hard`/`soft`/`alert` (a wallet is always `hard`, enforced by triggers) and `alert_threshold_pct` (1-100). See [gateway-teams.md](gateway-teams.md). |
-| `gateway_budget_event`        | (0041) Budget notifications written in the reservation's batch: `soft_exceeded` once per request admitted past a soft limit, `alert_threshold` once per budget, limit and threshold (unique `(budget_id, kind, dedupe_key)`). Counters after the hold; metadata only. |
+| `gateway_budget_event`        | (0041) Budget notifications written in the batch of the admission check, debit or charge that raised them: `soft_exceeded` once per request past a soft limit, `alert_threshold` once per budget, limit and threshold (unique `(budget_id, kind, dedupe_key)`). Counters after the write; metadata only. |
+| `gateway_idempotency_claim`   | (0042) An `Idempotency-Key`'s claim, primary key `(tenant_id, idempotency_key)`, taken at admission: open while `ended_at` is `NULL` and before `expires_at`, settled after. See [gateway-data-plane.md](gateway-data-plane.md#settlement). |
 | `tenant.rate_limit_json`, `tenant_member.rate_limit_json` | (0041) Owner-configured team-wide and per-member rate limits.                                                                                                              |
 | `gateway_usage_ledger`        | Append-only money journal (below).                                                                                                                                                                  |
 | `gateway_admin_audit`         | One row per admin mutation with redacted before/after snapshots. Append-only: 0036 triggers refuse `UPDATE` and any `DELETE` inside the 13-month retention. (0040) The actor is `actor_kind` (`admin`, `user`, `system` for an abuse threshold (0046), `bootstrap`, `migration`) plus `actor_id` (an admin account id for `admin`). See [gateway-admin.md](gateway-admin.md). |
@@ -68,22 +69,20 @@ from `kind`:
 
 | Kind                         | Meaning                                                                                                                                                              |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hold`                       | Reserve on one budget. `status` moves `open` → `settled`/`released`/`expired`, in the same batch that appends the closing entry. A failed settlement instead moves it `open` → `settle_failed` (with `error_code`), still reserved, until a later settle closes it. These are the only in-place changes. |
-| `settle`                     | Actual cost; `status` is the outcome (`settled`, `partial`, `client_aborted`, `upstream_failed`, `gateway_failed`, `expired`) and the row carries the billing basis. |
-| `release`                    | Hold returned unused.                                                                                                                                                |
-| `refund`                     | Credit back after a settle; `ref_id` names the refunded entry.                                                                                                       |
+| `hold`                       | History of the retired reserve path (#399). Gateway requests no longer write holds; 0042 moved every `open` or `settle_failed` hold to `expired`, with a zero `expired` settle entry, and returned its reserve. |
+| `settle`                     | What a request owes: a media debit at admission (its exact price) or a text charge written by its settle run (actual cost). `status` is the outcome (`settled`, `partial`, `client_aborted`, `upstream_failed`, `gateway_failed`, `expired`) and the row carries the billing basis. |
+| `release`                    | Hold returned unused (retired path).                                                                                                                                 |
+| `refund`                     | A failed media debit returned in full by its settle run: the `settle` entry's amount, `ref_kind = 'settle'`, `ref_id` names it, `status` the failure.              |
 | `adjust`                     | Reconciliation or admin correction, with `actor_user_id` and `reason`.                                                                                               |
 | `grant` / `topup` / `expire` | Subscription credits, purchased credits, and expiry of unused grants, on the tenant wallet with `status = 'posted'`. They move the wallet's `limit_micro_credits` (+, +, −), never its spend. See [gateway-price-book.md](gateway-price-book.md). |
 
 Indexes: `(tenant_id, occurred_at)`, `(key_id, occurred_at)`,
-`(budget_id, status)` (open holds per budget, for invariant checks), and
-`(kind, status, expires_at)` (0039, open holds by expiry for the stale-hold
-sweeper, which moves them `open` → `expired` with a zero-cost `expired`
-settle entry; see [gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper)).
+and `(budget_id, status)`. The 0039 hold-expiry index was dropped in 0042 with
+the stale-hold sweeper.
 
-At quiescence, `gateway_budget.reserved_micro_credits` equals the sum of its
-`open` and `settle_failed` `hold` entries. For usage budgets, `spent_micro_credits` equals the sum
-of its `settle` entries. The integration test
+`gateway_budget.reserved_micro_credits` is zero on every budget since 0042.
+For usage budgets, `spent_micro_credits` equals the sum of its `settle` entries
+minus its `refund` entries. The integration test
 `apps/api-cf/src/integration/gateway-schema.integration.test.ts` runs a
 hold → settle round trip in workerd D1 with conditional `batch` statements
 and checks both invariants.
