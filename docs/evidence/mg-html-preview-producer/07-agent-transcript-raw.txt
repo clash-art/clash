@@ -1,0 +1,9 @@
+dsh: reasoning:
+The user wants 5 short English bullets confirming architectural facts. No tools, no repo exploration. Just answer.
+
+Let me write 5 concise bullets.
+- **HTML MG Timeline items** paint through `PreviewFrameProducer kind html-scene`: a sandboxed iframe (`allow-scripts`, deliberately **no** `allow-same-origin`), blob URL with capacity fail-closed, speaking `clash.preview-host.v1`.
+- **HTML-only Timelines** never mount the Remotion Player; **mixed Timelines** keep the Remotion Player as the clock for Remotion items while `HtmlSceneSurface` paints HTML layers without any Remotion JSX compile.
+- **No audio-master-clock** — audio is not the timeline's time authority.
+- **Export and Agent/Library contracts are out of scope** (#448).
+- **InteractiveCanvas overlay parity is out of scope** (#449).

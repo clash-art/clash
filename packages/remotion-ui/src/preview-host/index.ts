@@ -62,3 +62,12 @@ export {
   IframedRemotionPreview,
   type IframedRemotionPreviewProps,
 } from "./IframedRemotionPreview";
+
+export {
+  createHtmlSceneProducer,
+  extractHtmlScenesFromComposition,
+  compositionHasHtmlScenes,
+  compositionIsHtmlOnly,
+  type HtmlSceneDescriptor,
+  type CreateHtmlSceneProducerOptions,
+} from "./htmlSceneProducer";

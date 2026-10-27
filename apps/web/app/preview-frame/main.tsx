@@ -1,11 +1,15 @@
 /**
- * Cross-origin Remotion preview frame (#435).
+ * Cross-origin preview frame (#435 / #447).
  *
- * Hosts `@remotion/player` + `VideoComposition` and speaks
- * `clash.preview-host.v1`. The Player stays the time authority — this page
- * never invents a clock. Separate from `render-frame.html` (export encode
- * budget); do not share one host instance between scrubbing preview and
- * export.
+ * Speaks `clash.preview-host.v1`. Modes:
+ * - Remotion (+ optional HTML MG layers via VideoComposition): `@remotion/player`
+ *   remains the time authority for Remotion items.
+ * - HTML-only Timeline: `html-scene` PreviewFrameProducer paints sandboxed
+ *   HTML MG documents without mounting Remotion Player.
+ *
+ * Never invents an audio-master-clock. Separate from `render-frame.html`
+ * (export encode budget); do not share one host instance between scrubbing
+ * preview and export.
  */
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -14,8 +18,11 @@ import { VideoComposition } from "@clash/remotion-components";
 import type { Track } from "@clash/remotion-core";
 import {
   PREVIEW_HOST_PROTOCOL,
+  compositionIsHtmlOnly,
+  createHtmlSceneProducer,
   isPreviewHostCommand,
   type PreviewCompositionDescriptor,
+  type PreviewFrameProducer,
   type PreviewHostEvent,
   type PreviewTransportEvent,
 } from "@clash/remotion-ui/preview-host";
@@ -28,6 +35,7 @@ type MountedScene = {
   tracks: Track[];
   allNodes?: Map<string, any>;
   parentOrigin: string;
+  htmlOnly: boolean;
 };
 
 function toNodesMap(raw: unknown): Map<string, any> | undefined {
@@ -45,6 +53,8 @@ function post(event: PreviewHostEvent, targetOrigin: string) {
 
 function PreviewFrameApp() {
   const playerRef = useRef<PlayerRef>(null);
+  const htmlMountRef = useRef<HTMLDivElement>(null);
+  const htmlProducerRef = useRef<PreviewFrameProducer | null>(null);
   const [scene, setScene] = useState<MountedScene | null>(null);
   const parentOriginRef = useRef<string | null>(null);
   const lastEmittedFrameRef = useRef<number | null>(null);
@@ -71,7 +81,6 @@ function PreviewFrameApp() {
       if (!isPreviewHostCommand(event.data)) return;
       const command = event.data;
       if (command.type === "mount") {
-        // Narrow via runtime guard; cast fields so stale package types still compile.
         const mount = command as {
           parentOrigin: string;
           composition: PreviewCompositionDescriptor & {
@@ -84,6 +93,14 @@ function PreviewFrameApp() {
         const tracks = Array.isArray(composition.tracks)
           ? (composition.tracks as Track[])
           : [];
+        const descriptor: PreviewCompositionDescriptor = {
+          width: composition.width,
+          height: composition.height,
+          fps: composition.fps,
+          durationInFrames: composition.durationInFrames,
+          tracks,
+          allNodes: composition.allNodes,
+        };
         setScene({
           width: composition.width,
           height: composition.height,
@@ -92,14 +109,37 @@ function PreviewFrameApp() {
           tracks,
           allNodes: toNodesMap(composition.allNodes),
           parentOrigin: mount.parentOrigin,
+          htmlOnly: compositionIsHtmlOnly(descriptor),
         });
         return;
       }
       if (command.type === "unmount") {
         setScene(null);
         playerRef.current?.pause();
+        htmlProducerRef.current?.pause();
         return;
       }
+      if (command.type === "set-audio-meter") {
+        // Remotion path may sample; html-scene producer has no meter yet.
+        return;
+      }
+
+      const htmlProducer = htmlProducerRef.current;
+      if (htmlProducer && scene?.htmlOnly) {
+        if (command.type === "seek") {
+          void htmlProducer.seek(command.frame);
+          return;
+        }
+        if (command.type === "play") {
+          void htmlProducer.play();
+          return;
+        }
+        if (command.type === "pause") {
+          void htmlProducer.pause();
+          return;
+        }
+      }
+
       const player = playerRef.current;
       if (!player) return;
       if (command.type === "seek") {
@@ -116,16 +156,51 @@ function PreviewFrameApp() {
       }
     };
     window.addEventListener("message", onMessage);
-    // Announce ready to every embedder that can hear us. The host filters by
-    // source + origin; posting to "*" only wakes the waiting parent handshake.
     window.parent.postMessage(
       { protocol: PREVIEW_HOST_PROTOCOL, type: "ready" },
       "*",
     );
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [scene?.htmlOnly]);
+
+  // HTML-only producer mount
+  useEffect(() => {
+    if (!scene?.htmlOnly || !htmlMountRef.current) {
+      htmlProducerRef.current?.dispose();
+      htmlProducerRef.current = null;
+      return;
+    }
+    const producer = createHtmlSceneProducer({
+      mountElement: htmlMountRef.current,
+      reporter: {
+        reportFrame,
+        reportTransport,
+        reportError: (message) =>
+          reportTransport({ type: "error", message }),
+      },
+    });
+    htmlProducerRef.current = producer;
+    const descriptor: PreviewCompositionDescriptor = {
+      width: scene.width,
+      height: scene.height,
+      fps: scene.fps,
+      durationInFrames: scene.durationInFrames,
+      tracks: scene.tracks,
+      allNodes: scene.allNodes
+        ? Object.fromEntries(scene.allNodes.entries())
+        : undefined,
+    };
+    void producer.prepare(descriptor);
+    return () => {
+      void producer.dispose();
+      if (htmlProducerRef.current === producer) {
+        htmlProducerRef.current = null;
+      }
+    };
+  }, [scene]);
 
   useEffect(() => {
+    if (scene?.htmlOnly) return;
     const player = playerRef.current;
     if (!player || !scene) return;
 
@@ -185,6 +260,23 @@ function PreviewFrameApp() {
       >
         Clash preview frame ready
       </div>
+    );
+  }
+
+  if (scene.htmlOnly) {
+    return (
+      <div
+        ref={htmlMountRef}
+        data-preview-frame="html-scene"
+        data-html-scene-producer=""
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          overflow: "hidden",
+          background: "#000",
+        }}
+      />
     );
   }
 
