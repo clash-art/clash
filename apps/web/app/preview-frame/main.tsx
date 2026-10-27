@@ -119,11 +119,6 @@ function PreviewFrameApp() {
         htmlProducerRef.current?.pause();
         return;
       }
-      if (command.type === "set-audio-meter") {
-        // Remotion path may sample; html-scene producer has no meter yet.
-        return;
-      }
-
       const htmlProducer = htmlProducerRef.current;
       if (htmlProducer && scene?.htmlOnly) {
         if (command.type === "seek") {
