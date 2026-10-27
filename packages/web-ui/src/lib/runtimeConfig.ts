@@ -110,6 +110,31 @@ export function boundTimelineRenderExecutor():
   return timelineRenderExecutor;
 }
 
+
+export type TimelineExportNodesResolver = () => Record<string, unknown> | undefined;
+
+let timelineExportNodesResolver: TimelineExportNodesResolver | undefined;
+
+/**
+ * Editor surfaces publish the latest Canvas/runtime node map so browser
+ * Timeline export can hydrate live HTML MG sources (#448). Composition roots
+ * and Canvas preview may call this; packages must not invent a second store.
+ */
+export function bindTimelineExportNodesResolver(
+  resolver: TimelineExportNodesResolver | undefined,
+): void {
+  timelineExportNodesResolver = resolver;
+}
+
+export function resolveTimelineExportNodes(): Record<string, unknown> | undefined {
+  try {
+    return timelineExportNodesResolver?.() ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+
 export function runtimeApiUrl(path: string): string {
   return apiUrl(path, resolvedRuntimeConfig());
 }

@@ -71,3 +71,9 @@ export {
   type HtmlSceneDescriptor,
   type CreateHtmlSceneProducerOptions,
 } from "./htmlSceneProducer";
+
+export {
+  publishTimelineExportNodes,
+  readTimelineExportNodes,
+  clearTimelineExportNodes,
+} from "./exportNodesRegistry";

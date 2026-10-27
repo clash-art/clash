@@ -31,6 +31,15 @@ import {
  * failed. Keep it off unless the composition root opts in AND the frame
  * actually supports it.
  */
+
+function toNodesMap(raw: unknown): Map<string, unknown> | undefined {
+  if (!raw) return undefined;
+  if (raw instanceof Map) return raw as Map<string, unknown>;
+  if (typeof raw === "object") {
+    return new Map(Object.entries(raw as Record<string, unknown>));
+  }
+  return undefined;
+}
 function supportsNativeHtmlInCanvas(): boolean {
   if (typeof document === "undefined") return false;
   const context = document.createElement("canvas").getContext("2d");
@@ -116,7 +125,10 @@ async function renderRequest(
       durationInFrames: request.durationInFrames,
       defaultProps: { tracks: [] },
     },
-    inputProps: { tracks: request.tracks as Track[] },
+    inputProps: {
+      tracks: request.tracks as Track[],
+      allNodes: toNodesMap(request.allNodes),
+    },
     // Omitted so Remotion writes to OPFS ("web-fs") when the browser supports
     // it and to an ArrayBuffer otherwise.
     signal,

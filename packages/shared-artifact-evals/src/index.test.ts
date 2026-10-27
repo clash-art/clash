@@ -923,8 +923,10 @@ describe("headless benchmark runner", () => {
       ).toBe("mixed-remotion-lineage-and-render-receipt");
     }
 
+    // Dual-runtime (#448): Timeline DSL may use runtime html in product code/skills.
+    // Artifact eval suite fixtures must still not revive deleted MG command tokens.
     expect(JSON.stringify(suite)).not.toMatch(
-      /mg-spec|MgCompositionSpec|render-mg|export-mg-video|verify-mg-preview|mg-headless-render|"runtime":"html"/u,
+      /mg-spec|MgCompositionSpec|render-mg|export-mg-video|verify-mg-preview|mg-headless-render/u,
     );
     expect(JSON.stringify(suite)).not.toContain('"requiredMcpTools"');
   });
