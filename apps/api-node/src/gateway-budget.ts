@@ -14,12 +14,12 @@
  *   the prepay debit is final and `completeMedia` only records the outcome.
  *
  * - Text / LLM — postpay. `admitText` writes nothing: it only checks that every
- *   budget of the request still has `balance > -floor`. After a successful
- *   response `chargeText` writes the actual cost once (`charge` rows). The
- *   balance may go negative, but never past the credit floor: the part of the
- *   cost that does not fit inside `balance + floor` is recorded as
- *   `billing_basis.unbilled_micro_credits` instead of being silently dropped or
- *   silently charged past the floor.
+ *   **hard** budget of the request still has `balance > -floor` (soft/alert
+ *   never refuse on the floor — same as core `planCheck` / D1). After a
+ *   successful response `chargeText` writes the actual cost once (`charge`
+ *   rows), never refused and never floor-capped (same as core `planCharge` /
+ *   D1 `charge`). A single request may push the balance past `-floor`;
+ *   concurrent exposure is floor × in-flight.
  *
  * The floor is a configuration knob (`gateway_config.settlement.floor_micro_credits`,
  * overridable per store). Scopes are the Node schema's `tenant | user | key`
@@ -28,8 +28,9 @@
  *
  * `checkGatewayInvariants` re-derives the budget balances from the ledger and
  * reports every way this store can drift: a `spent` that does not match the
- * ledger, a refund that does not cancel its debit, a balance below the floor, a
- * reserved amount (N2 has no holds) and a duplicated settlement row.
+ * ledger, a refund that does not cancel its debit, a reserved amount (N2 has
+ * no holds) and a duplicated settlement row. A postpay balance past `-floor`
+ * is not drift — admission refuses the next hard request.
  *
  * Boundaries: this module owns Postgres only. It has no HTTP surface, no
  * background sweeper and no nightly reconcile — those are separate products.
@@ -161,8 +162,9 @@ export interface GatewayTextAdmissionInput {
   budgetIds: readonly string[];
   /**
    * The floor the data plane resolved for this caller (#399; on this host
-   * from `readGatewaySettlementFloor`, so it is the floor `chargeText` caps
-   * at). Absent: the configured floor.
+   * from `readGatewaySettlementFloor`). Absent: the configured floor.
+   * Used only by `admitText` for hard-budget floor refuse; `chargeText`
+   * does not floor-cap.
    */
   floorMicroCredits?: number;
 }
@@ -207,7 +209,10 @@ export interface GatewayTextChargeResult {
   chargedMicroCredits: number;
   /** The actual cost of the response. */
   requestedMicroCredits: number;
-  /** The part of the cost that did not fit inside the credit floor. */
+  /**
+   * Always 0 under N2: `chargeText` bills the full actual cost (aligned with
+   * core `planCharge` / D1). Kept on the result for call-site stability.
+   */
   unbilledMicroCredits: number;
   /** True when the request was already charged; no second money write happened. */
   duplicate: boolean;
@@ -497,8 +502,9 @@ async function assertRequestTenant(
 /**
  * The credit floor knob on this host (#399): `gateway_config` key
  * GATEWAY_SETTLEMENT_FLOOR_CONFIG_KEY, 0 when unset. The data plane's
- * `creditFloor` reads it (server.ts), so text admission and the postpaid
- * charge cap agree on one floor.
+ * `creditFloor` reads it (server.ts), so text admission (`admitText` /
+ * `planCheck`) uses the same floor. Postpay `chargeText` bills the full
+ * actual cost and does not re-apply the floor as a charge cap.
  */
 export function readGatewaySettlementFloor(db: GatewayBudgetSqlClient): Promise<number> {
   return resolveConfiguredFloor(db, undefined);
@@ -934,8 +940,15 @@ export function createPgGatewayBudgetStore(
           },
         });
       }
+      // Soft/alert never refuse on the floor (core planCheck / D1). Default
+      // enforcement is hard when the row omits it.
+      const enforcement = budget.enforcement || "hard";
       const balance = balanceOf(budget);
-      if (balance !== null && !(balance > -floor)) {
+      if (
+        enforcement === "hard" &&
+        balance !== null &&
+        !(balance > -floor)
+      ) {
         throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", {
           message: `Budget ${budget.id} is at or below the credit floor.`,
           details: {
@@ -961,7 +974,6 @@ export function createPgGatewayBudgetStore(
   ): Promise<GatewayTextChargeResult> {
     const parsed = parseInput(textChargeSchema, input);
     const cost = parsed.costMicroCredits;
-    const floor = await resolveFloor();
     const occurredAt = now();
     const occurredAtS = toSeconds(occurredAt);
     const expiresAtS = toSeconds(
@@ -1014,17 +1026,9 @@ export function createPgGatewayBudgetStore(
           });
         }
 
-        // The balance may go negative, but never past the credit floor.
-        let chargeable = cost;
-        for (const budget of budgets) {
-          const balance = balanceOf(budget);
-          if (balance === null) continue; // unlimited
-          const available = balance + floor;
-          if (available < chargeable) chargeable = available;
-        }
-        chargeable = Math.max(0, Math.min(cost, chargeable));
-        const unbilledMicroCredits = cost - chargeable;
-
+        // Bill the full actual cost (core planCharge / D1 charge). Never
+        // refuse and never floor-cap: the work was done. A single request may
+        // push past -floor; concurrent exposure is floor × in-flight.
         for (const budget of budgets) {
           const inserted = await tx.query<{ id: string }>(
             `INSERT INTO gateway_usage_ledger
@@ -1045,7 +1049,7 @@ export function createPgGatewayBudgetStore(
               parsed.tenantId,
               parsed.userId,
               parsed.keyId ?? "",
-              chargeable,
+              cost,
               parsed.modelCode ?? null,
               parsed.modelKind ?? null,
               parsed.credentialScope ?? null,
@@ -1062,9 +1066,7 @@ export function createPgGatewayBudgetStore(
               JSON.stringify({
                 settlement: "postpay",
                 requestedMicroCredits: cost,
-                chargedMicroCredits: chargeable,
-                unbilledMicroCredits,
-                floorMicroCredits: floor,
+                chargedMicroCredits: cost,
               }),
               occurredAtS,
             ],
@@ -1078,7 +1080,7 @@ export function createPgGatewayBudgetStore(
                     updated_at = $4
               WHERE id = $1 AND tenant_id = $2
             RETURNING id`,
-            [budget.id, parsed.tenantId, chargeable, occurredAtS],
+            [budget.id, parsed.tenantId, cost, occurredAtS],
           );
           if (updated.rows.length !== 1) {
             throw new GatewayError("GATEWAY_SETTLEMENT_FAILED", {
@@ -1106,7 +1108,7 @@ export function createPgGatewayBudgetStore(
             parsed.idempotencyKey ?? null,
             parsed.modelCode ?? null,
             parsed.modelKind ?? null,
-            chargeable,
+            cost,
             expiresAtS,
             occurredAtS,
           ],
@@ -1118,16 +1120,16 @@ export function createPgGatewayBudgetStore(
             tenantId: parsed.tenantId,
             requestId: parsed.requestId,
             budgetIds: budgets.map((budget) => budget.id),
-            amountMicroCredits: chargeable,
+            amountMicroCredits: cost,
             occurredAt,
           });
         }
 
         return {
           requestId: parsed.requestId,
-          chargedMicroCredits: chargeable,
+          chargedMicroCredits: cost,
           requestedMicroCredits: cost,
-          unbilledMicroCredits,
+          unbilledMicroCredits: 0,
           duplicate: false,
         };
       });
@@ -1183,7 +1185,6 @@ export type GatewayInvariantRule =
   | "reserved-is-zero"
   | "spent-matches-ledger"
   | "refund-matches-debit"
-  | "floor-respected"
   | "settlement-charge-once";
 
 export interface GatewayInvariantViolation {
@@ -1335,17 +1336,8 @@ export async function checkGatewayInvariants(
         detail: { spentMicroCredits: spent, ledgerMicroCredits: expected },
       });
     }
-    const balance = balanceOf(budget);
-    if (balance !== null && balance < -floor) {
-      violations.push({
-        rule: "floor-respected",
-        budgetId: budget.id,
-        detail: {
-          balanceMicroCredits: balance,
-          floorMicroCredits: floor,
-        },
-      });
-    }
+    // Postpay charge may push a hard budget past -floor (planCharge / D1);
+    // that is not ledger drift. Admission refuses the next hard request.
   }
 
   return {

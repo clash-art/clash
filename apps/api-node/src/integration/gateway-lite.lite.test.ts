@@ -534,7 +534,7 @@ describeLite(
       });
     });
 
-    it("budget overdraft race across nodes stops at the credit floor", async () => {
+    it("budget overdraft race: admission bounds hard floor; charge bills full actual", async () => {
       await scenario("budget-overdraft-race", async (facts) => {
         const limit = 100_000;
         const floor = 50_000;
@@ -573,15 +573,17 @@ describeLite(
           charged,
           limit,
           floor,
-          maxSpend: limit + floor,
+          // In-flight exposure may push past limit+floor; charge never caps.
+          maxSpendAdmissionBound: limit + floor,
           nextStatus: after.status,
         });
         await after.text();
         expect(distinct).toBe(rows.length);
         expect(spent).toBe(charged);
-        expect(spent).toBeLessThanOrEqual(limit + floor);
-        // Postpay: every admitted request was in flight, so the floor is reached exactly.
-        expect(spent).toBe(limit + floor);
+        // Full actual per admitted request (COST each); may exceed limit+floor.
+        expect(spent).toBe(ok * COST);
+        expect(ok).toBeGreaterThan(0);
+        // After charges settle past -floor, the next hard admission is 402.
         expect(after.status).toBe(402);
         const inv = await checkGatewayInvariants(database.db, {
           tenantId: "t-race",

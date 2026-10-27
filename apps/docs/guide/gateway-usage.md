@@ -27,12 +27,12 @@ separate, hosted-only feature behind `GATEWAY_STAFF_PROMPT_ACCESS`
 off by default.
 
 Filters: tenant, user, key, model, ledger kind (default: every kind but
-`hold` and `release`), status and time (`from` inclusive, `to` exclusive, ISO
-instants; `to` not after `from` is `GATEWAY_INVALID_REQUEST`). Pages are
-newest first, keyed by `(occurred_at, id)`: `nextCursor` is opaque and a
-cursor the server did not hand out is `GATEWAY_INVALID_REQUEST`. `byModel`
-totals the settle entries of the whole filter, with `notCharged` counting
-requests settled at zero.
+legacy `hold` and `release`), status and time (`from` inclusive, `to`
+exclusive, ISO instants; `to` not after `from` is `GATEWAY_INVALID_REQUEST`).
+Pages are newest first, keyed by `(occurred_at, id)`: `nextCursor` is opaque
+and a cursor the server did not hand out is `GATEWAY_INVALID_REQUEST`.
+`byModel` totals the settle entries of the whole filter, with `notCharged`
+counting requests settled at zero.
 
 A request settles once per budget it held on, with the same amount on each
 row; the explorer, its totals and the export show one settle entry per
@@ -41,12 +41,12 @@ does), so nothing is double counted.
 
 Each entry carries `chargeMicroCredits` (gateway-core
 `ledgerChargeMicroCredits`: a settlement charges its amount, a refund gives it
-back, holds, releases and wallet moves charge nothing) and `notCharged`
+back, legacy holds/releases and wallet moves charge nothing) and `notCharged`
 (`isUnchargedSettlement`: a settle entry that is not `settled` and has amount
-zero). A media/AIGC request that fails after acceptance settles
-`upstream_failed` at zero whatever it produced (`settleMediaGeneration`), so
-it appears at 0 marked "not charged", never at its hold. A partial text
-request is charged for what it delivered.
+zero). A media/AIGC request that fails after acceptance is refunded in full
+under N2 (prepay + refund); explorer rows that still show a zero-charge settle
+are the pre-N2 shape. A partial text request is charged for what it delivered
+(full actual; no floor-capped unbilled remainder).
 
 ### CSV export
 
@@ -92,10 +92,10 @@ the team's usage (owner: older pages and export) or the member's own (export).
 audit trigger enforces, so ledger and audit age out the same day.
 `enforceGatewayDataRetention` runs every statement in one D1 batch, each
 bounded (2 000 rows by default; `more: true` when one hit its limit, so a
-backlog drains over the next runs). A hold still reserving (`open`,
-`settle_failed`) is never touched. The audit cutoff is also bounded by the
-database's own clock, so a skewed Worker clock can never make the 0036 trigger
-abort the batch.
+backlog drains over the next runs). Legacy hold rows still marked open /
+`settle_failed` (retired reserve path) are never touched; N2 writes no new
+holds. The audit cutoff is also bounded by the database's own clock, so a
+skewed Worker clock can never make the 0036 trigger abort the batch.
 
 It runs from the every-minute `scheduled` handler once an hour at minute 45
 (`isRetentionEnforcementDue`), and on demand through

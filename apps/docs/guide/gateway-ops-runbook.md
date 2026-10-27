@@ -37,7 +37,7 @@ Documented in full in [gateway-price-book.md](gateway-price-book.md) and
 | **加量包 (top-up packs)** | One-off credit packs (`gateway_topup_pack`); a purchase posts a ledger `topup`. |
 | **Tenant wallet** | The `tenant`-scope `gateway_budget`. Purchases raise its limit; usage raises spend. Balance ≈ `limit − spent − reserved`. No automatic overage: empty wallet → `402 GATEWAY_BUDGET_EXCEEDED`. |
 | **Owner allocation** | The team **owner** allocates member (`user`) and key budgets under the wallet, plus rate limits. Members draw on wallet + their budgets together. Admin console is read-only for those allocations; corrections use `wallet/adjust`. |
-| **Settlement shape** | Media/AIGC: prepay exact + refund on failure. Text/LLM: postpay with a credit floor (see settle design / #399). Ledger kinds: `hold`, `settle`, `release`, `refund`, `adjust`, `grant`, `topup`, `expire`. |
+| **Settlement shape** | Media/AIGC: prepay exact + refund on failure. Text/LLM: postpay with a credit floor on **hard** admission only; charge bills full actual (see settle design / #399). Ledger kinds (current): `settle`/`debit`/`charge`, `refund`, `adjust`, `grant`, `topup`, `expire`. Legacy `hold`/`release` rows may still exist from the retired reserve path (migration 0042 released them). |
 
 There is no payment-provider integration in-repo: owners record purchases;
 platform staff correct wallets with audited `adjust` rows.
@@ -71,7 +71,8 @@ never carry plaintext keys.
 3. Leave the previous secret live for a short dual-key window so in-flight
    requests that already selected the old version can finish.
 4. Disable or delete the old Worker secret only after:
-   - no open holds reference the old `key_version`, and
+   - in-flight requests that selected the old `key_version` have finished
+     (dual-key window; there is no hold/sweeper path under N2), and
    - staging smoke (`/gateway/v1/chat/completions` or Anthropic messages)
      succeeds on a Flash-allowed model.
 5. If upstream returns 401/403 after rotation, the data plane maps to
@@ -106,7 +107,10 @@ procedure:
 
 1. Optionally disable risky upstreams or suspend a canary tenant wallet so
    new billable traffic fails closed.
-2. Wait for open holds on that tenant to settle or expire (sweeper).
+2. Wait for in-flight requests on that tenant to finish (text postpay charges
+   and media settle/refund Durable Runs). There is no hold sweeper under N2 —
+   recovery is the settle journal / Durable Run retry (#399), not a stale-hold
+   job.
 3. Deploy the known-good version (below).
 
 ### Deploy / rollback staging
@@ -128,7 +132,8 @@ Rules:
   with the schema already applied on staging D1 for one release.
 - Never run `wrangler deploy` without `--env staging` from this runbook.
 - After rollback, re-check `/api/v1/admin/gateway/overview`, a smoke
-  chat completion, and wallet / hold health in the admin console.
+  chat completion, and wallet / budget health in the admin console
+  (`reserved_micro_credits` should stay 0; N2 has no open holds).
 
 ## Incident quick links
 
@@ -137,7 +142,7 @@ Rules:
 | `402 GATEWAY_BUDGET_EXCEEDED` spike | Wallet / member / key suspended or empty; `/admin/budgets` |
 | `502 UPSTREAM_AUTH_FAILED` | Recent key rotation; upstream `enabled`; Worker secret name |
 | `429` with `Retry-After` | Live counters on `/admin/abuse`; owner rate limits |
-| Suspected wallet/hold drift | Prefer stale-hold sweeper / settle recovery; then audited `wallet/adjust` — never rewrite historical `settle` rows |
+| Suspected wallet / spend drift | Prefer settle journal / Durable Run recovery (#399); then audited `wallet/adjust` — never rewrite historical `settle`/`charge`/`debit` rows. Hold/sweeper language is historical (pre-N2). |
 | Retention view 410 | Body past 30 days or purge already ran |
 
 ## Out of scope here
