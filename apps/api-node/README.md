@@ -46,6 +46,55 @@ mint other tokens. Google/OTP login, browser collaboration, resource delivery an
 production generation wiring remain unfinished. API authentication passing does
 not establish complete browser-product readiness.
 
+## Self-host topology
+
+Self-host is **PostgreSQL multi-node**. There is one supported topology, in
+[`deploy/compose.yaml`](deploy/compose.yaml); running fewer api nodes scales it
+down, it does not change it. There is no SQLite or filesystem-database
+single-node topology and no `minimal` profile (product decision 12, 2026-10-20):
+every process needs `DATABASE_URL` to a PostgreSQL server and the migrate gate.
+
+```sh
+# From the repository root. Use staging values; never production credentials.
+export POSTGRES_PASSWORD=… CLOUD_PUBLIC_URL=https://gateway.staging.example
+export GATEWAY_ENCRYPTION_KEYS=… GATEWAY_ENCRYPTION_CURRENT=…
+docker compose -f apps/api-node/deploy/compose.yaml up -d --build
+# Adds the #378 mock upstream (fake sk_test_* keys) on the compose network:
+docker compose -f apps/api-node/deploy/compose.yaml --profile test up -d --build
+```
+
+| Service | Runs | Notes |
+| --- | --- | --- |
+| `postgres` | PostgreSQL 16 | Authority for every node: ledger, budgets, sessions, BullMQ queues. |
+| `migrate` | `migrate` script, then exits | One-shot gate. Every application service waits for `service_completed_successfully`; startup never migrates. |
+| `api-1`…`api-3` | `src/server.ts`, `GATEWAY_ROLE=api` | Identical, stateless gateway nodes (model data plane, relay, auth). Health check `GET /readyz`. |
+| `worker` | `src/outbox-worker.ts` | Outbox notifications, checkpoint handoff, BullMQ-on-PostgreSQL workers. |
+| `admin` | `src/server.ts`, `GATEWAY_ROLE=admin` | Same server without the model-gateway data plane. |
+| `mock-upstream` | `src/mock-upstream/cli.ts` | `profiles: [test]` only; never part of the default topology. |
+
+All roles run one image built from [`deploy/Dockerfile`](deploy/Dockerfile).
+Compose refuses to start without `POSTGRES_PASSWORD`, `CLOUD_PUBLIC_URL` and the
+encryption key ring; secrets come from the deployer's environment, never the image.
+`BETTER_AUTH_SECRET` is optional, as above. Ports publish on `127.0.0.1` unless
+`GATEWAY_PUBLISH_HOST` says otherwise.
+
+What the deployer provides, on purpose not shipped here:
+
+- **Load balancer.** Point it at the api nodes, health-check `GET /readyz`
+  (503 while draining), no sticky sessions, response buffering off for SSE and
+  read timeouts longer than the longest stream. `stop_grace_period` (60s) covers
+  the SIGTERM drain (`GATEWAY_DRAIN_DELAY_MS` + `_GRACE_MS` + `_SETTLE_MS`).
+- **Shared blob storage.** `CLOUD_ASSET_DIR` and `CLOUD_CONTENT_DIR` live on the
+  one `blobs` volume every node mounts. On several hosts, mount the same shared
+  filesystem at `/data`. There is no S3/MinIO blob port in api-node yet, so the
+  compose file runs no object store.
+- **Redis is not required.** Nothing in api-node reads it (BullMQ runs on
+  PostgreSQL), so no Redis service is shipped, optional or otherwise.
+
+`src/deploy-compose.test.ts` checks this contract in the unit suite: the roles,
+the migrate gate, the test-only mock, PostgreSQL everywhere, required secrets,
+drain-length stop grace and no load balancer config.
+
 ## Shared Web frontend in local development
 
 Run the existing Vite/React Web frontend against Node without the Cloudflare

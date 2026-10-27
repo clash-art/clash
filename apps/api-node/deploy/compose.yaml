@@ -1,0 +1,177 @@
+# gateway-node distributed topology (#374). Self-host = Postgres multi-node:
+# three stateless `api` nodes, one `worker`, one `admin`, one PostgreSQL.
+# There is no SQLite/filesystem single-node topology (decision 12).
+#
+#   docker compose -f apps/api-node/deploy/compose.yaml up -d --build
+#   docker compose -f apps/api-node/deploy/compose.yaml --profile test up -d --build
+#
+# Required environment (compose refuses to start without it):
+#   POSTGRES_PASSWORD, CLOUD_PUBLIC_URL, GATEWAY_ENCRYPTION_KEYS,
+#   GATEWAY_ENCRYPTION_CURRENT. See apps/api-node/README.md "Self-host topology".
+#
+# Not shipped here, on purpose:
+#   - a load balancer (CONTRIBUTING anti-pattern 4): point yours at the api
+#     nodes' published ports, health-check GET /readyz, no sticky sessions;
+#   - Redis: nothing in gateway-node reads it (BullMQ runs on PostgreSQL);
+#   - MinIO/S3: the Node blob store is the shared `blobs` volume below until a
+#     Node S3 blob port exists.
+
+name: clash-gateway
+
+x-build: &build
+  context: ../../..
+  dockerfile: apps/api-node/deploy/Dockerfile
+
+x-gateway-env: &gateway-env
+  DATABASE_URL: postgresql://clash:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/clash
+  CLOUD_PUBLIC_URL: ${CLOUD_PUBLIC_URL:?set CLOUD_PUBLIC_URL to the load balancer origin}
+  CLOUD_ASSET_DIR: /data/assets
+  CLOUD_CONTENT_DIR: /data/content
+  HOST: 0.0.0.0
+  PORT: "8080"
+
+x-gateway-keys: &gateway-keys
+  GATEWAY_ENCRYPTION_KEYS: ${GATEWAY_ENCRYPTION_KEYS:?set GATEWAY_ENCRYPTION_KEYS}
+  GATEWAY_ENCRYPTION_CURRENT: ${GATEWAY_ENCRYPTION_CURRENT:?set GATEWAY_ENCRYPTION_CURRENT}
+
+# Every application process waits for the one-shot migrate job; startup never migrates.
+x-after-migrate: &after-migrate
+  migrate:
+    condition: service_completed_successfully
+
+x-readyz: &readyz
+  test:
+    - CMD
+    - node
+    - -e
+    - "fetch('http://127.0.0.1:8080/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 20s
+
+x-api: &api
+  build: *build
+  image: clash-api-node:local
+  command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, --import, ./src/telemetry.ts, src/server.ts]
+  environment:
+    <<: [*gateway-env, *gateway-keys]
+    GATEWAY_ROLE: api
+    BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+  volumes:
+    - blobs:/data
+  depends_on: *after-migrate
+  healthcheck: *readyz
+  # PID 1 forwards SIGTERM to the drain handler and reaps the tsx child.
+  init: true
+  # Longer than the SIGTERM drain (GATEWAY_DRAIN_DELAY_MS + GRACE + SETTLE).
+  stop_grace_period: 60s
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: clash
+      POSTGRES_DB: clash
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    command: [postgres, -c, max_connections=300]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, clash, -d, clash]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # One-shot gate: application and BullMQ queue migrations, then exit 0.
+  # Runs the package's own `migrate` script so the gate follows that command.
+  migrate:
+    build: *build
+    image: clash-api-node:local
+    command: [npm, run, --silent, migrate]
+    environment:
+      DATABASE_URL: postgresql://clash:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/clash
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api-1:
+    <<: *api
+    ports:
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_API_1_PORT:-8081}:8080
+
+  api-2:
+    <<: *api
+    ports:
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_API_2_PORT:-8082}:8080
+
+  api-3:
+    <<: *api
+    ports:
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_API_3_PORT:-8083}:8080
+
+  # Outbox notifications, checkpoint handoff and BullMQ-on-PostgreSQL workers.
+  worker:
+    build: *build
+    image: clash-api-node:local
+    command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, --import, ./src/telemetry-outbox.ts, src/outbox-worker.ts]
+    environment:
+      <<: *gateway-env
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+    volumes:
+      - blobs:/data
+    depends_on: *after-migrate
+    init: true
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # Same server without the model-gateway data plane (GATEWAY_ROLE=admin).
+  admin:
+    build: *build
+    image: clash-api-node:local
+    command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, --import, ./src/telemetry.ts, src/server.ts]
+    environment:
+      <<: *gateway-env
+      GATEWAY_ROLE: admin
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+    volumes:
+      - blobs:/data
+    ports:
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_ADMIN_PORT:-8090}:8080
+    depends_on: *after-migrate
+    healthcheck: *readyz
+    init: true
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # Test only (#378): deterministic OpenAI/Anthropic mock with fake sk_test_* keys.
+  # Isolated compose network, so the non-loopback bind is allowed here alone.
+  mock-upstream:
+    profiles: [test]
+    build: *build
+    image: clash-api-node:local
+    command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, src/mock-upstream/cli.ts]
+    environment:
+      MOCK_UPSTREAM_HOST: 0.0.0.0
+      MOCK_UPSTREAM_PORT: "9090"
+      MOCK_UPSTREAM_ALLOW_NON_LOOPBACK: "1"
+    ports:
+      - 127.0.0.1:${GATEWAY_MOCK_UPSTREAM_PORT:-9090}:9090
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:9090/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:
+  # Shared by every node: CLOUD_ASSET_DIR and CLOUD_CONTENT_DIR must be one
+  # store across instances (README "Personal asset library").
+  blobs:
