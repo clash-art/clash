@@ -191,6 +191,36 @@ describe("decideAgentCredential", () => {
       decideAgentCredential({ ...base, gatewayMethodId: null, priority: "official-first", authStatus: "needs-auth" }),
     ).toEqual({ action: "keep" });
   });
+
+  it("hands off through a #358 adapter method when ACP gateway auth is missing", () => {
+    expect(
+      decideAgentCredential({
+        ...base,
+        gatewayMethodId: null,
+        adapterMethodId: "adapter:codex-config",
+        priority: "official-first",
+        authStatus: "needs-auth",
+      }),
+    ).toEqual({ action: "handoff", methodId: "adapter:codex-config" });
+    expect(
+      decideAgentCredential({
+        ...base,
+        gatewayMethodId: null,
+        adapterMethodId: "adapter:dsh-env",
+        priority: "byok-first",
+        authStatus: "needs-auth",
+      }),
+    ).toEqual({ action: "handoff", methodId: "adapter:dsh-env" });
+    expect(
+      decideAgentCredential({
+        ...base,
+        gatewayMethodId: null,
+        adapterMethodId: "adapter:dsh-env",
+        priority: "byok-first",
+        authStatus: "configured",
+      }),
+    ).toEqual({ action: "keep" });
+  });
 });
 
 describe("createOfficialGateway", () => {
@@ -448,5 +478,100 @@ describe("createOfficialGateway", () => {
       expect(service.calls.some((call) => call.method === "DELETE")).toBe(true),
     );
     expect((await gateway.status()).handoffs).toEqual([]);
+  });
+
+  it("hands Codex off through the Clash-owned config adapter when ACP gateway auth is missing", async () => {
+    await signIn();
+    const service = fakeService(now);
+    const noGateway: LocalAcpHarnessAuth = {
+      status: "needs-auth",
+      message: "",
+      methods: [{ id: "chatgpt", name: "ChatGPT", type: "agent" }],
+    };
+    const harnesses = fakeHarnesses(noGateway);
+    const gateway = createOfficialGateway({ dataDir, fetch: service.fetch, now });
+    gateway.attachHarnesses(harnesses.port);
+
+    const prepared = await gateway.sessionHook.prepareSession({
+      id: "codex-acp",
+      auth: noGateway,
+    });
+    expect(prepared.handedOff).toBe(true);
+    expect(prepared.spawnEnv?.CODEX_HOME).toContain("official-gateway/codex-home");
+    expect(prepared.spawnEnv?.OPENAI_API_KEY).toBe(service.tokens[0]);
+    expect(harnesses.authenticateHarness).not.toHaveBeenCalled();
+    expect((await gateway.status()).handoffs).toEqual([
+      expect.objectContaining({ harnessId: "codex-acp", methodId: "adapter:codex-config" }),
+    ]);
+    const toml = await readFile(join(prepared.spawnEnv!.CODEX_HOME!, "config.toml"), "utf8");
+    expect(toml).toContain('base_url = "https://clash.example.test/gateway/v1"');
+    expect(toml).not.toContain(service.tokens[0]!);
+    expect(JSON.stringify(await gateway.status())).not.toContain(service.tokens[0]!);
+  });
+
+  it("hands dsh off with Flash-only env and never calls ACP authenticate", async () => {
+    await signIn();
+    const service = fakeService(now);
+    const dshAuth: LocalAcpHarnessAuth = { status: "needs-auth", message: "", methods: [] };
+    const harness: LocalAcpHarness = {
+      id: "dsh-acp",
+      label: "DeepSeek",
+      binary: "dsh-acp",
+      enabled: true,
+      available: true,
+      auth: dshAuth,
+    };
+    const authenticateHarness = vi.fn(async () => ({ harnesses: [harness] }));
+    const gateway = createOfficialGateway({ dataDir, fetch: service.fetch, now });
+    gateway.attachHarnesses({
+      listHarnesses: async () => ({ harnesses: [harness] }),
+      authenticateHarness,
+    });
+    await gateway.setPriority("official-first");
+
+    const prepared = await gateway.sessionHook.prepareSession({ id: "dsh-acp", auth: dshAuth });
+    expect(prepared).toMatchObject({
+      handedOff: true,
+      spawnEnv: {
+        DEEPSEEK_API_KEY: service.tokens[0],
+        DEEPSEEK_BASE_URL: `${SERVICE}/gateway/v1`,
+        DSH_ACP_MODELS: "deepseek-flash",
+        DSH_MODEL: "deepseek-flash",
+      },
+    });
+    expect(authenticateHarness).not.toHaveBeenCalled();
+    expect((await gateway.status()).handoffs[0]?.methodId).toBe("adapter:dsh-env");
+
+    // keep returns the cached spawn overlay without reminting
+    const kept = await gateway.sessionHook.prepareSession({ id: "dsh-acp", auth: dshAuth });
+    expect(kept.handedOff).toBeUndefined();
+    expect(kept.spawnEnv?.DEEPSEEK_API_KEY).toBe(service.tokens[0]);
+    expect(service.tokens).toHaveLength(1);
+  });
+
+  it("scrubs Pi adapter credentials on sign-out", async () => {
+    await signIn();
+    const service = fakeService(now);
+    const piAuth: LocalAcpHarnessAuth = { status: "needs-auth", message: "", methods: [] };
+    const harness: LocalAcpHarness = {
+      id: "pi-acp",
+      label: "Pi",
+      binary: "pi-acp",
+      enabled: true,
+      available: true,
+      auth: piAuth,
+    };
+    const gateway = createOfficialGateway({ dataDir, fetch: service.fetch, now });
+    gateway.attachHarnesses({
+      listHarnesses: async () => ({ harnesses: [harness] }),
+      authenticateHarness: async () => ({ harnesses: [harness] }),
+    });
+    await gateway.setPriority("official-first");
+    const prepared = await gateway.sessionHook.prepareSession({ id: "pi-acp", auth: piAuth });
+    const modelsPath = join(prepared.spawnEnv!.PI_CODING_AGENT_DIR!, "models.json");
+    expect(await readFile(modelsPath, "utf8")).toContain(service.tokens[0]!);
+    await gateway.onSignedOut(SERVICE);
+    expect(await readFile(modelsPath, "utf8")).not.toContain(service.tokens[0]!);
+    expect(gateway.sessionHook.hasHandoff("pi-acp")).toBe(false);
   });
 });

@@ -2999,7 +2999,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         gatewayPreparation = this.officialGateway
           ? await this.officialGateway.prepareSession(requestedAgent)
           : {};
-        if (gatewayPreparation.handedOff)
+        if (gatewayPreparation.handedOff) {
           agent = (
             await this.detectEnabledAgents({
               probeAuth: true,
@@ -3007,6 +3007,10 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
               refresh: true,
             })
           ).find((candidate) => candidate.id === params.agentId);
+          // #358 adapters do not flip ACP auth status; keep the requested agent.
+          if (!agent && (gatewayPreparation.spawnEnv || gatewayPreparation.handedOff))
+            agent = requestedAgent;
+        }
         if (!agent)
           throw new Error(
             gatewayPreparation.gatewayCode
@@ -3153,7 +3157,10 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       ...(params.projectId ? { projectId: params.projectId } : {}),
       ...(params.agentMemberId ? { agentMemberId: params.agentMemberId } : {}),
     };
-    entry.manager.setSpawnEnv?.(this.spawnEnv);
+    entry.manager.setSpawnEnv?.({
+      ...this.spawnEnv,
+      ...(gatewayPreparation.spawnEnv ?? {}),
+    });
     this.sessions.set(sessionId, entry);
     agent = await this.probeAgentMetadata(agent, {
       auth: true,
@@ -3163,7 +3170,13 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       await this.disposeSession(sessionId);
       throw new Error("Local ACP runtime is shutting down");
     }
-    if (agent.auth?.status === "needs-auth") {
+    // #358 adapters inject credentials outside ACP auth methods, so the
+    // harness may still report needs-auth while an official handoff is active.
+    const adapterHandoffActive =
+      Boolean(gatewayPreparation.handedOff) ||
+      Boolean(gatewayPreparation.spawnEnv) ||
+      (this.officialGateway?.hasHandoff(agent.id) ?? false);
+    if (agent.auth?.status === "needs-auth" && !adapterHandoffActive) {
       const gatewayCode = gatewayPreparation.gatewayCode;
       send({
         type: "session.error",

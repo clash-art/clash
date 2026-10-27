@@ -58,13 +58,18 @@ reason and non-secret ids only. Neither responses nor logs contain the token.
 
 ## Desktop Host handoff (Clash official provider)
 
-The Local Host (`apps/local-api/src/official-gateway.ts`, #357) is the only
+The Local Host (`apps/local-api/src/official-gateway.ts`, #357/#358) is the only
 desktop caller. It mints with the `clsh_` token saved by the cloud sign-in and
-passes the `sk_gw_` token straight to an ACP agent's gateway auth method (the
-`fields` method with `baseUrl` and `api-key`; `providerName` is `clash`). The
-renderer never sees the token, and it is never written to disk: the Host
-persists only the key id, expiry and service per agent, plus the user's
-priority.
+passes the `sk_gw_` token to an ACP agent's gateway auth method when one exists
+(the `fields` method with `baseUrl` and `api-key`; `providerName` is `clash`).
+When the harness has no gateway method, #358 runtime adapters inject the same
+base URL + key through Clash-owned Codex `CODEX_HOME`, Pi `PI_CODING_AGENT_DIR`
+(fallback), or dsh session env (`DEEPSEEK_*`, Flash-only). Spike:
+`docs/spikes/gateway-runtime-adapters-358.md`. The renderer never sees the
+token. ACP and Codex/dsh adapters keep it out of durable Host state; Pi's
+fallback may write it into the Clash-owned `models.json` and scrubs it on
+sign-out. User `~/.codex` / `~/.pi` are never opened. The Host persists only
+the key id, expiry and service per agent, plus the user's priority.
 
 | Host route                                                     | Purpose                                                                 |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------- |

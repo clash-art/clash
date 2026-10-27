@@ -3,11 +3,14 @@
  *
  * The Host mints a short-lived `sk_gw_` gateway token with the signed-in
  * cloud credential (`POST <service>/api/v1/gateway/tokens`) and passes it to
- * an ACP agent's gateway auth method. The raw token lives in memory only
- * until that handoff: it is never written to disk and never sent to the
- * renderer. What is persisted is non-secret: the user's credential priority
- * and, per harness, the handed-off key id and expiry so the Host can renew
- * or re-mint it.
+ * an ACP agent's gateway auth method. When the harness has no gateway
+ * method, #358 runtime adapters (Codex config / Pi models.json / dsh env)
+ * inject base URL + key under Clash-owned paths. The raw token lives in
+ * memory (and, for Pi fallback only, the Clash-owned models.json) until
+ * that handoff: it is never written to user ~/.codex or ~/.pi and never
+ * sent to the renderer. What is persisted is non-secret: the user's
+ * credential priority and, per harness, the handed-off key id and expiry
+ * so the Host can renew or re-mint it.
  *
  * Signed out or offline, there is no fallback to any platform key: the
  * official path fails with GATEWAY_AUTH_REQUIRED.
@@ -28,6 +31,12 @@ import {
 import { cloudOrigin, createCloudAccounts } from "./cloud-accounts.js";
 import { createSqliteLocalConfigStore } from "./local-config-store.js";
 import type { LocalAcpHarness, LocalAcpHarnessAuth } from "./local-acp.js";
+import {
+  applyGatewayRuntimeAdapter,
+  isGatewayAdapterMethodId,
+  resolveGatewayRuntimeAdapter,
+  scrubPiAdapterCredentials,
+} from "./gateway-runtime-adapters.js";
 
 const STATE_KEY = "official_gateway";
 /** A handoff this close to expiry is renewed (or re-minted) before a session starts. */
@@ -88,6 +97,8 @@ export function decideAgentCredential(input: {
   priority: AgentCredentialPriority;
   signedIn: boolean;
   gatewayMethodId: string | null;
+  /** Synthetic adapter method id when the harness has no ACP gateway method (#358). */
+  adapterMethodId?: string | null;
   authStatus: LocalAcpHarnessAuth["status"] | undefined;
   handoff: { expiresAt: number } | null;
   now: number;
@@ -99,15 +110,15 @@ export function decideAgentCredential(input: {
       ? { action: "refresh" }
       : { action: "keep" };
   }
-  if (!input.gatewayMethodId) return { action: "keep" };
+  const methodId = input.gatewayMethodId ?? input.adapterMethodId ?? null;
+  if (!methodId) return { action: "keep" };
   const needsAuth = input.authStatus === "needs-auth";
   if (input.priority === "official-first") {
-    if (input.signedIn)
-      return { action: "handoff", methodId: input.gatewayMethodId };
+    if (input.signedIn) return { action: "handoff", methodId };
     return needsAuth ? { action: "auth-required" } : { action: "keep" };
   }
   return needsAuth && input.signedIn
-    ? { action: "handoff", methodId: input.gatewayMethodId }
+    ? { action: "handoff", methodId }
     : { action: "keep" };
 }
 
@@ -172,7 +183,12 @@ export interface OfficialGatewaySessionHook {
   prepareSession(agent: {
     id: string;
     auth?: LocalAcpHarnessAuth;
-  }): Promise<{ gatewayCode?: OfficialGatewayClientCode; handedOff?: boolean }>;
+  }): Promise<{
+    gatewayCode?: OfficialGatewayClientCode;
+    handedOff?: boolean;
+    /** #358 adapter spawn overlay (token may be present; memory / session only). */
+    spawnEnv?: Record<string, string>;
+  }>;
   /** Whether this harness currently runs on an official handoff. */
   hasHandoff(harnessId: string): boolean;
   /**
@@ -382,6 +398,14 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
   }
 
   async function resolveMethodId(harnessId: string, methodId?: string) {
+    const adapter = resolveGatewayRuntimeAdapter(harnessId);
+    if (methodId && isGatewayAdapterMethodId(methodId)) {
+      if (!adapter || adapter.methodId !== methodId)
+        throw new OfficialGatewayError("GATEWAY_CAPABILITY_UNAVAILABLE", {
+          status: 400,
+        });
+      return methodId;
+    }
     const port = requirePort();
     const listed = port.listHarnesses
       ? (await port.listHarnesses({ probe: "none" })).harnesses.find(
@@ -398,15 +422,106 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
       return methodId;
     }
     const found = gatewayAuthMethodId(listed?.auth);
-    if (!found)
+    if (found) return found;
+    if (adapter) return adapter.methodId;
+    throw new OfficialGatewayError("GATEWAY_CAPABILITY_UNAVAILABLE", {
+      status: 400,
+    });
+  }
+
+  /** In-memory adapter spawn overlays (tokens may be present; never persisted). */
+  const adapterSpawnEnv = new Map<string, Record<string, string>>();
+
+  function cachedAdapterSpawnEnv(
+    harnessId: string,
+  ): Record<string, string> | undefined {
+    const env = adapterSpawnEnv.get(harnessId);
+    return env ? { ...env } : undefined;
+  }
+
+  function sessionResult(input: {
+    gatewayCode?: OfficialGatewayClientCode;
+    handedOff?: boolean;
+    spawnEnv?: Record<string, string>;
+  }): {
+    gatewayCode?: OfficialGatewayClientCode;
+    handedOff?: boolean;
+    spawnEnv?: Record<string, string>;
+  } {
+    return {
+      ...(input.gatewayCode ? { gatewayCode: input.gatewayCode } : {}),
+      ...(input.handedOff ? { handedOff: true } : {}),
+      ...(input.spawnEnv ? { spawnEnv: input.spawnEnv } : {}),
+    };
+  }
+
+  function spawnEnvFromHandoff(result: unknown): Record<string, string> | undefined {
+    if (!result || typeof result !== "object") return undefined;
+    const env = (result as { spawnEnv?: unknown }).spawnEnv;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  async function recordHandoff(
+    harnessId: string,
+    methodId: string,
+    minted: Awaited<ReturnType<typeof takeToken>>,
+  ) {
+    await updateState((state) => {
+      state.handoffs[harnessId] = {
+        methodId,
+        keyId: minted.keyId,
+        expiresAt: new Date(minted.expiresAt).toISOString(),
+        serviceUrl: minted.serviceUrl,
+      };
+    });
+    lastError = null;
+    log("official_gateway.handoff", { harnessId, keyId: minted.keyId });
+  }
+
+  /**
+   * #358: mint and inject via Clash-owned config/env when ACP gateway auth is
+   * missing. Returns the session spawn overlay (may contain the token).
+   */
+  async function handoffViaAdapter(harnessId: string, methodId: string) {
+    const adapter = resolveGatewayRuntimeAdapter(harnessId);
+    if (!adapter || adapter.methodId !== methodId)
       throw new OfficialGatewayError("GATEWAY_CAPABILITY_UNAVAILABLE", {
         status: 400,
       });
-    return found;
+    const minted = await takeToken();
+    let applied: Awaited<ReturnType<typeof applyGatewayRuntimeAdapter>>;
+    try {
+      applied = await applyGatewayRuntimeAdapter({
+        harnessId,
+        baseUrl: minted.baseUrl,
+        apiKey: minted.token,
+        dataDir: options.dataDir,
+      });
+    } catch (error) {
+      void revoke(minted.serviceUrl, [minted.keyId]);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(message.split(minted.token).join("[redacted]"));
+    }
+    adapterSpawnEnv.set(harnessId, { ...applied.spawnEnv });
+    await recordHandoff(harnessId, methodId, minted);
+    const listed = harnesses?.listHarnesses
+      ? await harnesses.listHarnesses({ probe: "none" })
+      : { harnesses: [] as LocalAcpHarness[] };
+    return {
+      harnesses: listed.harnesses,
+      spawnEnv: { ...applied.spawnEnv },
+    };
   }
 
   /** Mint (or take the sign-in token) and pass it to the harness's gateway auth. */
   async function handoffNow(harnessId: string, methodId: string) {
+    if (isGatewayAdapterMethodId(methodId))
+      return handoffViaAdapter(harnessId, methodId);
     const port = requirePort();
     const minted = await takeToken();
     let result: { harnesses: LocalAcpHarness[] };
@@ -426,16 +541,8 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(message.split(minted.token).join("[redacted]"));
     }
-    await updateState((state) => {
-      state.handoffs[harnessId] = {
-        methodId,
-        keyId: minted.keyId,
-        expiresAt: new Date(minted.expiresAt).toISOString(),
-        serviceUrl: minted.serviceUrl,
-      };
-    });
-    lastError = null;
-    log("official_gateway.handoff", { harnessId, keyId: minted.keyId });
+    adapterSpawnEnv.delete(harnessId);
+    await recordHandoff(harnessId, methodId, minted);
     return result;
   }
 
@@ -500,10 +607,15 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
         const signedIn = Boolean(
           cloud.user && (await accounts.token(cloud.serviceUrl)),
         );
+        const gatewayMethodId = gatewayAuthMethodId(agent.auth);
+        const adapter = gatewayMethodId
+          ? null
+          : resolveGatewayRuntimeAdapter(agent.id);
         const decision = decideAgentCredential({
           priority: state.priority,
           signedIn,
-          gatewayMethodId: gatewayAuthMethodId(agent.auth),
+          gatewayMethodId,
+          adapterMethodId: adapter?.methodId ?? null,
           authStatus: agent.auth?.status,
           handoff:
             record && record.serviceUrl === cloud.serviceUrl
@@ -514,24 +626,55 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
           now: now(),
         });
         switch (decision.action) {
-          case "keep":
-            return {};
+          case "keep": {
+            // Adapter env overlays (dsh/codex keys) live only in memory: remint
+            // after a Host restart when the handoff record survived without cache.
+            if (
+              record &&
+              isGatewayAdapterMethodId(record.methodId) &&
+              !adapterSpawnEnv.has(agent.id)
+            ) {
+              const result = await single(agent.id, () =>
+                handoffNow(agent.id, record.methodId),
+              );
+              return sessionResult({
+                handedOff: true,
+                spawnEnv:
+                  spawnEnvFromHandoff(result) ??
+                  cachedAdapterSpawnEnv(agent.id),
+              });
+            }
+            return sessionResult({
+              spawnEnv: cachedAdapterSpawnEnv(agent.id),
+            });
+          }
           case "auth-required":
-            return { gatewayCode: "GATEWAY_AUTH_REQUIRED" };
-          case "handoff":
-            await single(agent.id, () =>
+            return sessionResult({ gatewayCode: "GATEWAY_AUTH_REQUIRED" });
+          case "handoff": {
+            const result = await single(agent.id, () =>
               handoffNow(agent.id, decision.methodId),
             );
-            return { handedOff: true };
-          case "refresh":
-            return (await single(agent.id, () => refresh(agent.id, record!)))
-              ? { handedOff: true }
-              : {};
+            return sessionResult({
+              handedOff: true,
+              spawnEnv:
+                spawnEnvFromHandoff(result) ??
+                cachedAdapterSpawnEnv(agent.id),
+            });
+          }
+          case "refresh": {
+            const reminted = await single(agent.id, () =>
+              refresh(agent.id, record!),
+            );
+            return sessionResult({
+              handedOff: reminted || undefined,
+              spawnEnv: cachedAdapterSpawnEnv(agent.id),
+            });
+          }
         }
       } catch (error) {
         const coded = remember(error);
         return isOfficialGatewayClientCode(coded.code)
-          ? { gatewayCode: coded.code }
+          ? sessionResult({ gatewayCode: coded.code })
           : {};
       }
     },
@@ -614,9 +757,13 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
     async forgetHandoff(harnessId: string) {
       await ready;
       if (!handoffIds.has(harnessId)) return;
+      const record = (await loadState()).handoffs[harnessId];
       await updateState((current) => {
         delete current.handoffs[harnessId];
       });
+      adapterSpawnEnv.delete(harnessId);
+      if (record && isGatewayAdapterMethodId(record.methodId))
+        await scrubPiAdapterCredentials(options.dataDir).catch(() => undefined);
     },
     /** Mint on sign-in so the first handoff is ready and problems show early. */
     async onSignedIn(serviceUrl: string) {
@@ -634,10 +781,13 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
     async onSignedOut(serviceUrl: string) {
       const origin = cloudOrigin(serviceUrl);
       let keyIds: string[] = [];
+      let scrubPi = false;
       await updateState((state) => {
         for (const [harnessId, record] of Object.entries(state.handoffs)) {
           if (record.serviceUrl !== origin) continue;
           keyIds.push(record.keyId);
+          if (isGatewayAdapterMethodId(record.methodId)) scrubPi = true;
+          adapterSpawnEnv.delete(harnessId);
           delete state.handoffs[harnessId];
         }
       }).catch(() => undefined);
@@ -646,6 +796,8 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
         pending = null;
       }
       await revoke(origin, keyIds);
+      if (scrubPi)
+        await scrubPiAdapterCredentials(options.dataDir).catch(() => undefined);
       lastError = null;
     },
   };
