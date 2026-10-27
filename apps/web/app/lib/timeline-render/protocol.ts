@@ -18,6 +18,11 @@ export interface TimelineRenderFrameRequest {
   licenseKey: string | null;
   /** Only honoured when the frame supports native HTML-in-canvas. */
   allowHtmlInCanvas: boolean;
+  /**
+   * Optional Canvas node map for live sourceNodeId resolution (Remotion TSX
+   * and HTML MG documents). Same live-reference contract as preview host.
+   */
+  allNodes?: unknown;
 }
 
 export type TimelineRenderFrameMessage =

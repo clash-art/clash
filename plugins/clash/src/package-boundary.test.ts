@@ -243,9 +243,12 @@ test("production skills pair creative judgment with the supported product path",
   assert.match(mgSkill, /clash timeline render --timeline/);
   assert.match(mgSkill, /clash_canvas_add/);
   assert.match(mgSkill, /clash_timeline_render/);
+  // Dual-runtime (#448): skill may teach `runtime: html` + html_motion.
+  // Deleted command-layer tokens stay banned (no silent MgCompositionSpec reopen).
+  assert.match(mgSkill, /dual-runtime|html_motion|runtime:\s*html/i);
   assert.doesNotMatch(
     mgSkill,
-    /render-mg|verify-mg-preview|export-mg|MgCompositionSpec|runtime:\s*html|rasterizer|spec\.json/i,
+    /render-mg|verify-mg-preview|export-mg|MgCompositionSpec|rasterizer|spec\.json/i,
   );
 });
 

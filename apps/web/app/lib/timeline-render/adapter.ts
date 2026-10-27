@@ -24,6 +24,12 @@ import { runtimeApiUrl } from "@clash/web-ui/lib/runtimeConfig";
 import { importProjectAssetFile } from "@clash/web-ui/lib/hooks/useAsset";
 import { preflightBrowserTimelineRender } from "./preflight";
 import {
+  hydrateHtmlMotionSourcesForExport,
+  validateHtmlMotionExportReadiness,
+} from "@clash/web-ui/lib/htmlMotionExport";
+import { resolveTimelineExportNodes } from "@clash/web-ui/lib/runtimeConfig";
+import { readTimelineExportNodes } from "@clash/remotion-ui/preview-host";
+import {
   TIMELINE_RENDER_PROTOCOL,
   isTimelineRenderFrameMessage,
   isTrustedFrameMessage,
@@ -133,6 +139,7 @@ export function renderTimelineInIframe(
               durationInFrames: input.durationInFrames,
               licenseKey: input.licenseKey,
               allowHtmlInCanvas: input.allowHtmlInCanvas,
+              allNodes: input.allNodes,
             },
           });
           return;
@@ -169,6 +176,8 @@ export interface BrowserTimelineRenderExecutorOptions {
   licenseKey: string | null;
   /** Config flag, default false. Only honoured when the frame supports it. */
   allowHtmlInCanvas?: boolean;
+  /** Optional Canvas/runtime node map for live HTML MG hydration (#448). */
+  resolveExportNodes?: () => Record<string, unknown> | undefined;
   /** Config cap in seconds, default ten minutes. */
   maxDurationSeconds?: number;
   /** Injectable seams for unit tests; production uses the values below. */
@@ -379,7 +388,31 @@ export function createBrowserTimelineRenderExecutor(
           },
         };
       }
-      const tracks = await signedTrackSources(projectId, preflight.tracks);
+      const exportNodes =
+        options.resolveExportNodes?.() ??
+        resolveTimelineExportNodes() ??
+        readTimelineExportNodes() ??
+        {};
+      const readiness = validateHtmlMotionExportReadiness(
+        preflight.tracks,
+        exportNodes,
+      );
+      if (!readiness.ok) {
+        const receipt = await submitOnce();
+        return {
+          ...receipt,
+          renderPath: "host",
+          fallback: {
+            reason: "browser-render-failed",
+            message: readiness.reason,
+          },
+        };
+      }
+      const hydratedTracks = hydrateHtmlMotionSourcesForExport(
+        preflight.tracks,
+        exportNodes,
+      );
+      const tracks = await signedTrackSources(projectId, hydratedTracks);
       const file = await renderFrame({
         frameUrl: frameUrlFrom(options.frameOrigin),
         tracks,
@@ -389,6 +422,7 @@ export function createBrowserTimelineRenderExecutor(
         durationInFrames: preflight.durationInFrames,
         licenseKey: options.licenseKey,
         allowHtmlInCanvas: options.allowHtmlInCanvas ?? false,
+        allNodes: exportNodes,
         signal,
         onProgress,
       });
