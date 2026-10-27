@@ -183,8 +183,9 @@ const HtmlMotionNode = ({
           <Button
             type="button"
             size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-xs"
+            shape="rounded"
+            aria-label="Edit HTML"
+            className="nodrag h-7 min-h-7 px-2 text-xs"
             onClick={() => setEditorOpen(true)}
           >
             Edit HTML

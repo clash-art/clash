@@ -28,6 +28,7 @@ z.object({
     "text",
     "group",
     "remotion",
+    "html_motion",
     "image",
     "video",
     "audio",
