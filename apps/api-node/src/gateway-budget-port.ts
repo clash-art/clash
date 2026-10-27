@@ -11,10 +11,12 @@
  *   refund  the provider step of a `refund` settle run (`refundMedia`).
  *
  * Budget ids come from the intent (the identity authenticated at admission),
- * never re-derived later. `check` applies the floor the data plane resolved;
- * on this host that is the store's knob (`readGatewaySettlementFloor`,
- * `gateway_config` key GATEWAY_SETTLEMENT_FLOOR_CONFIG_KEY, wired as the
- * app's `creditFloor` in server.ts), the same floor the `charge` cap reads.
+ * never re-derived later. `check` applies the floor the data plane resolved
+ * (hard budgets only; soft/alert never refuse on the floor). On this host that
+ * is the store's knob (`readGatewaySettlementFloor`, `gateway_config` key
+ * GATEWAY_SETTLEMENT_FLOOR_CONFIG_KEY, wired as the app's `creditFloor` in
+ * server.ts). `charge` bills the full actual cost and does not re-apply the
+ * floor as a cap.
  *
  * Ledger kinds on this schema: `debit` (media prepay), `charge` (text
  * postpay), `refund` (a failed media debit), each unique per

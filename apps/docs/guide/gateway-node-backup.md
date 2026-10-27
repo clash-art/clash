@@ -124,59 +124,24 @@ Cloud Workers-specific rotate / suspend / drain steps:
 
 ## Incident SQL stubs
 
-**TODO(#362):** gateway-node Postgres DDL may rename or reshape columns vs the
-D1 cloud schema. Until #362 merges, treat the following as **stubs** aligned
-with gateway-core / cloud naming (`*_micro_credits`, ledger `kind`/`status`).
-Replace table/column identifiers when the PG migration is authoritative.
-Do not invent a parallel money model.
-
 Checked-in copy: `apps/api-node/deploy/ops/incident-queries.sql`.
 
-```sql
--- Drift: reserved on budget vs open/settle_failed holds
--- Expect: 0 rows at quiescence
-SELECT b.id AS budget_id,
-       b.reserved_micro_credits AS budget_reserved,
-       COALESCE(h.hold_sum, 0) AS hold_sum
-  FROM gateway_budget b
-  LEFT JOIN (
-    SELECT budget_id, SUM(amount_micro_credits) AS hold_sum
-      FROM gateway_usage_ledger
-     WHERE kind = 'hold' AND status IN ('open', 'settle_failed')
-     GROUP BY budget_id
-  ) h ON h.budget_id = b.id
- WHERE b.reserved_micro_credits <> COALESCE(h.hold_sum, 0);
+Under N2 (#399) there are **no open holds and no sweeper**. Prefer Durable Run /
+settle-journal recovery, then audited `wallet/adjust`. Never rewrite historical
+`settle` / `charge` / `debit` rows. Expect `reserved_micro_credits = 0`.
 
--- Drift: spent vs settle sum (usage budgets)
-SELECT b.id AS budget_id,
-       b.spent_micro_credits AS budget_spent,
-       COALESCE(s.settle_sum, 0) AS settle_sum
-  FROM gateway_budget b
-  LEFT JOIN (
-    SELECT budget_id, SUM(amount_micro_credits) AS settle_sum
-      FROM gateway_usage_ledger
-     WHERE kind = 'settle'
-     GROUP BY budget_id
-  ) s ON s.budget_id = b.id
- WHERE b.spent_micro_credits <> COALESCE(s.settle_sum, 0);
+Primary checks (see the SQL file for the full text):
 
--- Overspend (must be empty for hard limits)
-SELECT id, limit_micro_credits, spent_micro_credits, reserved_micro_credits
-  FROM gateway_budget
- WHERE limit_micro_credits IS NOT NULL
-   AND spent_micro_credits + reserved_micro_credits > limit_micro_credits;
+- `reserved_micro_credits <> 0` (should be empty)
+- spent vs `debit`+`charge`−`refund` ledger sum (Node kinds)
 
--- Stuck / abandoned holds (past expiry still open)
--- TODO(#362): confirm expires_at column type (timestamptz vs unix seconds)
-SELECT id, budget_id, status, expires_at, amount_micro_credits
-  FROM gateway_usage_ledger
- WHERE kind = 'hold'
-   AND status IN ('open', 'settle_failed')
-   AND expires_at < EXTRACT(EPOCH FROM NOW())::bigint;
-```
+Hold-era queries (reserved vs open holds, stuck holds, “overspend under hard
+limit”) remain in that file marked **HISTORICAL** for old backups only — text
+postpay may legally push `spent` past the limit after a full actual charge, so
+the overspend query is not a live N2 alert.
 
-If drift is confirmed after sweeper/recovery: append audited `adjust` /
-`refund` rows — never rewrite historical `settle` rows.
+If spend drift is confirmed after journal recovery: append audited `adjust` /
+`refund` rows — never rewrite historical money rows.
 
 ## Explicitly unsupported
 

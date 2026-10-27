@@ -449,7 +449,7 @@ describe("pg gateway budget store — N2 settlement", () => {
     expect(overrideAdmission.floorMicroCredits).toBe(10);
   });
 
-  it("charges the actual text cost once and may go negative down to the floor", async () => {
+  it("charges the actual text cost once (may go negative; floor is admission-only)", async () => {
     const { pglite, db } = database;
     await insertBudget(pglite, { id: "budget-wallet", limitMicroCredits: 1_000 });
     const store = createPgGatewayBudgetStore(db, { floorMicroCredits: 100 });
@@ -486,7 +486,7 @@ describe("pg gateway budget store — N2 settlement", () => {
     expect(await ledgerRows(pglite, "req-text-1")).toHaveLength(1);
   });
 
-  it("never charges past the floor and records the unpaid remainder", async () => {
+  it("bills the full actual text cost even past the floor (planCharge / D1)", async () => {
     const { pglite, db } = database;
     await insertBudget(pglite, { id: "budget-wallet", limitMicroCredits: 1_000 });
     const store = createPgGatewayBudgetStore(db, { floorMicroCredits: 100 });
@@ -500,29 +500,38 @@ describe("pg gateway budget store — N2 settlement", () => {
     });
 
     expect(charged).toMatchObject({
-      chargedMicroCredits: 1_100,
+      chargedMicroCredits: 1_200,
       requestedMicroCredits: 1_200,
-      unbilledMicroCredits: 100,
+      unbilledMicroCredits: 0,
     });
-    expect(await spentOf(pglite, "budget-wallet")).toBe(1_100);
+    expect(await spentOf(pglite, "budget-wallet")).toBe(1_200);
 
     const rows = await ledgerRows(pglite, "req-text-over");
     expect(rows).toHaveLength(1);
     expect(rows[0].kind).toBe("charge");
-    expect(rows[0].amountMicroCredits).toBe(1_100);
+    expect(rows[0].amountMicroCredits).toBe(1_200);
     expect(rows[0].billingBasis).toMatchObject({
       settlement: "postpay",
       requestedMicroCredits: 1_200,
-      chargedMicroCredits: 1_100,
-      unbilledMicroCredits: 100,
-      floorMicroCredits: 100,
+      chargedMicroCredits: 1_200,
     });
+    expect(rows[0].billingBasis).not.toHaveProperty("unbilledMicroCredits");
 
+    // Past -floor is expected after a single postpay charge; not ledger drift.
     const report = await checkGatewayInvariants(db, {
       tenantId: "tenant-a",
       floorMicroCredits: 100,
     });
     expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+
+    // Next hard admission refuses at/below the floor.
+    await expect(
+      store.admitText({ tenantId: "tenant-a", budgetIds: ["budget-wallet"] }),
+    ).rejects.toMatchObject({
+      code: "GATEWAY_BUDGET_EXCEEDED",
+      details: { reason: "below_floor" },
+    });
   });
 
   it("charges every scope of a text request the same amount", async () => {
@@ -562,7 +571,7 @@ describe("pg gateway budget store — N2 settlement", () => {
     expect(await ledgerRows(pglite, "req-text-scopes")).toHaveLength(3);
   });
 
-  it("refuses a text request when one scope is below the floor", async () => {
+  it("refuses a text request when one hard scope is below the floor", async () => {
     const { pglite, db } = database;
     await insertBudget(pglite, {
       id: "budget-wallet",
@@ -585,6 +594,34 @@ describe("pg gateway budget store — N2 settlement", () => {
         budgetIds: ["budget-wallet", "budget-member"],
       }),
     ).rejects.toMatchObject({ code: "GATEWAY_BUDGET_EXCEEDED" });
+    expect(await ledgerRows(pglite)).toHaveLength(0);
+  });
+
+  it("does not refuse soft or alert budgets on the floor (planCheck / D1)", async () => {
+    const { pglite, db } = database;
+    await insertBudget(pglite, {
+      id: "budget-soft",
+      scope: "user",
+      scopeId: "user-a",
+      limitMicroCredits: 100,
+      spentMicroCredits: 100,
+      enforcement: "soft",
+    });
+    await insertBudget(pglite, {
+      id: "budget-alert",
+      scope: "key",
+      scopeId: "key-a",
+      limitMicroCredits: 100,
+      spentMicroCredits: 250,
+      enforcement: "alert",
+    });
+    const store = createPgGatewayBudgetStore(db, { floorMicroCredits: 0 });
+
+    const admitted = await store.admitText({
+      tenantId: "tenant-a",
+      budgetIds: ["budget-soft", "budget-alert"],
+    });
+    expect(admitted.admitted).toBe(true);
     expect(await ledgerRows(pglite)).toHaveLength(0);
   });
 
@@ -622,7 +659,7 @@ describe("pg gateway budget store — N2 settlement", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("keeps the floor exposure of 100 concurrent text charges inside the floor", async () => {
+  it("bills every concurrent text charge in full (no floor cap / unbilled)", async () => {
     const { pglite, db } = database;
     await insertBudget(pglite, { id: "budget-wallet", limitMicroCredits: 1_000 });
     const store = createPgGatewayBudgetStore(db, { floorMicroCredits: 100 });
@@ -643,21 +680,18 @@ describe("pg gateway budget store — N2 settlement", () => {
       outcomes.filter((outcome) => outcome.status === "fulfilled"),
     ).toHaveLength(100);
     const spent = await spentOf(pglite, "budget-wallet");
-    // The budget may go negative, but never past the floor.
-    expect(spent).toBeLessThanOrEqual(1_100);
-    expect(spent).toBe(1_100);
+    // Full actual: 100 × 100. A single request (and in-flight pile-up) may
+    // push past -floor; admission is what bounds new work.
+    expect(spent).toBe(10_000);
     const rows = await ledgerRows(pglite);
     const charged = rows.reduce(
       (total, row) => total + row.amountMicroCredits,
       0,
     );
-    expect(charged).toBe(1_100);
-    const unbilled = rows.reduce(
-      (total, row) =>
-        total + Number(row.billingBasis.unbilledMicroCredits ?? 0),
-      0,
-    );
-    expect(unbilled).toBe(100 * 100 - 1_100);
+    expect(charged).toBe(10_000);
+    for (const row of rows) {
+      expect(row.billingBasis).not.toHaveProperty("unbilledMicroCredits");
+    }
     const report = await checkGatewayInvariants(db, {
       tenantId: "tenant-a",
       floorMicroCredits: 100,
@@ -722,14 +756,14 @@ describe("pg gateway budget store — N2 settlement", () => {
     });
   });
 
-  it("reports a balance below the credit floor", async () => {
+  it("treats a postpay balance past the floor as expected, not ledger drift", async () => {
     const { pglite, db } = database;
     await insertBudget(pglite, {
       id: "budget-wallet",
       limitMicroCredits: 1_000,
       spentMicroCredits: 1_500,
     });
-    // Ledger matches spent so the only drift is the floor breach.
+    // Ledger matches spent: past -floor after a full actual charge is fine.
     const now = Math.floor(Date.now() / 1000);
     await pglite.query(
       `INSERT INTO gateway_usage_ledger
@@ -746,10 +780,8 @@ describe("pg gateway budget store — N2 settlement", () => {
       tenantId: "tenant-a",
       floorMicroCredits: 100,
     });
-    expect(report.ok).toBe(false);
-    expect(report.violations.map((violation) => violation.rule)).toEqual([
-      "floor-respected",
-    ]);
+    expect(report.ok).toBe(true);
+    expect(report.violations).toEqual([]);
 
     await expect(
       store.admitText({ tenantId: "tenant-a", budgetIds: ["budget-wallet"] }),

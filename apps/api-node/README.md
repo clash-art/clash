@@ -311,7 +311,7 @@ Races proven on real Postgres (PGlite serializes transactions, so these were unt
 
 | Scenario | Checks |
 | --- | --- |
-| budget overdraft | 60 concurrent requests over 3 nodes on a 100k budget, 50k floor: spend stops exactly at limit + floor, next request 402, ledger unique per `(request_id, budget_id, kind)` |
+| budget overdraft | 60 concurrent requests over 3 nodes on a 100k budget, 50k floor: hard admission bounds the floor; each admitted request is charged full actual (may push past limit+floor); next request 402; ledger unique per `(request_id, budget_id, kind)` |
 | charge-once / media debit + refund | 3 processes settle the same request ids at once: one ledger row and one spend per id, exactly one caller told "charged" |
 | rate limits | `requestsPerMinute` admits exactly the limit across nodes; `concurrency` admits exactly the bound, no leaked leases |
 | client abort mid-stream | one `client_aborted` charge per stream, open-stream gauge back to 0 |
@@ -321,18 +321,22 @@ Races proven on real Postgres (PGlite serializes transactions, so these were unt
 | rollover | 4 workers, `FOR UPDATE SKIP LOCKED`: each of 300 due budgets rolled exactly once, work spread over workers |
 
 Accepted edge wear: text is postpay and the charge is one transaction (ledger row +
-spend). A node killed before that transaction commits loses the charge (the
+spend of the **full actual** cost — never floor-capped / never parked as
+unbilled). A node killed before that transaction commits loses the charge (the
 SIGKILL scenario asserts zero charge, never a partial one); once it committed the
-charge is complete. The `gateway_settle_intent` journal (#399) is not written by the
-Node gateway yet, so there is no crash-recovery replay; concurrency leases of a
-killed node stay until the lease TTL / maintenance sweep.
+charge is complete. Crash recovery for unfinished settle work is the Durable Run
+journal path (#399 / `gateway-settle`); the Node store itself has **no** hold /
+sweeper. The `gateway_settle_intent` table may still exist in schema from earlier
+design notes — do not treat open-hold SQL as the recovery path. Concurrency leases
+of a killed node stay until the lease TTL / maintenance sweep.
 
 Still needs the heavier staging check (T2), not this lite harness: a real load
 balancer and connection draining in front of the nodes, PgBouncer/transaction
 pooling, Postgres failover/HA and network partitions, LISTEN/NOTIFY under
 reconnects at scale, SKIP LOCKED and row-lock contention at production row counts
-and latency, cross-host clock skew, the settle-intent replay (#399), and sustained
-load/soak numbers. Lite runs are correctness samples, not capacity numbers.
+and latency, cross-host clock skew, settle-journal replay under partition, and
+sustained load/soak numbers. Lite runs are correctness samples, not capacity
+numbers.
 
 SDK: [Loro Streams client](https://www.npmjs.com/package/@loro-dev/streams-client).
 Protocol alternative evaluated: [Durable Streams](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
