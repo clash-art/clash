@@ -276,7 +276,7 @@ const GLOBAL_RULE_REACHABILITY_CASES = [
     },
   },
   {
-    name: "legacy HTML motion graphics authoring",
+    name: "HTML motion graphics without a live Canvas source node",
     expected: "timeline.composition.preview-contract",
     state: {
       tracks: [
@@ -297,6 +297,28 @@ const GLOBAL_RULE_REACHABILITY_CASES = [
                 durationInFrames: 30,
                 layers: [],
               },
+            }),
+          ],
+        },
+      ],
+    },
+  },
+  {
+    name: "motion graphics with a non-live runtime",
+    expected: "timeline.composition.preview-contract",
+    state: {
+      tracks: [
+        {
+          id: "effects",
+          category: "effect",
+          items: [
+            clip("react-mg", "composition", 0, {
+              compositionKind: "motion-graphics",
+              runtime: "react",
+              compositionId: "react-mg",
+              sourcePath: "compositions/react-mg.tsx",
+              sourceNodeId: "canvas-node",
+              renderedAssetPath: "compositions/react-mg.mp4",
             }),
           ],
         },
@@ -546,6 +568,29 @@ describe("complete Timeline semantic contract", () => {
               compositionId: "LiveCharacter",
               sourcePath: "components/live-character.tsx",
               sourceNodeId: "remotion-node-fixed",
+            }),
+          ],
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts a live HTML motion-graphics source on an overlay track", () => {
+    const result = validateTimelineDsl({
+      tracks: [
+        {
+          id: "html-overlays",
+          role: "overlay",
+          category: "visual",
+          items: [
+            clip("live-lower-third", "composition", 0, {
+              compositionKind: "motion-graphics",
+              runtime: "html",
+              compositionId: "lower-third",
+              sourcePath: "compositions/lower-third/index.html",
+              sourceNodeId: "html-mg-node-fixed",
             }),
           ],
         },

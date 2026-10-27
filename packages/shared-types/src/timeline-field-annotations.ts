@@ -877,12 +877,12 @@ const itemTypeFields = {
     }),
   },
   composition: {
-    compositionKind: authored(z.enum(TIMELINE_COMPOSITION_KINDS), "Composition domain label; motion-graphics must resolve a live Remotion Canvas component.", {
+    compositionKind: authored(z.enum(TIMELINE_COMPOSITION_KINDS), "Composition domain label; motion-graphics resolves a live Canvas source node whose runtime is Remotion or HTML.", {
       required: true,
       editor: propertiesControl,
       runtimeConsumers: ["composition-runtime", "preview", "render"],
     }),
-    runtime: authored(z.enum(TIMELINE_COMPOSITION_RUNTIMES), "Runtime used by the composition source.", {
+    runtime: authored(z.enum(TIMELINE_COMPOSITION_RUNTIMES), "Runtime used by the composition source; motion-graphics supports Remotion and HTML with a live sourceNodeId.", {
       required: true,
       editor: propertiesControl,
       runtimeConsumers: ["composition-runtime", "preview", "render"],
@@ -902,7 +902,7 @@ const itemTypeFields = {
       editor: noControl,
       runtimeConsumers: ["preview", "render", "export"],
     }),
-    spec: authored(z.record(z.string(), z.unknown()), "Optional runtime configuration for legacy custom compositions; motion graphics use Canvas Remotion component source instead.", {
+    spec: authored(z.record(z.string(), z.unknown()), "Optional inert configuration preserved for legacy custom compositions; motion-graphics source lives on the linked Canvas node instead.", {
       required: false,
       editor: propertiesControl,
       runtimeConsumers: ["composition-runtime", "preview", "render"],

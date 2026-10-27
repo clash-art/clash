@@ -439,7 +439,7 @@ tracks:
     expect(parsed.error).toMatch(/derived overlay.*sourceAssetId.*derivedAssetId.*derivation/i);
   });
 
-  it("rejects the legacy HTML MG authoring contract before timeline apply", () => {
+  it("rejects legacy HTML MG authoring without a live Canvas source node", () => {
     const parsed = timelineDslFromYaml(`
 tracks:
   - id: overlays
@@ -464,7 +464,57 @@ tracks:
 
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
-    expect(parsed.error).toMatch(/motion-graphics.*Remotion.*sourceNodeId/i);
+    expect(parsed.error).toMatch(/HTML.*sourceNodeId/i);
+  });
+
+  it("rejects motion-graphics items with a non-live runtime", () => {
+    const parsed = timelineDslFromYaml(`
+tracks:
+  - id: overlays
+    role: overlay
+    items:
+      - id: react-mg
+        type: composition
+        from: 0
+        durationInFrames: 90
+        compositionKind: motion-graphics
+        runtime: react
+        compositionId: react-mg
+        sourcePath: compositions/react-mg.tsx
+        sourceNodeId: canvas-node
+        renderedAssetPath: compositions/react-mg.mp4
+`);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.error).toMatch(/motion-graphics.*Remotion or HTML.*sourceNodeId/i);
+  });
+
+  it("accepts a live HTML motion-graphics reference with a Canvas source node", () => {
+    const parsed = timelineDslFromYaml(`
+tracks:
+  - id: overlays
+    role: overlay
+    items:
+      - id: html-mg
+        type: composition
+        from: 0
+        durationInFrames: 120
+        compositionKind: motion-graphics
+        runtime: html
+        compositionId: lower-third
+        sourcePath: compositions/lower-third/index.html
+        sourceNodeId: html-mg-node
+`);
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.dsl.tracks[0]?.items[0]).toMatchObject({
+      type: "composition",
+      compositionKind: "motion-graphics",
+      runtime: "html",
+      sourceNodeId: "html-mg-node",
+    });
   });
 
   it("rejects Remotion composition items without a live Canvas source node", () => {

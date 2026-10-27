@@ -668,17 +668,22 @@ function validateCompositionTimelineItem(item: RawItem & { id: string }): string
   if (!isLocalProjectPath(item.sourcePath)) {
     return `Composition item ${item.id} sourcePath must be a local project path`;
   }
-  if (item.compositionKind === "motion-graphics" && item.runtime !== "remotion") {
-    return `Composition item ${item.id} motion-graphics items must use Remotion with a live Canvas sourceNodeId`;
+  if (
+    item.compositionKind === "motion-graphics" &&
+    item.runtime !== "remotion" &&
+    item.runtime !== "html"
+  ) {
+    return `Composition item ${item.id} motion-graphics items must use Remotion or HTML with a live Canvas sourceNodeId`;
   }
   if (item.renderedAssetPath !== undefined && !isLocalProjectPath(item.renderedAssetPath)) {
     return `Composition item ${item.id} renderedAssetPath must be a local project path`;
   }
   if (
-    item.runtime === "remotion" &&
-    (typeof item.sourceNodeId !== "string" || item.sourceNodeId.length === 0)
+    (item.runtime === "remotion" ||
+      (item.compositionKind === "motion-graphics" && item.runtime === "html")) &&
+    (typeof item.sourceNodeId !== "string" || item.sourceNodeId.trim().length === 0)
   ) {
-    return `Composition item ${item.id} Remotion items must include sourceNodeId`;
+    return `Composition item ${item.id} ${item.runtime === "html" ? "HTML" : "Remotion"} items must include sourceNodeId`;
   }
   if (item.runtime === "react" && !isLocalProjectPath(item.renderedAssetPath)) {
     return `Composition item ${item.id} React items must include local renderedAssetPath for timeline preview`;
