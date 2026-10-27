@@ -20,9 +20,10 @@ import {
   GatewayError,
   applyGatewayCatalogPolicy,
   isBlockedDeepSeekModel,
+  planGatewayLaunchCatalog,
   type GatewayClock,
 } from "@clash/gateway-core";
-import { ModelCardSchema } from "@clash/shared-types";
+import { ModelCardSchema, type ModelCard, type ProviderAccountAvailability } from "@clash/shared-types";
 
 import { sha256Hex } from "../services/api-token";
 import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
@@ -182,7 +183,8 @@ export function createD1CatalogAdmin(db: D1Database, deps: { clock: GatewayClock
                   catalog_version = ${publishedCatalogVersionSql("?1")} AS live
              FROM gateway_model
             GROUP BY catalog_version
-            ORDER BY (MAX(published_at) IS NULL) DESC, MAX(published_at) DESC, MIN(created_at) DESC, catalog_version DESC`,
+            ORDER BY (MAX(published_at) IS NULL) DESC, MAX(published_at) DESC, MAX(publish_seq) DESC,
+                     MIN(created_at) DESC, catalog_version DESC`,
         )
         .bind(nowSeconds())
         .all<{ catalog_version: string; models: number; published_at: number | null; created_at: number; live: number | null }>();
@@ -233,6 +235,75 @@ export function createD1CatalogAdmin(db: D1Database, deps: { clock: GatewayClock
         await refused(input.version, cause);
       }
       return read(input.version);
+    },
+
+    /**
+     * Create the launch draft `version` (#351) from the deployment's model
+     * cards: every AIGC/media card an enabled official account serves, then the
+     * configured chat-only `textModelCodes` one serves (planGatewayLaunchCatalog).
+     * DeepSeek Pro/Reasoner is refused when named and never seeded. One batch
+     * writes every row and the `catalog.seed` audit row.
+     */
+    async seedVersion(input: {
+      version: string;
+      cards: readonly ModelCard[];
+      accounts: readonly ProviderAccountAvailability[];
+      textModelCodes?: readonly string[];
+      actor: GatewayAdminActor;
+    }) {
+      const blocked = (input.textModelCodes ?? []).find((modelCode) => isBlockedDeepSeekModel(modelCode));
+      if (blocked) throw new GatewayError("GATEWAY_CATALOG_MODEL_BLOCKED", { details: { modelCode: blocked } });
+      const existing = await requireDraft(input.version);
+      if (existing.length > 0) throw new GatewayError("GATEWAY_CONFLICT", { details: { version: input.version, reason: "exists" } });
+      const plan = planGatewayLaunchCatalog({
+        cards: input.cards,
+        accounts: input.accounts,
+        ...(input.textModelCodes ? { textModelCodes: input.textModelCodes } : {}),
+      });
+      if (plan.models.length === 0)
+        throw new GatewayError("GATEWAY_CATALOG_SEED_EMPTY", {
+          details: { version: input.version, excluded: plan.excluded.length },
+        });
+      // The same validation as a model written one at a time.
+      const cards = plan.models.map((card) => validateCatalogCard(card.id, card));
+      const nowS = nowSeconds();
+      try {
+        await db.batch([
+          abortWhen(db, input.version, `EXISTS (SELECT 1 FROM gateway_model WHERE catalog_version = ?1)`),
+          ...cards.map((card) =>
+            db
+              .prepare(
+                `INSERT INTO gateway_model
+                   (id, catalog_version, model_code, kind, display_name, enabled, card_json,
+                    max_output_tokens, rate_limit_json, published_at, created_at)
+                 VALUES ('gwm_' || lower(hex(randomblob(16))), ?1, ?2, ?3, NULL, 1, ?4, NULL, NULL, NULL, ?5)`,
+              )
+              .bind(input.version, card.id, card.kind, JSON.stringify(card), nowS),
+          ),
+          adminAuditStatement(db, {
+            tenantId: "",
+            actor: input.actor,
+            action: "catalog.seed",
+            targetType: "catalog_version",
+            targetId: input.version,
+            after: {
+              models: cards.map((card) => card.id),
+              textModelCodes: input.textModelCodes ?? [],
+              excluded: plan.excluded,
+              unknownTextModelCodes: plan.unknownTextModelCodes,
+            },
+            nowS,
+            when: "changes() = 1",
+          }),
+        ]);
+      } catch (cause) {
+        await refused(input.version, cause);
+      }
+      return {
+        version: await read(input.version),
+        excluded: plan.excluded,
+        unknownTextModelCodes: plan.unknownTextModelCodes,
+      };
     },
 
     /** Create or replace one model of a draft version. */
@@ -335,7 +406,13 @@ export function createD1CatalogAdmin(db: D1Database, deps: { clock: GatewayClock
           // Published concurrently since the read above: change nothing.
           abortWhen(db, input.version, PUBLISHED_ROW),
           db
-            .prepare(`UPDATE gateway_model SET published_at = ?2 WHERE catalog_version = ?1 AND published_at IS NULL`)
+            // One uncorrelated subquery: every row of the version gets the same, next publish_seq.
+            .prepare(
+              `UPDATE gateway_model
+                  SET published_at = ?2,
+                      publish_seq = (SELECT COALESCE(MAX(publish_seq), 0) + 1 FROM gateway_model)
+                WHERE catalog_version = ?1 AND published_at IS NULL`,
+            )
             .bind(input.version, nowS),
           adminAuditStatement(db, {
             tenantId: "",

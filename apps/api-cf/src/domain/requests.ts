@@ -138,17 +138,53 @@ export const GatewayCatalogModelRequestSchema = z
 /** POST /api/v1/admin/gateway/catalog/versions/:version/clone: a new draft copying `from`. */
 export const GatewayCatalogCloneRequestSchema = z.object({ from: GatewayCatalogVersionSchema }).strict();
 
-/** An upstream secret: a `GATEWAY_UPSTREAM_*` Worker secret name, or a key sealed on receipt. Write-only. */
+/** POST /api/v1/admin/gateway/catalog/versions/:version/seed: the AIGC/media-first launch draft. */
+export const GatewayCatalogSeedRequestSchema = z
+  .object({
+    /** Chat-only text models to add after every AIGC/media model; none by default. */
+    textModelCodes: z.array(GatewayModelCodeSchema).max(200).optional(),
+  })
+  .strict();
+
+/** A credential field name, e.g. `apiKey`, `accessKey`, `serviceAccountKey`. */
+const credentialField = () => z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,63}$/);
+const httpsUrl = () => z.url({ protocol: /^https$/ }).max(2048);
+
+/**
+ * An upstream secret, write-only: a `GATEWAY_UPSTREAM_*` Worker secret name
+ * (with the field names its JSON value holds; `apiKey` alone by default), an
+ * API key sealed on receipt, or several fields sealed on receipt (Kling's
+ * `accessKey` + `secretKey`, a Vertex `serviceAccountKey`).
+ */
 export const GatewayUpstreamCredentialSchema = z.union([
   z
     .object({
       secretRef: z.string().regex(/^GATEWAY_UPSTREAM_[A-Z0-9_]{1,120}$/),
+      fields: z.array(credentialField()).min(1).max(8).optional(),
     })
     .strict(),
   z
     .object({
       apiKey: z.string().trim().min(8).max(4096),
-      baseUrl: z.url({ protocol: /^https$/ }).max(2048).optional(),
+      baseUrl: httpsUrl().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      credentials: z
+        .record(credentialField(), z.string().trim().min(1).max(16_384))
+        .refine((fields) => {
+          const count = Object.keys(fields).length;
+          return count >= 1 && count <= 8;
+        }, "1 to 8 credential fields")
+        .refine((fields) => fields.baseUrl === undefined || httpsUrl().safeParse(fields.baseUrl).success, {
+          message: "baseUrl must be an https URL",
+          path: ["baseUrl"],
+        })
+        .refine((fields) => fields.apiKey === undefined || fields.apiKey.length >= 8, {
+          message: "apiKey is too short",
+          path: ["apiKey"],
+        }),
     })
     .strict(),
 ]);

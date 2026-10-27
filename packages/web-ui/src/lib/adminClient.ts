@@ -167,6 +167,13 @@ export interface CatalogVersion {
   models: CatalogModel[];
 }
 
+/** POST …/seed: the AIGC/media-first launch draft and why each other card was left out. */
+export interface CatalogSeedResult {
+  version: CatalogVersion;
+  excluded: Array<{ modelCode: string; reason: "deepseek-not-flash" | "text-not-configured" | "no-official-account" }>;
+  unknownTextModelCodes: string[];
+}
+
 export interface PriceRate {
   modelCode: string;
   upstreamId: string;
@@ -544,6 +551,12 @@ export const adminApi = {
   catalogVersion: (version: string) => adminRequest<{ version: CatalogVersion }>("GET", `/catalog/versions/${seg(version)}`),
   cloneCatalog: (version: string, from: string) =>
     adminRequest<{ version: CatalogVersion }>("POST", `/catalog/versions/${seg(version)}/clone`, { from }),
+  seedCatalog: (version: string, textModelCodes: string[]) =>
+    adminRequest<CatalogSeedResult>(
+      "POST",
+      `/catalog/versions/${seg(version)}/seed`,
+      textModelCodes.length > 0 ? { textModelCodes } : {},
+    ),
   putCatalogModel: (
     version: string,
     modelCode: string,

@@ -51,6 +51,7 @@ import {
 import { publicOrigin } from "../../services/public-origin";
 import { serverLog } from "../../logger";
 import { hostedBaseModelCards } from "../../generation/hosted-model-cards";
+import { readOfficialModelProvider } from "../../gateway/official-provider";
 
 export const modelProviderRoutes = new Hono<{ Bindings: Env }>();
 
@@ -178,10 +179,19 @@ function normalizeModelCardConfigInput(
   return validBindings ? config : null;
 }
 
+/**
+ * The user's own accounts, and beside them (never among them) the managed
+ * "Clash official" row (#351): the official gateway's live published catalog,
+ * `null` while none is published.
+ */
 modelProviderRoutes.get("/model-providers", async (c) => {
   const userId = c.req.header("x-user-id");
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  return c.json({ providers: await listProviderAccountsWithOAuth(c.env, userId) });
+  const [providers, official] = await Promise.all([
+    listProviderAccountsWithOAuth(c.env, userId),
+    readOfficialModelProvider(c.env.DB),
+  ]);
+  return c.json({ providers, official });
 });
 
 modelProviderRoutes.patch("/model-providers", async (c) => {
@@ -375,9 +385,10 @@ modelProviderRoutes.post("/model-providers/test", async (c) => {
 modelProviderRoutes.get("/models/catalog", async (c) => {
   const userId = c.req.header("x-user-id");
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
-  const [providers, configs] = await Promise.all([
+  const [providers, configs, official] = await Promise.all([
     listProviderAccountsWithOAuth(c.env, userId),
     listModelCardConfigs(c.env.DB, userId),
+    readOfficialModelProvider(c.env.DB),
   ]);
   const configuredProviders = providers
     .filter((provider) => provider.providerId !== "mock")
@@ -391,6 +402,7 @@ modelProviderRoutes.get("/models/catalog", async (c) => {
       }),
       configuredProviders,
     }),
+    official,
   });
 });
 

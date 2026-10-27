@@ -328,6 +328,20 @@ export function describeGatewayContract(
           },
         ],
         [
+          "answers the live version by name, and never an unknown version",
+          async () => {
+            const identity = await tenant();
+            const live = await ports().routes.catalog(identity);
+            const named = await ports().routes.catalog(identity, { version: live.version });
+            expect(named.version).toBe(live.version);
+            expect(named.models.map((model) => model.id)).toEqual(live.models.map((model) => model.id));
+            await expectCode(
+              ports().routes.catalog(identity, { version: unique("no-such-version") }),
+              "GATEWAY_CATALOG_VERSION_NOT_FOUND",
+            );
+          },
+        ],
+        [
           "an unknown model is GATEWAY_MODEL_NOT_FOUND",
           async () => {
             const identity = await tenant();

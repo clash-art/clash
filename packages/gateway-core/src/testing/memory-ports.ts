@@ -49,6 +49,8 @@ export interface MemoryGatewayOptions {
   /** Bearer token -> identity. */
   identities: Record<string, MemoryIdentity>;
   catalog: GatewayCatalog;
+  /** Earlier published versions, answered by name (route pins); `catalog` is the live one. */
+  publishedCatalogs?: GatewayCatalog[];
   providers: Record<GatewayCredentialScope, ProviderAccountAvailability[]>;
   prices: GatewayPrice[];
   /**
@@ -156,8 +158,13 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
       },
     },
     routes: {
-      async catalog() {
-        return options.catalog;
+      async catalog(_identity, query) {
+        if (!query?.version) return options.catalog;
+        const found = [options.catalog, ...(options.publishedCatalogs ?? [])].find(
+          (catalog) => catalog.version === query.version,
+        );
+        if (!found) throw new GatewayError("GATEWAY_CATALOG_VERSION_NOT_FOUND", { details: { version: query.version } });
+        return found;
       },
       async providers(_identity, scope) {
         return options.providers[scope].map((provider) => ({ ...provider }));

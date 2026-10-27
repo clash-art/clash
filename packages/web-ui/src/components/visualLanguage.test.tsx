@@ -26,6 +26,7 @@ vi.mock("@clash/web-ui/lib/clientActions", () => ({
   uninstallSkill: vi.fn(),
   listModelCatalog: vi.fn(),
   listModelProviders: vi.fn(async () => []),
+  readOfficialModelProvider: vi.fn(async () => null),
   updateModelProviders: vi.fn(),
   listProviderOAuth: vi.fn(async () => []),
   listPluginProviders: vi.fn(async () => []),

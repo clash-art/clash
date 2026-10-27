@@ -4,6 +4,7 @@
  *   GET    /catalog                                          versions, live one marked        catalog.read
  *   GET    /catalog/versions/:version                        models of one version            catalog.read
  *   POST   /catalog/versions/:version/clone                  new draft copying `from`         catalog.write
+ *   POST   /catalog/versions/:version/seed                   AIGC/media-first launch draft    catalog.write
  *   PUT    /catalog/versions/:version/models/:modelCode      create/replace a draft model     catalog.write
  *   DELETE /catalog/versions/:version/models/:modelCode      remove a draft model             catalog.write
  *   POST   /catalog/versions/:version/publish                make the draft live              catalog.write
@@ -20,6 +21,7 @@ import type { Env } from "../../../config";
 import {
   GatewayCatalogCloneRequestSchema,
   GatewayCatalogModelRequestSchema,
+  GatewayCatalogSeedRequestSchema,
   GatewayCatalogVersionSchema,
   GatewayModelCodeSchema,
   GatewayUpstreamCreateRequestSchema,
@@ -30,7 +32,11 @@ import {
 import { createD1CatalogAdmin } from "../../../gateway/d1-catalog-admin";
 import { monotonicClock } from "../../../gateway/d1-common";
 import { gatewayEncryptionKey, readSecretBinding } from "../../../gateway/d1-credentials";
+import { createD1GatewayRoutesPort } from "../../../gateway/d1-routes";
 import { createD1UpstreamAdmin } from "../../../gateway/d1-upstream-admin";
+import { OFFICIAL_IDENTITY } from "../../../gateway/official-provider";
+import { workersLogger } from "../../../gateway/workers-logger";
+import { hostedBaseModelCards } from "../../../generation/hosted-model-cards";
 import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
 import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
 
@@ -66,6 +72,28 @@ adminCatalogRoutes.post(
     const version = versionParam(c.req.param("version"));
     const body = await readGatewayJson(c, GatewayCatalogCloneRequestSchema);
     return ok(c, { version: await catalog(c.env).cloneVersion({ version, from: body.from, actor }) }, 201);
+  }),
+);
+
+adminCatalogRoutes.post(
+  "/catalog/versions/:version/seed",
+  platformRoute("catalog.write", async (c, actor) => {
+    const version = versionParam(c.req.param("version"));
+    const body = await readGatewayJson(c, GatewayCatalogSeedRequestSchema);
+    // The official accounts as routing reads them: enabled ones, never their secrets.
+    const routes = createD1GatewayRoutesPort(c.env.DB, { clock: monotonicClock(), logger: workersLogger() });
+    const [cards, accounts] = await Promise.all([
+      hostedBaseModelCards(),
+      routes.providers(OFFICIAL_IDENTITY, "official"),
+    ]);
+    const seeded = await catalog(c.env).seedVersion({
+      version,
+      cards,
+      accounts,
+      ...(body.textModelCodes ? { textModelCodes: body.textModelCodes } : {}),
+      actor,
+    });
+    return ok(c, seeded, 201);
   }),
 );
 

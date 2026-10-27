@@ -1,7 +1,7 @@
 import { lazySchema, lazyValue } from "./lazy-schema.js";
 import { z } from "zod";
 
-import { MOCK_MODEL_CARDS, MODEL_CARDS, ModelCardSchema, normalizeModelId, type ModelCard, type ModelCardConsumer, type ModelKind, type ModelParameter, type ProviderAssetInput, type ProviderCredentialRequirements, type ProviderInputAdaptation, type ReferenceBinding } from "./models.js";
+import { MOCK_MODEL_CARDS, MODEL_CARDS, ModelCardSchema, ModelKindSchema, normalizeModelId, type ModelCard, type ModelCardConsumer, type ModelKind, type ModelParameter, type ProviderAssetInput, type ProviderCredentialRequirements, type ProviderInputAdaptation, type ReferenceBinding } from "./models.js";
 import { findCompatibleModels, type Modality } from "./model-capabilities.js";
 import type { ExecutablePluginBinding } from "./executable-plugin.js";
 
@@ -249,6 +249,52 @@ z.object({
 })
 ), (real) => { UserModelCardConfigSchema = real; });
 export type UserModelCardConfig = z.infer<typeof UserModelCardConfigSchema>;
+
+/**
+ * Id of the managed "Clash official" provider row (#351): the official
+ * gateway's live published catalog, listed beside the user's own accounts.
+ * Distinct from the `official` account bucket, which names a vendor's own API.
+ */
+export const OFFICIAL_MODEL_PROVIDER_ID = "clash-official";
+
+/**
+ * The managed row as provider lists answer it: `published` with the catalog
+ * version and the models an enabled official account serves (AIGC/media
+ * first), or `unavailable` with a coded reason. Accounts appear by provider,
+ * upstream and region only, never by id or credential.
+ */
+export let OfficialModelProviderSchema = lazySchema(() => {
+  const head = {
+    id: z.literal(OFFICIAL_MODEL_PROVIDER_ID),
+    label: z.string().min(1),
+    managed: z.literal(true),
+  };
+  return z.discriminatedUnion("status", [
+    z.object({
+      ...head,
+      status: z.literal("published"),
+      catalogVersion: z.string().min(1),
+      publishedAt: z.string().nullable(),
+      models: z.array(
+        z.object({
+          id: z.string().min(1),
+          name: z.string(),
+          kind: ModelKindSchema,
+          upstreamIds: z.array(z.string().min(1)).min(1),
+        }).strict(),
+      ),
+      upstreams: z.array(
+        z.object({
+          providerId: z.string().min(1),
+          upstreamId: z.string().min(1),
+          region: z.string().min(1).optional(),
+        }).strict(),
+      ),
+    }).strict(),
+    z.object({ ...head, status: z.literal("unavailable"), code: z.string().min(1) }).strict(),
+  ]);
+}, (real) => { OfficialModelProviderSchema = real; });
+export type OfficialModelProvider = z.infer<typeof OfficialModelProviderSchema>;
 
 function compatibleTextApiShape(
   provider: Pick<ProviderAccountAvailability, "apiShape" | "upstreamId">,

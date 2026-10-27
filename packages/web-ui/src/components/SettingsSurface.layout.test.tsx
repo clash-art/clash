@@ -10,6 +10,7 @@ vi.mock("@clash/web-ui/lib/clientActions", () => ({
   listInstalledActions: vi.fn().mockResolvedValue([]),
   listInstalledSkills: vi.fn().mockResolvedValue([]),
   listModelProviders: vi.fn().mockResolvedValue([]),
+  readOfficialModelProvider: vi.fn().mockResolvedValue(null),
   listModelCatalog: vi.fn().mockResolvedValue([]),
 }));
 

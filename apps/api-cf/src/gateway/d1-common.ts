@@ -22,12 +22,13 @@ export function monotonicClock(): GatewayClock {
 
 /**
  * Subquery for the published catalog version at `nowParam` (unix seconds):
- * the newest `published_at` that has started. Unpublished rows (published_at
- * NULL) are drafts and never route.
+ * the newest `published_at` that has started, and within one second the one
+ * published last (`publish_seq`, 0051). Unpublished rows (published_at NULL)
+ * are drafts and never route.
  */
 export const publishedCatalogVersionSql = (nowParam: string) => `(SELECT catalog_version FROM gateway_model
    WHERE published_at IS NOT NULL AND published_at <= ${nowParam}
-   ORDER BY published_at DESC, catalog_version DESC LIMIT 1)`;
+   ORDER BY published_at DESC, publish_seq DESC, catalog_version DESC LIMIT 1)`;
 
 export function parseJson(value: string | null): unknown {
   if (value === null) return undefined;

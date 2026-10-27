@@ -99,10 +99,12 @@ export function nonFlashDeepSeekIds(text: string): string[] {
 export const DEEPSEEK_ALLOWED_FILES = new Set([
   "packages/gateway-core/src/catalog-policy.test.ts",
   "packages/gateway-core/src/billing.test.ts",
+  "packages/gateway-core/src/catalog.test.ts",
   "apps/api-node/src/gateway-schema.test.ts",
   "apps/api-cf/src/gateway/d1-billing.test.ts",
   "apps/api-cf/src/routes/v1/admin/gateway.test.ts",
   "apps/api-cf/src/routes/v1/admin/gateway-console.test.ts",
+  "apps/api-cf/src/routes/v1/admin/gateway-catalog-publish.test.ts",
   "packages/shared-artifact-evals/src/acp-pi-session.fixture.jsonl",
 ]);
 

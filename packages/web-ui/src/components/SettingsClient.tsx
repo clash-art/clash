@@ -148,6 +148,7 @@ import {
 } from "./SettingsPrimitives";
 import { type ThemePreference } from "../lib/theme";
 import { TelemetrySection } from "./SettingsTelemetrySection";
+import { OfficialProviderRow } from "./SettingsOfficialProvider";
 
 /** Stable identifiers for each section pane — shared between the legacy
  *  SettingsSurface. The host uses these as its sidebar nav keys. */
@@ -6148,6 +6149,8 @@ function ModelRoutingSection({
                   Saving provider settings…
                 </span>
               )}
+
+              <OfficialProviderRow />
 
               {configuredProviderRows.length > 0 && (
                 <SettingsCollection

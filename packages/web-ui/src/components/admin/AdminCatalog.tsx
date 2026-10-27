@@ -1,7 +1,7 @@
 /**
  * Models & prices page (#353). The catalog routes as whole published
- * versions: clone the live version into a draft, edit or remove models, then
- * publish. Prices follow the #352 draft/publish price book. Published
+ * versions: clone the live version (or seed the AIGC/media-first launch
+ * draft, #351) into a draft, edit or remove models, then publish. Prices follow the #352 draft/publish price book. Published
  * versions are read-only here and on the server.
  */
 import { useState } from "react";
@@ -13,6 +13,7 @@ import {
   parseCredits,
   parseRateLimit,
   type CatalogModel,
+  type CatalogSeedResult,
   type CatalogVersion,
   type CatalogVersionSummary,
   type PriceVersion,
@@ -81,6 +82,7 @@ export function AdminCatalog({
           ]}
         />
         {canWrite ? <CloneForm versions={versions} onCreated={(version) => { onSelect(version); onChanged(); }} /> : null}
+        {canWrite ? <SeedForm onCreated={(version) => { onSelect(version); onChanged(); }} /> : null}
       </AdminSection>
 
       {selected ? (
@@ -185,6 +187,73 @@ function CloneForm({ versions, onCreated }: { versions: CatalogVersionSummary[];
         </div>
       </form>
       <AdminErrorAlert error={action.error} />
+    </AdminCard>
+  );
+}
+
+const EXCLUSION_LABELS: Record<CatalogSeedResult["excluded"][number]["reason"], string> = {
+  "no-official-account": "no enabled official account serves them",
+  "text-not-configured": "chat-only, not listed",
+  "deepseek-not-flash": "DeepSeek Pro/Reasoner (Flash only)",
+};
+
+/**
+ * A launch draft (#351) from the deployment's model cards: every AIGC/media
+ * model an enabled official account serves, then the chat-only models listed
+ * here. It is a draft like any other: review, edit, then publish.
+ */
+function SeedForm({ onCreated }: { onCreated: (version: string) => void }) {
+  const [version, setVersion] = useState("");
+  const [textModels, setTextModels] = useState("");
+  const [result, setResult] = useState<CatalogSeedResult | null>(null);
+  const action = useAdminAction();
+  const excluded = result
+    ? Object.entries(
+        result.excluded.reduce<Record<string, number>>((counts, entry) => {
+          counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
+          return counts;
+        }, {}),
+      )
+    : [];
+  return (
+    <AdminCard>
+      <form
+        aria-label="Seed launch draft"
+        className="grid gap-3 sm:grid-cols-[1fr_2fr_auto]"
+        onSubmit={action.submit(async () => {
+          const codes = textModels.split(/[\s,]+/).filter(Boolean);
+          const seeded = await adminApi.seedCatalog(version.trim(), codes);
+          setResult(seeded);
+          onCreated(seeded.version.version);
+        })}
+      >
+        <AdminField label="Launch draft version" hint="AIGC/media models first" value={version} onChange={(e) => setVersion(e.target.value)} required />
+        <AdminField
+          label="Chat-only models to include"
+          hint="model codes, comma-separated; none by default"
+          value={textModels}
+          onChange={(e) => setTextModels(e.target.value)}
+        />
+        <div className="flex items-end">
+          <Button type="submit" size="sm" variant="primary" disabled={action.pending || !version.trim()}>
+            Seed draft
+          </Button>
+        </div>
+      </form>
+      <AdminErrorAlert error={action.error} />
+      {result ? (
+        <div role="status" className="mt-3 space-y-1 text-xs text-stone-600 dark:text-stone-300">
+          <p>
+            Seeded {result.version.models.length} models into {result.version.version}.
+          </p>
+          {excluded.map(([reason, count]) => (
+            <p key={reason}>
+              Left out {count}: {EXCLUSION_LABELS[reason as keyof typeof EXCLUSION_LABELS]}.
+            </p>
+          ))}
+          {result.unknownTextModelCodes.length > 0 ? <p>Unknown model codes: {result.unknownTextModelCodes.join(", ")}.</p> : null}
+        </div>
+      ) : null}
     </AdminCard>
   );
 }

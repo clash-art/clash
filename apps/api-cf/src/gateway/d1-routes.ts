@@ -44,6 +44,14 @@ interface UpstreamAccountRow {
   configured_credentials: string | null;
 }
 
+interface CatalogRow {
+  catalog_version: string;
+  model_code: string;
+  kind: string;
+  card_json: string;
+  enabled: number;
+}
+
 interface PriceRow {
   price_version: string;
   upstream_id: string;
@@ -57,17 +65,32 @@ export function createD1GatewayRoutesPort(
   deps: { clock: GatewayClock; logger: GatewayLogger },
 ): GatewayRoutesPort {
   return {
-    async catalog(): Promise<GatewayCatalog> {
-      const { results } = await db
-        .prepare(
-          `SELECT catalog_version, model_code, kind, card_json FROM gateway_model
-            WHERE enabled = 1 AND catalog_version = ${publishedCatalogVersionSql("?1")}
-            ORDER BY model_code`,
-        )
-        .bind(toSeconds(deps.clock.now()))
-        .all<{ catalog_version: string; model_code: string; kind: string; card_json: string }>();
+    async catalog(_identity, query): Promise<GatewayCatalog> {
+      const nowS = toSeconds(deps.clock.now());
+      const { results } = query?.version
+        ? // A named version: published (and started) rows only, disabled ones included so an
+          // all-disabled version is still found; a draft is never a version a pin can name.
+          await db
+            .prepare(
+              `SELECT catalog_version, model_code, kind, card_json, enabled FROM gateway_model
+                WHERE catalog_version = ?1 AND published_at IS NOT NULL AND published_at <= ?2
+                ORDER BY model_code`,
+            )
+            .bind(query.version, nowS)
+            .all<CatalogRow>()
+        : await db
+            .prepare(
+              `SELECT catalog_version, model_code, kind, card_json, enabled FROM gateway_model
+                WHERE enabled = 1 AND catalog_version = ${publishedCatalogVersionSql("?1")}
+                ORDER BY model_code`,
+            )
+            .bind(nowS)
+            .all<CatalogRow>();
+      if (query?.version && results.length === 0)
+        throw new GatewayError("GATEWAY_CATALOG_VERSION_NOT_FOUND", { details: { version: query.version } });
       const models: GatewayModelCard[] = [];
       for (const row of results) {
+        if (row.enabled !== 1) continue;
         const parsed = ModelCardSchema.safeParse(parseJson(row.card_json));
         if (!parsed.success || parsed.data.id !== row.model_code || parsed.data.kind !== row.kind) {
           // A malformed published card is unroutable, never guessed at.
@@ -80,7 +103,7 @@ export function createD1GatewayRoutesPort(
         models.push(parsed.data);
       }
       return {
-        version: results[0]?.catalog_version ?? UNPUBLISHED_CATALOG_VERSION,
+        version: query?.version ?? results[0]?.catalog_version ?? UNPUBLISHED_CATALOG_VERSION,
         models,
       };
     },

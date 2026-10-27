@@ -227,6 +227,32 @@ describe("AdminCatalog and AdminPrices", () => {
     });
   });
 
+  it("seeds a launch draft with the listed chat-only models and selects it", async () => {
+    const seeded = {
+      version: { version: "launch-1", status: "draft", models: [] },
+      excluded: [{ modelCode: "m-text", reason: "text-not-configured" }],
+      unknownTextModelCodes: ["nope"],
+    };
+    const calls = stubAdminFetch(() => Response.json(seeded, { status: 201 }));
+    const onSelect = vi.fn();
+    const onChanged = vi.fn();
+    const props = { versions: [], selected: null, onSelect, onChanged };
+    const { rerender } = render(<AdminCatalog {...props} canWrite={false} />);
+    expect(screen.queryByRole("form", { name: "Seed launch draft" })).toBeNull();
+    rerender(<AdminCatalog {...props} canWrite />);
+    const form = screen.getByRole("form", { name: "Seed launch draft" });
+    type(form, "Launch draft version", " launch-1 ");
+    type(form, "Chat-only models to include", "a, b nope");
+    fireEvent.submit(form);
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("launch-1"));
+    expect(onChanged).toHaveBeenCalled();
+    expect(calls).toEqual([
+      { method: "POST", path: "/api/v1/admin/gateway/catalog/versions/launch-1/seed", body: { textModelCodes: ["a", "b", "nope"] } },
+    ]);
+    const status = within(form.parentElement!).getByRole("status");
+    expect(status).toHaveTextContent("nope");
+  });
+
   it("hides price writes without prices.write and publishes drafts with it", async () => {
     const versions = [{ version: "p1", status: "draft" as const, effectiveFrom: "2026-11-01T00:00:00Z", effectiveTo: null, publishedAt: null, rates: [] }];
     const { rerender } = render(<AdminPrices versions={versions} canWrite={false} onChanged={() => undefined} />);

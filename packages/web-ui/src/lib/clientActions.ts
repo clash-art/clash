@@ -1,5 +1,6 @@
 import type { HostInstallScope } from "@clash/shared-types";
 import { marketplaceInstallation, type MarketplaceInstallation } from "@clash/shared-types/marketplace-installation";
+import { OfficialModelProviderSchema, type OfficialModelProvider } from "@clash/shared-types";
 /**
  * Client-side wrappers around the web app's HTTP API.
  *
@@ -367,6 +368,19 @@ export async function listModelProviders(): Promise<
     "/api/v1/model-providers",
   );
   return data.providers;
+}
+
+/**
+ * The managed "Clash official" row the provider list carries beside the
+ * user's accounts (#351); `null` when none is published or the host serves
+ * no official gateway (the field is absent).
+ */
+export async function readOfficialModelProvider(): Promise<OfficialModelProvider | null> {
+  const data = await jsonFetch<{ official?: unknown }>("/api/v1/model-providers");
+  if (data.official === undefined || data.official === null) return null;
+  const parsed = OfficialModelProviderSchema.safeParse(data.official);
+  if (parsed.success) return parsed.data;
+  throw new Error("The official provider row has an unexpected shape.");
 }
 
 export async function updateModelProviders(
