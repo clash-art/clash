@@ -32,6 +32,7 @@ vi.mock("../../../containers/render", () => ({
 import { createApp } from "../../../app";
 import { createSqliteD1 } from "../../../../../web/app/test-support/sqlite-d1";
 import { adminSignIn, cookiesFrom, seedAdminAccount, signedInAdmin } from "../../../services/admin-session.test-support";
+import { GATEWAY_KEY_RING_PERMISSIONS } from "@clash/gateway-core";
 import { adminRolePermissions } from "../../../services/gateway-authz";
 import { v1Routes } from "../index";
 import { adminGatewayRoutes } from "./gateway";
@@ -120,7 +121,9 @@ describe("admin login, session and logout (admin Better Auth instance)", () => {
       await call("GET", "/api/v1/admin/gateway/me", { cookie }),
     );
     expect(me.admin).toEqual({ id: admin.id, email: "ops@admin.test", name: "Ops", role: "platform_admin" });
-    expect(me.permissions).toEqual([...adminRolePermissions("platform_admin")]);
+    // Worker admin omits key-ring / encryption.* — those ship on the Node gateway admin surface (#372).
+    expect(me.permissions).toEqual(adminRolePermissions("platform_admin").filter((p) => !GATEWAY_KEY_RING_PERMISSIONS.includes(p)));
+    expect(me.permissions).not.toContain("encryption.read");
     expect(me.promptAccess).toBe(false);
     // The session lives in the admin store, not the product one.
     expect(sqlite.prepare(`SELECT COUNT(*) AS n FROM admin_sessions WHERE admin_id = ?`).get(admin.id)).toEqual({ n: 1 });

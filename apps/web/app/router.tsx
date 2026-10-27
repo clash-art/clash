@@ -66,6 +66,8 @@ export const router = createBrowserRouter([
       { path: "admin/reconciliation", lazy: lazyRoute(() => import("./routes/admin.reconciliation")) },
       { path: "admin/abuse", lazy: lazyRoute(() => import("./routes/admin.abuse")) },
       { path: "admin/audit", lazy: lazyRoute(() => import("./routes/admin.audit")) },
+      // Offered only by a host whose /me reports encryption.read (a Node admin listener, #372).
+      { path: "admin/encryption", lazy: lazyRoute(() => import("./routes/admin.encryption")) },
       {
         path: "marketplace/manage",
         lazy: lazyRoute(() => import("./routes/marketplace.manage")),

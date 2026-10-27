@@ -15,7 +15,9 @@
     "src/e2e": "Agent E2E (`pnpm test:e2e`, excluded from `pnpm test`): real claude-agent-acp + Claude Code against createGatewayApp on loopback with a mock Anthropic upstream; environment built from scratch, no network."
   },
   "key_files": {
+    "src/admin-authz.ts": "Shared admin credential gate and role/permission helpers (#353/#372).",
     "src/ports.ts": "GatewayPorts: clock, ids, identity, routes, credentials (active key version first, excludeKeyVersions for refused ones), upstreamHealth (circuit counters, #350), budgets (check/debit/charge/refund/endIdempotency, #399), settlement (dispatch/recover, #399), limits, ledger, blobs, retention, scheduler, audit, abuse (#356), logger, upstream; unavailablePort.",
+
     "src/abuse.ts": "#356 abuse signals (spend, auth_failures, shared_key, velocity), GatewayAbusePort, GatewayAbuseThresholdSchema (the one threshold schema), decideGatewayAbuse, evaluateGatewayAbuse (raise once per window, auto-suspend, prune), gatewayClientFingerprint (truncated hash, never the address), abuseKeyOf, assertGatewayCallerActive (GATEWAY_SUSPENDED 403 before admission).",
     "src/retention.ts": "Body retention (#353): retainGatewayExchange (bodies to blobs, metadata to retention; never throws, coded failure + compensating delete), readRetainedExchange (NOT_RETAINED / EXPIRED / RETENTION_FAILED), purgeExpiredGatewayBodies (idempotent), the x-gateway-retention header; createRetainedBodyCopy for streams (capped side copy, GATEWAY_RETENTION_TRUNCATED marker + truncated metadata).",
     "src/errors.ts": "Closed GATEWAY_* error table -> HTTP status, OpenAI and Anthropic error bodies, Retry-After.",

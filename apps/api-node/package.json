@@ -18,6 +18,7 @@
     "test:gateway-lite": "node scripts/test-gateway-lite.ts",
     "seed:gateway": "node src/gateway-cli.ts seed",
     "admin-token": "tsx --tsconfig tsconfig.check.json src/gateway-admin-tokens.ts",
+    "admin-account:create": "tsx --tsconfig tsconfig.check.json src/admin-account-cli.ts",
     "mock-upstream": "tsx --tsconfig tsconfig.check.json src/mock-upstream/cli.ts"
   },
   "dependencies": {

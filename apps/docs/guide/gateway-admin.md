@@ -126,7 +126,8 @@ Platform permissions, admin accounts only (`platform_admin` holds all;
 `admin_accounts.read`, `admin_accounts.write`, `usage.read_all`,
 `audit.read_all`, `abuse.read`, `abuse.suspend`, `abuse.thresholds.write`,
 `prompts.view`, `retention.purge`, `reconciliation.read`,
-`reconciliation.write`. (`holds.sweep` was retired with holds in #399.)
+`reconciliation.write`, `encryption.read`, `encryption.rotate`.
+(`holds.sweep` was retired with holds in #399; encryption.* is reported by Node hosts that hold a key ring, #372.)
 
 The admin console authorizes with `platformRoute`: the caller is the admin
 account the middleware verified, and the permission must come from its role.
@@ -606,6 +607,23 @@ envelope or a key hash.
 `POST prompts/:requestId/access` answers `GATEWAY_PROMPT_ACCESS_DISABLED`
 even for `platform_admin`, and `/me` reports `promptAccess: false`. The
 hosted staff policy above does not apply.
+
+**Shared `/admin` console (#372, N15).** When `GATEWAY_ROLE=admin`, the same
+admin listener also serves the Epic A `apps/web` build (no second GUI):
+
+| Variable | Meaning |
+| --- | --- |
+| `GATEWAY_ADMIN_WEB_DIR` | `apps/web` build (`apps/web/dist/client`, holding `index.html`) |
+| `ADMIN_AUTH_SECRET` (else `BETTER_AUTH_SECRET`) | admin Better Auth secret (≥32 chars) for `/api/admin-auth` |
+| `GATEWAY_ENCRYPTION_KEYS` / `GATEWAY_ENCRYPTION_CURRENT` | key ring for the encryption page (#366) |
+
+Paths: `/admin`, `/admin/*` (SPA `index.html`, `no-store`); `/_app/*` and
+top-level build assets; `/api/admin-auth/*` (Better Auth over Postgres
+`0022_gateway_admin_accounts`, `clash-admin` cookies — bootstrap with
+`pnpm admin-account:create`). The admin API still accepts `gwa_` tokens
+(`pnpm admin-token`) for CLI use. `/me` reports `encryption.read` /
+`encryption.rotate` only when the key ring is mounted. Overview, usage,
+budgets, keys, abuse and encryption views use the console response shapes.
 
 ## UI
 

@@ -5,7 +5,7 @@
  * `verifyAdmin`, which resolves an admin credential (never a product user or
  * token) to an admin principal; on api-node that is the admin listener's
  * admin token (gateway-admin-tokens.ts, #371). Reading needs
- * `upstreams.read`, rotating `upstreams.write` (gateway-admin-authz.ts). Every
+ * `encryption.read`, rotating `encryption.rotate` (gateway-admin-authz.ts). Every
  * mutation writes its `gateway_admin_audit` row in the same transaction as the
  * change, so both commit or neither does.
  *
@@ -134,7 +134,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.get(GATEWAY_KEY_ADMIN_PREFIX, async (c) => {
     try {
-      await admin(c, "upstreams.read");
+      await admin(c, "encryption.read");
       const current = await currentEncryptionKid(db, ring);
       const { rows } = await db.query<{
         kid: string;
@@ -161,7 +161,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.post(`${GATEWAY_KEY_ADMIN_PREFIX}/rotate`, async (c) => {
     try {
-      const actor = await admin(c, "upstreams.write");
+      const actor = await admin(c, "encryption.rotate");
       const { kid } = await body(c, RotateSchema);
       // This node must hold the new key; deploy the ring everywhere first.
       if (!ring.has(kid))
@@ -207,7 +207,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.post(`${GATEWAY_KEY_ADMIN_PREFIX}/reencrypt`, async (c) => {
     try {
-      const actor = await admin(c, "upstreams.write");
+      const actor = await admin(c, "encryption.rotate");
       const { limit } = await body(c, ReencryptSchema);
       const result = await store.reencrypt(limit ? { limit } : {});
       const current = await currentEncryptionKid(db, ring);

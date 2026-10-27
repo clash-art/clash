@@ -24,6 +24,8 @@ import {
   gatewayAdminListenerFromEnv,
 } from "./gateway-admin.ts";
 import { createPgGatewayAdminTokens } from "./gateway-admin-tokens.ts";
+import { createNodeAdminAuth, nodeAdminSessionVerifier } from "./admin-auth.ts";
+import { loadAdminWebBuild } from "./gateway-admin-console.ts";
 import { createGatewayBillingTenantRoutes, gatewayBillingPurchaseConfigFromEnv } from "./gateway-billing-routes.ts";
 import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
@@ -152,10 +154,31 @@ export function startServer(
   }
   // Admin API on its own listener (#371, N14), only when GATEWAY_ADMIN_PORT
   // is set; the public listener answers 404 for /api/v1/admin/* either way.
+  // GATEWAY_ROLE=admin (#372, N15) also serves the shared /admin SPA on that
+  // listener and requires the console build + admin Better Auth secret.
   const adminListener = gatewayAdminListenerFromEnv(env, config.port);
+  if (role === "admin" && !adminListener)
+    throw Error("GATEWAY_ROLE=admin requires GATEWAY_ADMIN_PORT (the admin listener)");
   let adminApp: ReturnType<typeof createGatewayAdminApp> | undefined;
   if (adminListener) {
     const adminRing = ring ?? (role === "admin" ? gatewayKeyRingFromEnv(env) : undefined);
+    let consoleDeps: Parameters<typeof createGatewayAdminApp>[0]["console"];
+    if (role === "admin") {
+      const secret = env.ADMIN_AUTH_SECRET ?? env.BETTER_AUTH_SECRET;
+      if (!secret)
+        throw Error("GATEWAY_ROLE=admin requires ADMIN_AUTH_SECRET or BETTER_AUTH_SECRET");
+      const adminAuth = createNodeAdminAuth({
+        pool: database.pool,
+        // Admin SPA is served on the admin listener; cookies must match that origin.
+        publicUrl: `http://${adminListener.hostname}:${adminListener.port}`,
+        secret,
+      });
+      consoleDeps = {
+        build: loadAdminWebBuild(env.GATEWAY_ADMIN_WEB_DIR),
+        adminAuthHandler: (request) => adminAuth.handler(request),
+        verifyAdminSession: nodeAdminSessionVerifier(adminAuth),
+      };
+    }
     adminApp = createGatewayAdminApp({
       db: database.db,
       tokens: createPgGatewayAdminTokens({ db: database.db }),
@@ -170,6 +193,7 @@ export function startServer(
           }
         : {}),
       allowedOrigins: adminListener.allowedOrigins,
+      ...(consoleDeps ? { console: consoleDeps } : {}),
     });
   }
   const { server, adminServer } = createGatewayHttpServers({
