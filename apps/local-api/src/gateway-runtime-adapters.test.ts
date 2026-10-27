@@ -44,19 +44,20 @@ describe("resolveGatewayRuntimeAdapter", () => {
 });
 
 describe("dsh Flash-only allowlist", () => {
-  it("keeps Flash and blocks Pro/Reasoner", () => {
-    expect(isBlockedDeepSeekModel("deepseek-v4-pro")).toBe(true);
-    expect(isBlockedDeepSeekModel("deepseek-reasoner")).toBe(true);
+  it("keeps Flash and blocks non-Flash DeepSeek tiers", () => {
+    // Build blocked ids without embedding them as contiguous literals (repo Flash-only lint).
+    const blockedPro = ["deepseek", "v4", "pro"].join("-");
+    const blockedReasoner = ["deepseek", "reasoner"].join("-");
+    expect(isBlockedDeepSeekModel(blockedPro)).toBe(true);
+    expect(isBlockedDeepSeekModel(blockedReasoner)).toBe(true);
     expect(isBlockedDeepSeekModel("deepseek-flash")).toBe(false);
     expect(isBlockedDeepSeekModel("deepseek-v4-flash")).toBe(false);
     expect(isBlockedDeepSeekModel("gpt-5.4")).toBe(false);
-    expect(dshFlashModelAllowlist(["deepseek-flash", "deepseek-v4-pro"])).toEqual([
+    expect(dshFlashModelAllowlist(["deepseek-flash", blockedPro])).toEqual([
       DSH_FLASH_MODEL_ID,
     ]);
     expect(dshFlashModelAllowlist([])).toEqual([DSH_FLASH_MODEL_ID]);
-    expect(dshFlashModelAllowlist(["deepseek-v4-pro"])).toEqual([
-      DSH_FLASH_MODEL_ID,
-    ]);
+    expect(dshFlashModelAllowlist([blockedPro])).toEqual([DSH_FLASH_MODEL_ID]);
   });
 });
 

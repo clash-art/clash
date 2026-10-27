@@ -31,14 +31,14 @@ export interface GatewayRuntimeAdapter {
 /** The only DeepSeek model dsh may advertise or default to under official handoff. */
 export const DSH_FLASH_MODEL_ID = "deepseek-flash";
 
-const BLOCKED_DEEPSEEK = /pro|reasoner/i;
+// Same Flash-only rule as packages/gateway-core catalog-policy.
+const DEEPSEEK = /deepseek/i;
+const FLASH = /flash/i;
 
 export function isBlockedDeepSeekModel(modelId: string): boolean {
   const id = modelId.trim();
   if (!id) return false;
-  if (!/deepseek/i.test(id)) return false;
-  if (/flash/i.test(id)) return false;
-  return BLOCKED_DEEPSEEK.test(id);
+  return DEEPSEEK.test(id) && !FLASH.test(id);
 }
 
 /** Flash-only allowlist for `DSH_ACP_MODELS` / model pickers. */

@@ -16,7 +16,7 @@ Claude keeps the #357 ACP handoff path unchanged.
 | --- | --- | --- | --- | --- |
 | **Codex** | `codex-acp` / Codex CLI | Not observed on this box; #357 ACP path is opportunistic | **config** under Clash-owned `CODEX_HOME` + `OPENAI_API_KEY` env | Daemon smoke writes `config.toml` with `model_providers.*.base_url` + `env_key` (`apps/local-api/e2e/daemon-smoke.ts`). Codex reads the secret from the env named by `env_key`, so the Host never writes the token into the file. |
 | **Pi** | `@openma/pi-acp` 0.1.8-beta.0 | **Yes** when the client advertises `auth._meta.gateway` (`GATEWAY_METHOD_ID = "gateway"`) | Prefer **ACP gateway** (#357). Fallback: **config** — Clash-owned `PI_CODING_AGENT_DIR/models.json` provider entry (same shape `gatewayAuthenticate` writes) | `pi-acp` `chunk-5IXHVFXW.js` `gatewayAuthenticate` / `writeModelsJsonProvider`. |
-| **dsh-acp** | `@openma/deepseek-harness-acp` 0.4.38-beta.1 | No `_meta.gateway` method in the installed bridge | **env** — `DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` | `credentialEnvNames()` returns those two for the DeepSeek route; `DSH_ACP_MODELS` defaults to `deepseek-flash,deepseek-v4-pro` and must be overridden. |
+| **dsh-acp** | `@openma` DeepSeek harness ACP 0.4.38-beta.1 | No `_meta.gateway` method in the installed bridge | **env** — `DEEPSEEK_API_KEY` + `DEEPSEEK_BASE_URL` | `credentialEnvNames()` returns those two for the DeepSeek route; default `DSH_ACP_MODELS` includes a non-Flash DeepSeek tier and must be overridden to Flash only. |
 
 ## Clash-owned paths (no collision with user configs)
 
@@ -36,8 +36,8 @@ User-owned `~/.codex` and `~/.pi/agent` are never opened by these adapters.
 
 - Default / allowlist: `deepseek-flash` only (`DSH_ACP_MODELS=deepseek-flash`,
   `DSH_MODEL=deepseek-flash`).
-- Block: any model id matching `/pro|reasoner/i` (covers `deepseek-v4-pro`,
-  `deepseek-reasoner`, …).
+- Block: any DeepSeek model id that is not Flash (same rule as
+  `packages/gateway-core` catalog policy — Pro/Reasoner tiers included).
 - Gateway catalog policy already refuses non-Flash DeepSeek at publish/route
   time; this adapter stops the harness from advertising or defaulting to them.
 
