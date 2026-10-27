@@ -2,10 +2,12 @@
  * Audited admin rotation of the gateway encryption key ring (#366).
  *
  * Admin identity is the separate admin system (#394): the host injects
- * `verifyAdmin`, which resolves an admin session (never a product user or
- * token) to an admin account. The single platform role, `platform_admin`, may
- * rotate. Every mutation writes its `gateway_admin_audit` row in the same
- * transaction as the change, so both commit or neither does.
+ * `verifyAdmin`, which resolves an admin credential (never a product user or
+ * token) to an admin principal; on api-node that is the admin listener's
+ * admin token (gateway-admin-tokens.ts, #371). Reading needs
+ * `upstreams.read`, rotating `upstreams.write` (gateway-admin-authz.ts). Every
+ * mutation writes its `gateway_admin_audit` row in the same transaction as the
+ * change, so both commit or neither does.
  *
  *   GET  /api/v1/admin/gateway/encryption          current kid, ring kids, envelope counts
  *   POST /api/v1/admin/gateway/encryption/rotate   { kid }   switch the current kid
@@ -33,26 +35,44 @@ import {
   type GatewayCredentialStore,
 } from "./gateway-credentials.ts";
 import type { GatewayKeyRing } from "./gateway-keyring.ts";
+import {
+  requireGatewayAdmin,
+  type GatewayAdminActor,
+  type GatewayAdminPermission,
+  type GatewayAdminPrincipal,
+} from "./gateway-admin-authz.ts";
 
-export const GATEWAY_PLATFORM_ADMIN_ROLE = "platform_admin";
 export const GATEWAY_KEY_ADMIN_PREFIX = "/api/v1/admin/gateway/encryption";
 
-export interface GatewayAdminIdentity {
-  /** admin account id (`adm_…`). */
-  id: string;
-  role: string;
+/** An admin principal (gateway-admin-authz.ts); never a product user. */
+export type GatewayAdminIdentity = GatewayAdminPrincipal;
+
+/** The admin behind a request allowed `permission`; a coded refusal otherwise. */
+export async function authorizeGatewayAdminRequest(
+  verifyAdmin: (request: Request) => Promise<GatewayAdminIdentity | null>,
+  request: Request,
+  permission: GatewayAdminPermission,
+  tenantId?: string,
+): Promise<GatewayAdminActor> {
+  const identity = await verifyAdmin(request);
+  if (!identity) throw new GatewayError("GATEWAY_ADMIN_SESSION_REQUIRED");
+  return requireGatewayAdmin(identity, permission, tenantId);
 }
 
 export interface GatewayAdminAuditRow {
   tenantId?: string;
-  actor: { kind: "admin"; id: string; role: string };
+  actor: { kind: "admin" | "bootstrap"; id: string; role: string };
   action: string;
   targetType: string;
   targetId: string;
   before?: unknown;
   after?: unknown;
+  reason?: string;
 }
 
+const toSeconds = (ms: number) => Math.floor(ms / 1000);
+
+/** One audit row in the caller's transaction; `at` is unix seconds (as billing and D1). */
 export async function appendGatewayAdminAudit(
   tx: GatewayBudgetSqlClient,
   row: GatewayAdminAuditRow,
@@ -61,8 +81,8 @@ export async function appendGatewayAdminAudit(
   await tx.query(
     `INSERT INTO gateway_admin_audit
        (id, tenant_id, actor_kind, actor_id, actor_role, action, target_type, target_id,
-        before_json, after_json, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11)`,
+        before_json, after_json, reason, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12)`,
     [
       `gaa_${randomUUID().replaceAll("-", "")}`,
       row.tenantId ?? "",
@@ -74,6 +94,7 @@ export async function appendGatewayAdminAudit(
       row.targetId,
       row.before === undefined ? null : JSON.stringify(row.before),
       row.after === undefined ? null : JSON.stringify(row.after),
+      row.reason ?? null,
       at,
     ],
   );
@@ -99,13 +120,8 @@ export function createGatewayKeyAdminRoutes(deps: {
     const init = gatewayErrorResponseInit(toGatewayError(error), "openai");
     return c.json(init.body, init.status as 400, init.headers);
   };
-  async function admin(c: Context) {
-    const identity = await deps.verifyAdmin(c.req.raw);
-    if (!identity) throw new GatewayError("GATEWAY_ADMIN_SESSION_REQUIRED");
-    if (identity.role !== GATEWAY_PLATFORM_ADMIN_ROLE)
-      throw new GatewayError("GATEWAY_FORBIDDEN");
-    return { kind: "admin" as const, id: identity.id, role: identity.role };
-  }
+  const admin = (c: Context, permission: GatewayAdminPermission) =>
+    authorizeGatewayAdminRequest(deps.verifyAdmin, c.req.raw, permission);
   async function body<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
     const json = await c.req.json().catch(() => ({}));
     const parsed = schema.safeParse(json ?? {});
@@ -118,7 +134,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.get(GATEWAY_KEY_ADMIN_PREFIX, async (c) => {
     try {
-      await admin(c);
+      await admin(c, "upstreams.read");
       const current = await currentEncryptionKid(db, ring);
       const { rows } = await db.query<{
         kid: string;
@@ -145,7 +161,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.post(`${GATEWAY_KEY_ADMIN_PREFIX}/rotate`, async (c) => {
     try {
-      const actor = await admin(c);
+      const actor = await admin(c, "upstreams.write");
       const { kid } = await body(c, RotateSchema);
       // This node must hold the new key; deploy the ring everywhere first.
       if (!ring.has(kid))
@@ -175,7 +191,7 @@ export function createGatewayKeyAdminRoutes(deps: {
             before: { kid: before ?? null },
             after: { kid, configVersion: Number(rows[0]!.version) },
           },
-          at,
+          toSeconds(at),
         );
         return {
           previous: before ?? null,
@@ -191,7 +207,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.post(`${GATEWAY_KEY_ADMIN_PREFIX}/reencrypt`, async (c) => {
     try {
-      const actor = await admin(c);
+      const actor = await admin(c, "upstreams.write");
       const { limit } = await body(c, ReencryptSchema);
       const result = await store.reencrypt(limit ? { limit } : {});
       const current = await currentEncryptionKid(db, ring);
@@ -205,7 +221,7 @@ export function createGatewayKeyAdminRoutes(deps: {
             targetId: current ?? "",
             after: result,
           },
-          now(),
+          toSeconds(now()),
         ),
       );
       return c.json({ current: current ?? null, ...result });

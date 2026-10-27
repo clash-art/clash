@@ -1,7 +1,5 @@
 import { loadTimelineDefinition } from "./timeline-definition.ts";
 import { createNodeAuth } from "./auth.ts";
-import { getRequestListener } from "@hono/node-server";
-import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { createNodeCloudApp } from "./app.ts";
 import { createNodeUploadPorts } from "./content-upload.ts";
@@ -19,7 +17,13 @@ import {
 } from "./gateway-node.ts";
 import { readGatewaySettlementFloor } from "./gateway-budget.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
-import { createPgGatewayBilling } from "./gateway-billing.ts";
+import { createPgGatewayBilling, createPgGatewayPriceBook } from "./gateway-billing.ts";
+import {
+  createGatewayAdminApp,
+  createGatewayHttpServers,
+  gatewayAdminListenerFromEnv,
+} from "./gateway-admin.ts";
+import { createPgGatewayAdminTokens } from "./gateway-admin-tokens.ts";
 import { createGatewayBillingTenantRoutes, gatewayBillingPurchaseConfigFromEnv } from "./gateway-billing-routes.ts";
 import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
@@ -146,10 +150,34 @@ export function startServer(
         log.error("gateway.maintenance_failed", errorFacts(error)),
     });
   }
-  const server = createServer(getRequestListener(app.fetch));
+  // Admin API on its own listener (#371, N14), only when GATEWAY_ADMIN_PORT
+  // is set; the public listener answers 404 for /api/v1/admin/* either way.
+  const adminListener = gatewayAdminListenerFromEnv(env, config.port);
+  let adminApp: ReturnType<typeof createGatewayAdminApp> | undefined;
+  if (adminListener) {
+    const adminRing = ring ?? (role === "admin" ? gatewayKeyRingFromEnv(env) : undefined);
+    adminApp = createGatewayAdminApp({
+      db: database.db,
+      tokens: createPgGatewayAdminTokens({ db: database.db }),
+      billing: createPgGatewayBilling({ db: database.db }),
+      priceBook: createPgGatewayPriceBook({ db: database.db }),
+      ...(adminRing
+        ? {
+            keyRing: {
+              ring: adminRing,
+              store: createPgGatewayCredentialStore({ db: database.db, ring: adminRing }),
+            },
+          }
+        : {}),
+      allowedOrigins: adminListener.allowedOrigins,
+    });
+  }
+  const { server, adminServer } = createGatewayHttpServers({
+    publicFetch: app.fetch,
+    ...(adminApp ? { adminFetch: adminApp.fetch } : {}),
+  });
   server.listen(config.port, config.hostname);
-  server.requestTimeout = 30000;
-  server.headersTimeout = 10000;
+  if (adminListener) adminServer?.listen(adminListener.port, adminListener.hostname);
   const timings = gatewayDrainTimingsFromEnv(env);
   let closing: Promise<void> | undefined;
   // SIGTERM drain (#375): readyz 503 → delay → stop accepting → grace →
@@ -162,12 +190,17 @@ export function startServer(
       timings,
       onStopAccepting: async () => {
         stopGatewayMaintenance?.();
+        if (adminServer) {
+          const closed = new Promise<void>((resolve) => adminServer!.close(() => resolve()));
+          adminServer.closeAllConnections();
+          await closed;
+        }
         await gateway.close();
       },
       closeDatabase: () => database.close(),
       onStep: (step, facts) => log.info(`gateway.drain_${step}`, facts ?? {}),
     }).then(() => undefined));
-  return { server, close };
+  return { server, adminServer, close };
 }
 if (
   process.argv[1] &&
@@ -175,11 +208,12 @@ if (
 ) {
   try {
     const running = startServer();
-    running.server.on("error", (error) => {
-      log.error("server.listener_failed", errorFacts(error));
-      process.exitCode = 1;
-      void running.close().catch(() => {});
-    });
+    for (const listener of [running.server, running.adminServer])
+      listener?.on("error", (error) => {
+        log.error("server.listener_failed", errorFacts(error));
+        process.exitCode = 1;
+        void running.close().catch(() => {});
+      });
     // `on`, not `once`: under tsx a hidden signal handler exits the process
     // as soon as no app listener remains, cutting async shutdown short.
     // close() is idempotent, so a repeated signal is harmless.

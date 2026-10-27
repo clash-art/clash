@@ -20,9 +20,11 @@
  * body, and credits arrive only through the provider's verified webhooks
  * calling the port with a payment actor.
  *
- * Admin routes, at /api/v1/admin/gateway (createGatewayBillingAdminRoutes):
- * the host injects `verifyAdmin` like the key-ring admin routes
- * (gateway-key-admin.ts, #394); the platform_admin role holds them all. Every
+ * Admin routes, at /api/v1/admin/gateway (createGatewayBillingAdminRoutes),
+ * served by the admin listener only (gateway-admin.ts, #371): the host
+ * injects `verifyAdmin` like the key-ring admin routes (gateway-key-admin.ts,
+ * #394), and each route names its permission (gateway-admin-authz.ts:
+ * prices.*, packages.*, billing.rollover, wallet.adjust, as hosted). Every
  * mutation writes its gateway_admin_audit row in the same transaction.
  */
 import {
@@ -48,8 +50,9 @@ import {
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { GatewayBudgetSqlClient } from "./gateway-budget.ts";
+import type { GatewayAdminPermission } from "./gateway-admin-authz.ts";
 import {
-  GATEWAY_PLATFORM_ADMIN_ROLE,
+  authorizeGatewayAdminRequest,
   type GatewayAdminIdentity,
 } from "./gateway-key-admin.ts";
 
@@ -183,6 +186,7 @@ export function createGatewayBillingAdminRoutes(deps: {
     parseGatewayJsonBody(await c.req.text(), schema);
   const route =
     (
+      permission: GatewayAdminPermission,
       run: (
         c: Context,
         actor: GatewayBillingStaffActor,
@@ -190,15 +194,12 @@ export function createGatewayBillingAdminRoutes(deps: {
     ) =>
     async (c: Context) => {
       try {
-        const identity = await deps.verifyAdmin(c.req.raw);
-        if (!identity) throw new GatewayError("GATEWAY_ADMIN_SESSION_REQUIRED");
-        if (identity.role !== GATEWAY_PLATFORM_ADMIN_ROLE)
-          throw new GatewayError("GATEWAY_FORBIDDEN");
-        const [result, status] = await run(c, {
-          kind: "admin",
-          id: identity.id,
-          role: identity.role,
-        });
+        const actor = await authorizeGatewayAdminRequest(
+          deps.verifyAdmin,
+          c.req.raw,
+          permission,
+        );
+        const [result, status] = await run(c, actor);
         return c.json(result as object, status ?? 200, NO_STORE);
       } catch (error) {
         return fail(c, error);
@@ -208,7 +209,7 @@ export function createGatewayBillingAdminRoutes(deps: {
 
   app.get(
     `${p}/prices`,
-    route(async (c) => {
+    route("prices.read", async (c) => {
       const modelCode = c.req.query("modelCode");
       const status = param(PriceStatusSchema, c.req.query("status"), "status");
       return [
@@ -223,7 +224,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.get(
     `${p}/prices/versions/:version`,
-    route(async (c) => [
+    route("prices.read", async (c) => [
       {
         version: await priceBook.read(
           param(GatewayPriceVersionSchema, c.req.param("version"), "version"),
@@ -233,7 +234,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.put(
     `${p}/prices/versions/:version`,
-    route(async (c, actor) => {
+    route("prices.write", async (c, actor) => {
       const version = param(
         GatewayPriceVersionSchema,
         c.req.param("version"),
@@ -263,7 +264,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/prices/versions/:version/publish`,
-    route(async (c, actor) => [
+    route("prices.write", async (c, actor) => [
       {
         version: await priceBook.publish({
           version: param(
@@ -279,11 +280,13 @@ export function createGatewayBillingAdminRoutes(deps: {
 
   app.get(
     `${p}/packages`,
-    route(async () => [{ packages: await billing.listPackages() }]),
+    route("packages.read", async () => [
+      { packages: await billing.listPackages() },
+    ]),
   );
   app.post(
     `${p}/packages`,
-    route(async (c, actor) => [
+    route("packages.write", async (c, actor) => [
       {
         package: await billing.createPackage(
           await body(c, GatewayPackageCreateRequestSchema),
@@ -295,7 +298,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/packages/:id/archive`,
-    route(async (c, actor) => [
+    route("packages.write", async (c, actor) => [
       {
         package: await billing.archivePackage(
           param(IdSchema, c.req.param("id"), "id"),
@@ -306,7 +309,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/packages/:id/external-price`,
-    route(async (c, actor) => {
+    route("packages.write", async (c, actor) => {
       const id = param(IdSchema, c.req.param("id"), "id");
       const { externalPriceId } = await body(
         c,
@@ -325,11 +328,13 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.get(
     `${p}/topup-packs`,
-    route(async () => [{ packs: await billing.listTopupPacks() }]),
+    route("packages.read", async () => [
+      { packs: await billing.listTopupPacks() },
+    ]),
   );
   app.post(
     `${p}/topup-packs`,
-    route(async (c, actor) => [
+    route("packages.write", async (c, actor) => [
       {
         pack: await billing.createTopupPack(
           await body(c, GatewayTopupPackCreateRequestSchema),
@@ -341,7 +346,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/topup-packs/:id/archive`,
-    route(async (c, actor) => [
+    route("packages.write", async (c, actor) => [
       {
         pack: await billing.archiveTopupPack(
           param(IdSchema, c.req.param("id"), "id"),
@@ -352,7 +357,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/topup-packs/:id/external-price`,
-    route(async (c, actor) => {
+    route("packages.write", async (c, actor) => {
       const id = param(IdSchema, c.req.param("id"), "id");
       const { externalPriceId } = await body(
         c,
@@ -371,7 +376,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/billing/rollover`,
-    route(async (c, actor) => {
+    route("billing.rollover", async (c, actor) => {
       const input = await body(c, GatewayRolloverRequestSchema);
       const subscriptions = await billing.rollover({
         ...(input.tenantId ? { tenantId: input.tenantId } : {}),
@@ -387,7 +392,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/tenants/:tenantId/wallet/adjust`,
-    route(async (c, actor) => {
+    route("wallet.adjust", async (c, actor) => {
       const tenantId = param(
         TenantIdSchema,
         c.req.param("tenantId"),
@@ -400,7 +405,7 @@ export function createGatewayBillingAdminRoutes(deps: {
   );
   app.post(
     `${p}/tenants/:tenantId/wallet/status`,
-    route(async (c, actor) => {
+    route("wallet.adjust", async (c, actor) => {
       const tenantId = param(
         TenantIdSchema,
         c.req.param("tenantId"),

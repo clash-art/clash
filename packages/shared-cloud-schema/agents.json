@@ -18,7 +18,8 @@
     "postgres/0017_gateway_keyring.sql": "#366: scope/tenant_key CHECK on gateway_upstream_credential; append-only gateway_admin_audit.",
     "postgres/0018_gateway_virtual_key.sql": "#367: gateway_virtual_key (sk_gw_ virtual keys for the Node data plane; SHA-256 only, tenant/user/allowlist/scope from the row).",
     "postgres/0019_gateway_credential_priority.sql": "#369: gateway_credential_priority (user-configurable BYOK vs official scope order per tenant, optional per-member override; no row = credential scope only).",
-    "postgres/0020_gateway_billing.sql": "#425: gateway_package, gateway_topup_pack, gateway_tenant_subscription (one live per tenant: partial unique index), unique external_price_id indexes, 'payment' audit actor + audit reason. Mirrors D1 0032/0050 for gateway-core's GatewayBillingPort; ledger uniqueness unchanged."
+    "postgres/0020_gateway_billing.sql": "#425: gateway_package, gateway_topup_pack, gateway_tenant_subscription (one live per tenant: partial unique index), unique external_price_id indexes, 'payment' audit actor + audit reason. Mirrors D1 0032/0050 for gateway-core's GatewayBillingPort; ledger uniqueness unchanged.",
+    "postgres/0021_gateway_admin.sql": "#371: gateway_admin_token (gwa_ admin credentials for the Node admin listener; SHA-256 only; single role platform_admin). Admins are never product users."
   },
   "architecture_notes": [
     "Narrow source exports auth/app/broker/runtime are consumed directly by TypeScript-aware Node/Worker bundlers and Drizzle Kit. There is no broad root export or pre-build requirement.",

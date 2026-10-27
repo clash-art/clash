@@ -12,7 +12,7 @@ export function databaseUrl(env: Record<string, string | undefined>): string {
   return value;
 }
 /** An http(s) origin: no credentials, path, query or fragment. */
-function httpOrigin(value: string, name: string): string {
+export function httpOrigin(value: string, name: string): string {
   let url: URL;
   try {
     url = new URL(value);
