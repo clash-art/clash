@@ -30,6 +30,7 @@ export type PreviewHostMode = "main-thread" | "iframe";
 export type PreviewHostFact =
   | { type: "frame"; frame: number }
   | { type: "transport"; event: PlayerTransportEvent }
+  | { type: "audio-levels"; left: number; right: number }
   | { type: "error"; message: string };
 
 export type PreviewHostListener = (fact: PreviewHostFact) => void;
@@ -46,6 +47,12 @@ export interface PreviewHost {
   play(): void;
   /** Asks the producer to stop its own clock. */
   pause(): void;
+  /**
+   * Asks the frame to sample and report stereo audio levels for the parent
+   * meter. Cross-origin media is unreachable from the editor document, so the
+   * frame samples locally and posts `audio-levels` facts.
+   */
+  setAudioMeterEnabled(enabled: boolean): void;
   /** The frame the producer last reported, or null before the first report. */
   getCurrentFrame(): number | null;
   /**

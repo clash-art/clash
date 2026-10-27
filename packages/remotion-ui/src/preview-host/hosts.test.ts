@@ -168,6 +168,41 @@ describe("iframe preview host", () => {
     ]);
   });
 
+  it("asks the frame to sample audio levels for the parent meter", () => {
+    const { bridge, sent, emit } = fakeBridge();
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
+    host.mount(composition);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
+    host.setAudioMeterEnabled(true);
+    expect(sent.at(-1)).toEqual({
+      protocol: PREVIEW_HOST_PROTOCOL,
+      type: "set-audio-meter",
+      enabled: true,
+    });
+  });
+
+  it("republishes frame audio-levels facts for the parent meter", () => {
+    const { bridge, emit } = fakeBridge();
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
+    const facts: PreviewHostFact[] = [];
+    host.subscribe((fact) => facts.push(fact));
+    host.mount(composition);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
+    emit({
+      protocol: PREVIEW_HOST_PROTOCOL,
+      type: "audio-levels",
+      left: 0.4,
+      right: 0.25,
+    });
+    expect(facts).toEqual([{ type: "audio-levels", left: 0.4, right: 0.25 }]);
+  });
+
   it("turns the frame's own facts into editor facts", () => {
     const { bridge, emit } = fakeBridge();
     const host = createIframePreviewHost({

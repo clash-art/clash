@@ -16,8 +16,8 @@
 
 ## Explicit non-goals (still open)
 
-- Full InteractiveCanvas transform overlays / audio meter inside the iframe path (playback-only surface when flag is on).
-- HTML `PreviewFrameProducer` implementation for `html-motion` live paint (#436 remainder).
+- ~~Full InteractiveCanvas transform overlays / audio meter~~ → see `mg-preview-iframe-overlays-449.md` (#449).
+- HTML `PreviewFrameProducer` implementation for `html-motion` live paint (#447).
 - Conflating preview with browser-export encode Worker.
 - Audio master clock / media-time realignment.
 

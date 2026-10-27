@@ -1,0 +1,5 @@
+- InteractiveCanvas overlays (selection handles, scrub hit targets, pan/zoom, minimap) now sit parent-side above iframe Remotion paint via `paintSurface`.
+- The Remotion Player inside the cross-site iframe remains the sole clock owner.
+- The audio meter uses `clash.preview-host.v1` audio-levels postMessage from the frame, since cross-origin media is unreachable from the editor.
+- There is no audio-master-clock.
+- This does not implement HTML live paint or HTML export.

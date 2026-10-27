@@ -54,7 +54,12 @@ export type PreviewHostCommand =
   | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "seek"; frame: number }
   | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "play" }
   | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "pause" }
-  | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "unmount" };
+  | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "unmount" }
+  | {
+      protocol: typeof PREVIEW_HOST_PROTOCOL;
+      type: "set-audio-meter";
+      enabled: boolean;
+    };
 
 export type PreviewHostEvent =
   | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "ready" }
@@ -67,6 +72,12 @@ export type PreviewHostEvent =
       protocol: typeof PREVIEW_HOST_PROTOCOL;
       type: "transport";
       event: PreviewTransportEvent;
+    }
+  | {
+      protocol: typeof PREVIEW_HOST_PROTOCOL;
+      type: "audio-levels";
+      left: number;
+      right: number;
     }
   | {
       protocol: typeof PREVIEW_HOST_PROTOCOL;
@@ -128,6 +139,8 @@ export function isPreviewHostCommand(
     case "pause":
     case "unmount":
       return true;
+    case "set-audio-meter":
+      return typeof value.enabled === "boolean";
     default:
       return false;
   }
@@ -142,6 +155,13 @@ export function isPreviewHostEvent(value: unknown): value is PreviewHostEvent {
       return isFrame(value.frame);
     case "transport":
       return isTransportEvent(value.event);
+    case "audio-levels":
+      return (
+        typeof value.left === "number" &&
+        Number.isFinite(value.left) &&
+        typeof value.right === "number" &&
+        Number.isFinite(value.right)
+      );
     case "error":
       return typeof value.message === "string";
     default:

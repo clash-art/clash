@@ -1,0 +1,26 @@
+# Clash Agent (dsh-acp + DeepSeek Flash) — InteractiveCanvas overlays on iframe (#449)
+
+Coding for this PR: Grok Bot executor (no Claude / mcode / cloud).
+Clash Agent Evidence only: `dsh --profile headless` (default model deepseek-flash).
+
+## Prompt
+
+You are Clash Agent on DeepSeek Flash (dsh-acp), not a coding agent. In 5 short
+English bullets confirm: (1) InteractiveCanvas overlays (selection handles,
+scrub hit targets, pan/zoom, minimap) now sit parent-side above iframe Remotion
+paint via paintSurface; (2) Remotion Player in the cross-site iframe remains the
+clock owner; (3) audio meter uses clash.preview-host.v1 audio-levels postMessage
+from the frame because cross-origin media is unreachable from the editor;
+(4) no audio-master-clock; (5) this does not implement HTML live paint or HTML
+export. No tools. No repo exploration.
+
+## Flash reply (2026-10-27 America/Detroit)
+
+- InteractiveCanvas overlays (selection handles, scrub hit targets, pan/zoom, minimap) now sit parent-side above iframe Remotion paint via `paintSurface`.
+- The Remotion Player inside the cross-site iframe remains the sole clock owner.
+- The audio meter uses `clash.preview-host.v1` audio-levels postMessage from the frame, since cross-origin media is unreachable from the editor.
+- There is no audio-master-clock.
+- This does not implement HTML live paint or HTML export.
+
+Harness screenshots: `00-agents-dsh-enabled.png`, `01-harness-menu-deepseek-flash.png`
+(same Flash harness used in Clash Agent UI).
