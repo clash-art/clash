@@ -5,7 +5,7 @@
  * mounts the same `apps/web` build Epic A ships (GATEWAY_ADMIN_WEB_DIR =
  * apps/web/dist/client): `/admin` and `/admin/*` get index.html; `/_app/*`
  * and the build's top-level files are served as static assets. Mounted only
- * when GATEWAY_ROLE=admin — api/worker admin listeners (GATEWAY_ADMIN_PORT
+ * when GATEWAY_ROLE=admin|all — api-role admin listeners (GATEWAY_ADMIN_PORT
  * alone) keep API-only behaviour from #371.
  *
  * Guide: apps/docs/guide/gateway-admin.md#node-admin-listener.

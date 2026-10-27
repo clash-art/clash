@@ -1,20 +1,27 @@
-# gateway-node distributed topology (#374). Self-host = Postgres multi-node:
-# three stateless `api` nodes, one `worker`, one `admin`, one PostgreSQL.
-# There is no SQLite/filesystem single-node topology (decision 12).
+# gateway-node distributed topology (#374 + role matrix #373). Self-host =
+# Postgres multi-node: N× `api`, one `admin`, one-shot `migrate`, optional
+# outbox process (not a GATEWAY_ROLE), one PostgreSQL. There is no
+# SQLite/filesystem single-node topology (decision 12). GATEWAY_ROLE is only
+# api | admin | all | migrate — no gateway `worker` role and no Redis/BullMQ
+# sidecar for gateway metering.
 #
 #   docker compose -f apps/api-node/deploy/compose.yaml up -d --build
 #   docker compose -f apps/api-node/deploy/compose.yaml --profile test up -d --build
+#   docker compose -f apps/api-node/deploy/compose.yaml --profile demo up -d --build
 #
 # Required environment (compose refuses to start without it):
 #   POSTGRES_PASSWORD, CLOUD_PUBLIC_URL, GATEWAY_ENCRYPTION_KEYS,
 #   GATEWAY_ENCRYPTION_CURRENT. See apps/api-node/README.md "Self-host topology".
+# Admin / all roles also need ADMIN_AUTH_SECRET (or BETTER_AUTH_SECRET) and a
+# built apps/web client at GATEWAY_ADMIN_WEB_DIR (#371/#372).
 #
 # Not shipped here, on purpose:
 #   - a load balancer (CONTRIBUTING anti-pattern 4): point yours at the api
 #     nodes' published ports, health-check GET /readyz, no sticky sessions;
-#   - Redis: nothing in gateway-node reads it (BullMQ runs on PostgreSQL);
+#   - Redis: nothing in gateway-node reads it (BullMQ outbox runs on PostgreSQL);
 #   - MinIO/S3: the Node blob store is the shared `blobs` volume below until a
-#     Node S3 blob port exists.
+#     Node S3 blob port exists;
+#   - service mesh.
 
 name: clash-gateway
 
@@ -29,6 +36,7 @@ x-gateway-env: &gateway-env
   CLOUD_CONTENT_DIR: /data/content
   HOST: 0.0.0.0
   PORT: "8080"
+  TMPDIR: /tmp
 
 x-gateway-keys: &gateway-keys
   GATEWAY_ENCRYPTION_KEYS: ${GATEWAY_ENCRYPTION_KEYS:?set GATEWAY_ENCRYPTION_KEYS}
@@ -50,10 +58,21 @@ x-readyz: &readyz
   retries: 12
   start_period: 20s
 
+# Hardening shared by long-running gateway processes (#373).
+x-harden: &harden
+  # Image ENTRYPOINT is already tini; compose init is a second safety net.
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  # Longer than the SIGTERM drain (GATEWAY_DRAIN_DELAY_MS + GRACE + SETTLE).
+  stop_grace_period: 60s
+  restart: unless-stopped
+
 x-api: &api
   build: *build
   image: clash-api-node:local
-  command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, --import, ./src/telemetry.ts, src/server.ts]
+  # Empty command → image entrypoint selects GATEWAY_ROLE (default api).
   environment:
     <<: [*gateway-env, *gateway-keys]
     GATEWAY_ROLE: api
@@ -62,11 +81,7 @@ x-api: &api
     - blobs:/data
   depends_on: *after-migrate
   healthcheck: *readyz
-  # PID 1 forwards SIGTERM to the drain handler and reaps the tsx child.
-  init: true
-  # Longer than the SIGTERM drain (GATEWAY_DRAIN_DELAY_MS + GRACE + SETTLE).
-  stop_grace_period: 60s
-  restart: unless-stopped
+  <<: *harden
 
 services:
   postgres:
@@ -85,17 +100,17 @@ services:
       retries: 30
     restart: unless-stopped
 
-  # One-shot gate: application and BullMQ queue migrations, then exit 0.
-  # Runs the package's own `migrate` script so the gate follows that command.
+  # One-shot gate (#373 migrate role): GATEWAY_ROLE=migrate → gateway-cli migrate.
   migrate:
     build: *build
     image: clash-api-node:local
-    command: [npm, run, --silent, migrate]
     environment:
       DATABASE_URL: postgresql://clash:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/clash
+      GATEWAY_ROLE: migrate
     depends_on:
       postgres:
         condition: service_healthy
+    init: true
     restart: "no"
 
   api-1:
@@ -113,39 +128,70 @@ services:
     ports:
       - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_API_3_PORT:-8083}:8080
 
-  # Outbox notifications, checkpoint handoff and BullMQ-on-PostgreSQL workers.
+  # Product outbox / checkpoint / settle runner — NOT a GATEWAY_ROLE (#373).
+  # Separate process on the same image; BullMQ uses Postgres (no Redis sidecar).
   worker:
     build: *build
     image: clash-api-node:local
-    command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, --import, ./src/telemetry-outbox.ts, src/outbox-worker.ts]
+    command:
+      [
+        node_modules/.bin/tsx,
+        --tsconfig,
+        tsconfig.json,
+        --import,
+        ./src/telemetry-outbox.ts,
+        src/outbox-worker.ts,
+      ]
     environment:
       <<: *gateway-env
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
     volumes:
       - blobs:/data
     depends_on: *after-migrate
-    init: true
-    stop_grace_period: 60s
-    restart: unless-stopped
+    <<: *harden
 
-  # Same server without the model-gateway data plane (GATEWAY_ROLE=admin).
+  # Admin API + shared /admin console on GATEWAY_ADMIN_PORT (#371/#372).
+  # Public PORT still serves /healthz+/readyz (no data plane on admin role).
   admin:
     build: *build
     image: clash-api-node:local
-    command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, --import, ./src/telemetry.ts, src/server.ts]
     environment:
-      <<: *gateway-env
+      <<: [*gateway-env, *gateway-keys]
       GATEWAY_ROLE: admin
+      GATEWAY_ADMIN_PORT: "8090"
+      GATEWAY_ADMIN_HOST: 0.0.0.0
+      GATEWAY_ADMIN_WEB_DIR: ${GATEWAY_ADMIN_WEB_DIR:-/srv/apps/web/dist/client}
+      ADMIN_AUTH_SECRET: ${ADMIN_AUTH_SECRET:-}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
     volumes:
       - blobs:/data
     ports:
-      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_ADMIN_PORT:-8090}:8080
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_ADMIN_PUBLISH_PORT:-8090}:8090
     depends_on: *after-migrate
     healthcheck: *readyz
-    init: true
-    stop_grace_period: 60s
-    restart: unless-stopped
+    <<: *harden
+
+  # Demo colocation (#373 `all`): one process, api + admin, still Postgres.
+  all:
+    profiles: [demo]
+    build: *build
+    image: clash-api-node:local
+    environment:
+      <<: [*gateway-env, *gateway-keys]
+      GATEWAY_ROLE: all
+      GATEWAY_ADMIN_PORT: "8090"
+      GATEWAY_ADMIN_HOST: 0.0.0.0
+      GATEWAY_ADMIN_WEB_DIR: ${GATEWAY_ADMIN_WEB_DIR:-/srv/apps/web/dist/client}
+      ADMIN_AUTH_SECRET: ${ADMIN_AUTH_SECRET:-}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+    volumes:
+      - blobs:/data
+    ports:
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_ALL_API_PORT:-8080}:8080
+      - ${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_ALL_ADMIN_PORT:-8090}:8090
+    depends_on: *after-migrate
+    healthcheck: *readyz
+    <<: *harden
 
   # Test only (#378): deterministic OpenAI/Anthropic mock with fake sk_test_* keys.
   # Isolated compose network, so the non-loopback bind is allowed here alone.
@@ -153,7 +199,8 @@ services:
     profiles: [test]
     build: *build
     image: clash-api-node:local
-    command: [node_modules/.bin/tsx, --tsconfig, tsconfig.json, src/mock-upstream/cli.ts]
+    command:
+      [node_modules/.bin/tsx, --tsconfig, tsconfig.json, src/mock-upstream/cli.ts]
     environment:
       MOCK_UPSTREAM_HOST: 0.0.0.0
       MOCK_UPSTREAM_PORT: "9090"

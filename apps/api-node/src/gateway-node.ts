@@ -67,13 +67,29 @@ const VIRTUAL_KEY_PATTERN = /^sk_gw_([0-9a-f]{24})\.([0-9a-f]{64})$/;
 export const UNPUBLISHED_CATALOG_VERSION = "unpublished";
 export const personalTenantId = (userId: string) => `personal:${userId}`;
 
-/** Process role switch; the full role matrix is #373. Only `api` serves the data plane. */
-export type GatewayRole = "api" | "worker" | "admin";
+/**
+ * Process role switch (#373). Image entrypoint / compose select one of:
+ *   api     — data plane (+ optional GATEWAY_ADMIN_PORT API-only admin)
+ *   admin   — admin listener + shared /admin console (#371/#372); no data plane
+ *   all     — colocate api+admin for demo; still requires Postgres (not SQLite)
+ *   migrate — one-shot schema migrate (entrypoint); never a long-running server
+ * No gateway `worker` role and no BullMQ sidecar in this matrix (out of scope).
+ */
+export const GATEWAY_ROLES = ["api", "admin", "all", "migrate"] as const;
+export type GatewayRole = (typeof GATEWAY_ROLES)[number];
 export function gatewayRole(env: Record<string, string | undefined>): GatewayRole {
   const value = env.GATEWAY_ROLE?.trim() || "api";
-  if (value !== "api" && value !== "worker" && value !== "admin")
-    throw Error("GATEWAY_ROLE must be api, worker or admin");
-  return value;
+  if (!(GATEWAY_ROLES as readonly string[]).includes(value))
+    throw Error("GATEWAY_ROLE must be api, admin, all or migrate");
+  return value as GatewayRole;
+}
+/** Data plane (/v1, /api/v1/gateway) on api and the demo `all` colocation. */
+export function gatewayServesDataPlane(role: GatewayRole): boolean {
+  return role === "api" || role === "all";
+}
+/** Shared /admin SPA + admin Better Auth on admin and `all`. */
+export function gatewayServesAdminConsole(role: GatewayRole): boolean {
+  return role === "admin" || role === "all";
 }
 
 const sha256Hex = (value: string) => createHash("sha256").update(value).digest("hex");

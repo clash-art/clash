@@ -439,9 +439,12 @@ describe("gateway-node routes", () => {
     expect(admission.filter((q) => /gateway_virtual_key/.test(q))).toHaveLength(1);
   });
 
-  it("GATEWAY_ROLE defaults to api and rejects unknown roles", () => {
+  it("GATEWAY_ROLE defaults to api and accepts only api|admin|all|migrate (#373)", () => {
     expect(gatewayRole({})).toBe("api");
-    expect(gatewayRole({ GATEWAY_ROLE: "worker" })).toBe("worker");
+    expect(gatewayRole({ GATEWAY_ROLE: "admin" })).toBe("admin");
+    expect(gatewayRole({ GATEWAY_ROLE: "all" })).toBe("all");
+    expect(gatewayRole({ GATEWAY_ROLE: "migrate" })).toBe("migrate");
+    expect(() => gatewayRole({ GATEWAY_ROLE: "worker" })).toThrow(/api, admin, all or migrate/);
     expect(() => gatewayRole({ GATEWAY_ROLE: "nope" })).toThrow();
   });
 });

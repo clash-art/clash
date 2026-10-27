@@ -532,8 +532,8 @@ environment is built from scratch and no network endpoint is called.
 ## Node self-host adapter (#367)
 
 `apps/api-node/src/gateway-node.ts` mounts the same `createGatewayApp` over
-Postgres ports on the **api** role (`GATEWAY_ROLE`, default `api`; the full
-role matrix is #373). Surfaces: `/v1/*` and `/api/v1/gateway/*`
+Postgres ports on the **api** (and demo **all**) role (`GATEWAY_ROLE`, default
+`api`; matrix **api \| admin \| all \| migrate**, #373). Surfaces: `/v1/*` and `/api/v1/gateway/*`
 (`/api/v1/gateway/chat/completions` is `/v1/chat/completions`), plus
 `GET /v1/models` / `GET /api/v1/gateway/models` (published catalog after the
 DeepSeek Flash-only policy, filtered by the key's allowlist). The admin API

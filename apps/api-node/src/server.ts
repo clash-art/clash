@@ -14,6 +14,8 @@ import {
   createGatewayNodeRoutes,
   createPgGatewayPorts,
   gatewayRole,
+  gatewayServesAdminConsole,
+  gatewayServesDataPlane,
 } from "./gateway-node.ts";
 import { readGatewaySettlementFloor } from "./gateway-budget.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
@@ -84,14 +86,20 @@ export function startServer(
     }),
   });
   app.route("/", gateway.app);
-  // Model gateway data plane (#367): api role only (role matrix: #373).
+  // Model gateway data plane (#367): api | all (role matrix: #373).
   let stopGatewayMaintenance: (() => void) | undefined;
   // Settlements of streams whose caller left (#368); drained before the pool closes.
   const gatewayWork = createGatewayBackgroundWork();
   // Drain state and open streams of this node (#375).
   const drain = createGatewayDrainController();
   const role = gatewayRole(env);
-  const ring = role === "api" ? gatewayKeyRingFromEnv(env) : undefined;
+  if (role === "migrate")
+    throw Error(
+      "GATEWAY_ROLE=migrate is the image entrypoint one-shot; run `pnpm migrate` / gateway-cli migrate instead",
+    );
+  const serveDataPlane = gatewayServesDataPlane(role);
+  const serveAdminConsole = gatewayServesAdminConsole(role);
+  const ring = serveDataPlane ? gatewayKeyRingFromEnv(env) : undefined;
   app.route(
     "/",
     createGatewayHealthRoutes({
@@ -154,19 +162,24 @@ export function startServer(
   }
   // Admin API on its own listener (#371, N14), only when GATEWAY_ADMIN_PORT
   // is set; the public listener answers 404 for /api/v1/admin/* either way.
-  // GATEWAY_ROLE=admin (#372, N15) also serves the shared /admin SPA on that
-  // listener and requires the console build + admin Better Auth secret.
+  // GATEWAY_ROLE=admin|all (#372/#373) also serves the shared /admin SPA on
+  // that listener and requires the console build + admin Better Auth secret.
   const adminListener = gatewayAdminListenerFromEnv(env, config.port);
-  if (role === "admin" && !adminListener)
-    throw Error("GATEWAY_ROLE=admin requires GATEWAY_ADMIN_PORT (the admin listener)");
+  if (serveAdminConsole && !adminListener)
+    throw Error(
+      `GATEWAY_ROLE=${role} requires GATEWAY_ADMIN_PORT (the admin listener)`,
+    );
   let adminApp: ReturnType<typeof createGatewayAdminApp> | undefined;
   if (adminListener) {
-    const adminRing = ring ?? (role === "admin" ? gatewayKeyRingFromEnv(env) : undefined);
+    const adminRing =
+      ring ?? (serveAdminConsole ? gatewayKeyRingFromEnv(env) : undefined);
     let consoleDeps: Parameters<typeof createGatewayAdminApp>[0]["console"];
-    if (role === "admin") {
+    if (serveAdminConsole) {
       const secret = env.ADMIN_AUTH_SECRET ?? env.BETTER_AUTH_SECRET;
       if (!secret)
-        throw Error("GATEWAY_ROLE=admin requires ADMIN_AUTH_SECRET or BETTER_AUTH_SECRET");
+        throw Error(
+          `GATEWAY_ROLE=${role} requires ADMIN_AUTH_SECRET or BETTER_AUTH_SECRET`,
+        );
       const adminAuth = createNodeAdminAuth({
         pool: database.pool,
         // Admin SPA is served on the admin listener; cookies must match that origin.

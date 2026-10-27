@@ -608,8 +608,9 @@ envelope or a key hash.
 even for `platform_admin`, and `/me` reports `promptAccess: false`. The
 hosted staff policy above does not apply.
 
-**Shared `/admin` console (#372, N15).** When `GATEWAY_ROLE=admin`, the same
-admin listener also serves the Epic A `apps/web` build (no second GUI):
+**Shared `/admin` console (#372, N15).** When `GATEWAY_ROLE=admin` or `all`
+(#373), the same admin listener also serves the Epic A `apps/web` build (no
+second GUI):
 
 | Variable | Meaning |
 | --- | --- |
