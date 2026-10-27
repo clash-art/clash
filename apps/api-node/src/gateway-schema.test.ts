@@ -6,6 +6,7 @@ import {
   GATEWAY_SEED_DEEPSEEK_FLASH,
   GatewaySeedError,
   seedGatewayDatabase,
+  seedGatewaySchemaReady,
 } from "./gateway-seed.ts";
 import { loadMigrations, migrateDatabase } from "./migrations.ts";
 
@@ -159,6 +160,74 @@ it("seeds DeepSeek Flash only and refuses non-Flash DeepSeek", async () => {
       "SELECT model_code FROM gateway_model",
     );
     expect(rows.rows).toEqual([{ model_code: GATEWAY_SEED_DEEPSEEK_FLASH }]);
+  } finally {
+    await db.close();
+  }
+});
+
+it("refuses a Flash seed card that routes to a non-Flash DeepSeek upstream model (#377)", () => {
+  const [flash] = defaultGatewaySeedModels();
+  expect(() =>
+    assertGatewaySeedFlashOnly([
+      {
+        ...flash!,
+        card: {
+          ...flash!.card,
+          providerImplementations: [
+            {
+              providerAccountId: "official-deepseek",
+              upstreamId: "deepseek",
+              upstreamModel: "deepseek-v4-pro",
+            },
+          ],
+        },
+      },
+    ]),
+  ).toThrow(expect.objectContaining({ code: "GATEWAY_SEED_MODEL_BLOCKED" }));
+  expect(() =>
+    assertGatewaySeedFlashOnly([
+      {
+        modelCode: "house-chat",
+        card: {
+          providerImplementations: [
+            { upstreamId: "openrouter", upstreamModel: "deepseek-reasoner" },
+          ],
+        },
+      },
+    ]),
+  ).toThrow(GatewaySeedError);
+  expect(() =>
+    assertGatewaySeedFlashOnly(defaultGatewaySeedModels()),
+  ).not.toThrow();
+});
+
+it("gateway seed refuses an unmigrated schema, then seeds idempotently (#377)", async () => {
+  const db = new PGlite();
+  try {
+    await expect(seedGatewaySchemaReady(db)).rejects.toMatchObject({
+      code: "GATEWAY_SEED_SCHEMA_PENDING",
+    });
+    // The seed never migrates behind the rollout.
+    expect(
+      (
+        await db.query<{ name: string | null }>(
+          "SELECT to_regclass('gateway_model')::text AS name",
+        )
+      ).rows[0]?.name,
+    ).toBeNull();
+
+    await migrateDatabase(db);
+    const first = await seedGatewaySchemaReady(db);
+    const again = await seedGatewaySchemaReady(db);
+    expect(again).toEqual(first);
+    const models = await db.query<{ model_code: string }>(
+      "SELECT model_code FROM gateway_model",
+    );
+    expect(models.rows).toEqual([{ model_code: GATEWAY_SEED_DEEPSEEK_FLASH }]);
+    const prices = await db.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM gateway_price",
+    );
+    expect(prices.rows[0]?.n).toBe(first.prices);
   } finally {
     await db.close();
   }

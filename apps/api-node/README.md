@@ -19,7 +19,12 @@ pnpm --filter @clash/api-node worker:outbox
 
 Optional: `RENDER_SERVER_URL` enables Timeline render (see Timeline render).
 `PORT` defaults to 8080; containers can set `HOST=0.0.0.0`. Startup never applies
-migrations. The migration runner uses checksums and a transaction advisory lock.
+migrations. `migrate` is `gateway migrate`: one transaction under an advisory lock,
+with checksums, a bounded lock wait and an expand/contract gate. `--plan` reports
+without writing. `gateway seed` publishes the Flash-only staging catalog on a
+migrated database. See
+[gateway-node-rollout.md](../docs/guide/gateway-node-rollout.md) for the
+expand/contract checklist and the staging canary/rollback runbook.
 Application migrations add no foreign keys. BullMQ owns its separate queue schema
 in the same database. The explicit migrate command applies both sets of migrations.
 The PG pool is reused per process; gateways use one additional

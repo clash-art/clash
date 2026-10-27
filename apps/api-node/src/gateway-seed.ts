@@ -3,13 +3,12 @@
  * staging/test. DeepSeek is Flash only — any DeepSeek model code or upstream
  * that is not Flash is refused (mirrors @clash/gateway-core catalog-policy).
  *
- * Usage: DATABASE_URL=… pnpm --filter @clash/api-node seed:gateway
- * Never runs on startup; never touches production unless DATABASE_URL points there.
+ * Usage: DATABASE_URL=… pnpm --filter @clash/api-node gateway seed
+ * (after `gateway migrate`). Never runs on startup; staging/test databases only.
  */
-import { pathToFileURL } from "node:url";
 import { databaseUrl } from "./config.ts";
 import { openPostgres, type SqlConnection } from "./postgres.ts";
-import { migrateDatabase } from "./migrations.ts";
+import { runMigrations, type MigrationDatabase } from "./migrations.ts";
 
 const DEEPSEEK = /deepseek/i;
 const FLASH = /flash/i;
@@ -20,9 +19,11 @@ const FLASH = /flash/i;
  * CLI does not need a built gateway-core dist (#362 schema/seed only).
  */
 function isBlockedDeepSeekModel(modelCode: string, upstreamId = ""): boolean {
-  return (DEEPSEEK.test(modelCode) || DEEPSEEK.test(upstreamId)) && !FLASH.test(modelCode);
+  return (
+    (DEEPSEEK.test(modelCode) || DEEPSEEK.test(upstreamId)) &&
+    !FLASH.test(modelCode)
+  );
 }
-
 
 export const GATEWAY_SEED_CATALOG_VERSION = "seed-1";
 export const GATEWAY_SEED_PRICE_VERSION = "seed-1";
@@ -57,9 +58,32 @@ export class GatewaySeedError extends Error {
   }
 }
 
-/** Refuse any DeepSeek model that is not Flash (product lock, 2026-10-20). */
+/** Upstream ids/models of the card's provider implementations, when present. */
+function cardImplementations(
+  card: Record<string, unknown> | undefined,
+): { upstreamId: string; upstreamModel: string }[] {
+  const implementations = card?.providerImplementations;
+  if (!Array.isArray(implementations)) return [];
+  return implementations.map((entry: unknown) => {
+    const value = (entry ?? {}) as Record<string, unknown>;
+    return {
+      upstreamId: typeof value.upstreamId === "string" ? value.upstreamId : "",
+      upstreamModel:
+        typeof value.upstreamModel === "string" ? value.upstreamModel : "",
+    };
+  });
+}
+
+/**
+ * Refuse any DeepSeek model that is not Flash (product lock, 2026-10-20): the
+ * model code, its price upstream, and every card implementation. A Flash
+ * card that routes to a non-Flash DeepSeek upstream model is refused here,
+ * where gateway-core's catalog policy would silently drop that route.
+ */
 export function assertGatewaySeedFlashOnly(
-  models: readonly Pick<GatewaySeedModel, "modelCode" | "upstreamId">[],
+  models: readonly (Pick<GatewaySeedModel, "modelCode" | "upstreamId"> & {
+    card?: Record<string, unknown>;
+  })[],
 ): void {
   for (const model of models) {
     const upstreamId = model.upstreamId ?? "";
@@ -69,6 +93,17 @@ export function assertGatewaySeedFlashOnly(
         `DeepSeek seed models must be Flash only; refused ${model.modelCode}` +
           (upstreamId ? ` (upstream ${upstreamId})` : ""),
       );
+    }
+    for (const implementation of cardImplementations(model.card)) {
+      if (
+        (DEEPSEEK.test(implementation.upstreamId) ||
+          DEEPSEEK.test(implementation.upstreamModel)) &&
+        !FLASH.test(implementation.upstreamModel)
+      )
+        throw new GatewaySeedError(
+          "GATEWAY_SEED_MODEL_BLOCKED",
+          `DeepSeek seed models must be Flash only; ${model.modelCode} routes to ${implementation.upstreamModel || "an unnamed model"} (upstream ${implementation.upstreamId || "unknown"})`,
+        );
     }
   }
 }
@@ -174,34 +209,31 @@ export async function seedGatewayDatabase(
   });
 }
 
+/**
+ * Seed a database `gateway migrate` already brought to this release. The
+ * seed never migrates: schema changes go through the one migrate path, so a
+ * pending migration is refused instead of applied behind the rollout.
+ */
+export async function seedGatewaySchemaReady(
+  db: MigrationDatabase,
+  input?: GatewaySeedInput,
+): Promise<{ models: number; prices: number }> {
+  const plan = await runMigrations(db, { plan: true });
+  if (plan.pending.length)
+    throw new GatewaySeedError(
+      "GATEWAY_SEED_SCHEMA_PENDING",
+      `Run gateway migrate first; pending: ${plan.pending.map((migration) => migration.id).join(", ")}`,
+    );
+  return seedGatewayDatabase(db, input);
+}
+
 export async function seedGateway(
   env: Record<string, string | undefined> = process.env,
 ): Promise<{ models: number; prices: number }> {
-  const database = openPostgres({ connectionString: databaseUrl(env) });
+  const database = openPostgres({ connectionString: databaseUrl(env), max: 1 });
   try {
-    await migrateDatabase(database.db);
-    return await seedGatewayDatabase(database.db);
+    return await seedGatewaySchemaReady(database.db);
   } finally {
     await database.close();
   }
-}
-
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
-  await seedGateway()
-    .then((result) => {
-      console.log(
-        `Gateway seed applied: ${result.models} model(s), ${result.prices} price row(s) (Flash-only DeepSeek)`,
-      );
-    })
-    .catch((error: unknown) => {
-      const message =
-        error instanceof GatewaySeedError
-          ? `${error.code}: ${error.message}`
-          : "Gateway seed failed";
-      console.error(message);
-      process.exitCode = 1;
-    });
 }
