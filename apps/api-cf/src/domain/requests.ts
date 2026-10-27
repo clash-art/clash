@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   GATEWAY_BUDGET_ENFORCEMENTS,
+  GATEWAY_MEDIA_UNITS,
   GATEWAY_SUSPENSION_SUBJECTS,
   GatewayAbuseThresholdSchema,
   GatewayIdempotencyKeySchema,
@@ -342,17 +343,95 @@ export const GatewayHoldSweepRequestSchema = z
 const queryLimit = (max: number, fallback: number) => z.coerce.number().int().min(1).max(max).default(fallback);
 const queryInstant = () => isoInstant().optional();
 
-/** GET /api/v1/admin/gateway/usage. */
+const usageFilters = {
+  userId: identifier().optional(),
+  keyId: identifier().optional(),
+  modelCode: GatewayModelCodeSchema.optional(),
+  /** Entry status (`settled`, `partial`, `upstream_failed`, ...). */
+  status: z.string().regex(/^[a-z_]{1,32}$/).optional(),
+  from: queryInstant(),
+  to: queryInstant(),
+};
+const ledgerKind = () => z.enum(["hold", "settle", "release", "refund", "adjust", "grant", "topup", "expire"]).optional();
+const usageCursor = () => z.string().regex(/^[A-Za-z0-9_-]{1,512}$/).optional();
+
+/** GET /api/v1/admin/gateway/usage (#353, explorer #355). */
 export const GatewayUsageQuerySchema = z
   .object({
     tenantId: z.string().min(1).max(256).optional(),
-    userId: identifier().optional(),
-    keyId: identifier().optional(),
-    modelCode: GatewayModelCodeSchema.optional(),
-    kind: z.enum(["hold", "settle", "release", "refund", "adjust", "grant", "topup", "expire"]).optional(),
-    from: queryInstant(),
-    to: queryInstant(),
+    ...usageFilters,
+    kind: ledgerKind(),
+    cursor: usageCursor(),
     limit: queryLimit(500, 100),
+  })
+  .strict();
+
+/** GET /api/v1/admin/gateway/usage/export: the explorer filter as CSV. */
+export const GatewayUsageExportQuerySchema = z
+  .object({ tenantId: z.string().min(1).max(256).optional(), ...usageFilters, kind: ledgerKind() })
+  .strict();
+
+/** GET /api/v1/gateway/tenants/:t/usage (team owner; members via /me/usage without userId). */
+export const GatewayTeamUsageQuerySchema = z
+  .object({ ...usageFilters, cursor: usageCursor(), limit: queryLimit(500, 100) })
+  .strict();
+
+/** GET /api/v1/gateway/tenants/:t/usage/export. */
+export const GatewayTeamUsageExportQuerySchema = z.object(usageFilters).strict();
+
+/** POST /api/v1/admin/gateway/retention/enforce: run the metadata/ledger retention job now. */
+export const GatewayRetentionEnforceRequestSchema = z
+  .object({ limit: z.number().int().min(1).max(10_000).optional() })
+  .strict();
+
+export const GatewayReconcileSourceSchema = z.enum(["invoice", "ai_gateway"]);
+export const GatewayReconcileDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const count = () => z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0);
+
+/** PUT /api/v1/admin/gateway/reconciliation/reports/:day/:source: replace one day's upstream report. */
+export const GatewayUpstreamReportRequestSchema = z
+  .object({
+    groups: z
+      .array(
+        z
+          .object({
+            upstreamId: identifier(),
+            accountId: identifier(),
+            modelCode: GatewayModelCodeSchema,
+            requests: count(),
+            inputTokens: count(),
+            outputTokens: count(),
+            cachedInputTokens: count(),
+            cacheWriteTokens: count(),
+            units: z.partialRecord(z.enum(GATEWAY_MEDIA_UNITS), z.number().int().min(0)).default({}),
+          })
+          .strict(),
+      )
+      .max(1000),
+    reason: reason().optional(),
+  })
+  .strict();
+
+/** POST /api/v1/admin/gateway/reconciliation/runs: reconcile one day now. */
+export const GatewayReconcileRunRequestSchema = z
+  .object({ day: GatewayReconcileDaySchema, source: GatewayReconcileSourceSchema.optional() })
+  .strict();
+
+/** GET /api/v1/admin/gateway/reconciliation/runs. */
+export const GatewayReconcileRunQuerySchema = z
+  .object({
+    day: GatewayReconcileDaySchema.optional(),
+    status: z.enum(["matched", "adjusted", "incomplete", "source_missing"]).optional(),
+    limit: queryLimit(200, 50),
+  })
+  .strict();
+
+/** GET /api/v1/admin/gateway/reconciliation/reports. */
+export const GatewayUpstreamReportQuerySchema = z
+  .object({
+    from: GatewayReconcileDaySchema.optional(),
+    to: GatewayReconcileDaySchema.optional(),
+    limit: queryLimit(400, 60),
   })
   .strict();
 

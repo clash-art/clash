@@ -13,8 +13,13 @@
  */
 import type { D1Database } from "@cloudflare/workers-types";
 import {
+  GATEWAY_LEDGER_RETENTION_MS,
+  gatewayRetentionCutoffs,
+  gatewayUtcDay,
   purgeExpiredGatewayBodies,
   unavailablePort,
+  type GatewayClock,
+  type GatewayDataRetentionResult,
   type GatewayPorts,
   type GatewayRetentionEntry,
   type GatewayRetentionPort,
@@ -154,6 +159,121 @@ export function gatewayRetentionPorts(
     clock: monotonicClock(),
     logger: workersLogger(),
     ...overrides,
+  };
+}
+
+/** Rows one retention statement may touch per run; a backlog drains over later runs. */
+export const GATEWAY_DATA_RETENTION_LIMIT = 2000;
+
+/**
+ * Metadata and ledger retention (#355; decision 2026-10-20, gateway-usage.md):
+ * 30 days for usage metadata, 13 months for the ledger. One D1 batch:
+ *
+ * - ledger operational columns (`upstream_id`, `account_id`,
+ *   `provider_request_id`, `error_code`) NULLed 30 days after `occurred_at`;
+ * - ledger rows deleted 13 months after `occurred_at`;
+ * - ended `gateway_token` rows and terminal `tenant_invite` rows deleted 30
+ *   days after they ended; purged `gateway_request_retention` markers 30 days
+ *   after storage;
+ * - upstream reports, their groups and reconciliation runs after 13 months;
+ * - admin audit rows after 13 months. The 0036 trigger refuses deleting a
+ *   younger row by the database's own clock, so the cutoff is also bounded by
+ *   that clock: a skewed caller clock can never abort the batch.
+ *
+ * A hold still reserving (`open`, `settle_failed`) is never touched: it is
+ * live budget state, not history. Idempotent and bounded per statement.
+ */
+export async function enforceGatewayDataRetention(
+  db: D1Database,
+  options: { clock?: GatewayClock; limit?: number } = {},
+): Promise<GatewayDataRetentionResult> {
+  const now = (options.clock ?? monotonicClock()).now();
+  const limit = options.limit ?? GATEWAY_DATA_RETENTION_LIMIT;
+  const { metadataBefore, ledgerBefore } = gatewayRetentionCutoffs(now);
+  const metaS = toSeconds(metadataBefore);
+  const ledgerS = toSeconds(ledgerBefore);
+  const ledgerDay = gatewayUtcDay(ledgerBefore);
+  const notLiveHold = `NOT (kind = 'hold' AND status IN ('open', 'settle_failed'))`;
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE gateway_usage_ledger
+            SET upstream_id = NULL, account_id = NULL, provider_request_id = NULL, error_code = NULL
+          WHERE id IN (SELECT id FROM gateway_usage_ledger
+                        WHERE occurred_at < ?1 AND ${notLiveHold}
+                          AND (upstream_id IS NOT NULL OR account_id IS NOT NULL
+                               OR provider_request_id IS NOT NULL OR error_code IS NOT NULL)
+                        ORDER BY occurred_at LIMIT ?2)`,
+      )
+      .bind(metaS, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_usage_ledger
+          WHERE id IN (SELECT id FROM gateway_usage_ledger
+                        WHERE occurred_at < ?1 AND ${notLiveHold} ORDER BY occurred_at LIMIT ?2)`,
+      )
+      .bind(ledgerS, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_token
+          WHERE id IN (SELECT id FROM gateway_token
+                        WHERE expires_at < ?1 OR (revoked_at IS NOT NULL AND revoked_at < ?1) LIMIT ?2)`,
+      )
+      .bind(metaS, limit),
+    db
+      .prepare(
+        `DELETE FROM tenant_invite
+          WHERE id IN (SELECT id FROM tenant_invite
+                        WHERE (status <> 'pending' AND updated_at < ?1) OR expires_at < ?1 LIMIT ?2)`,
+      )
+      .bind(metaS, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_request_retention
+          WHERE request_id IN (SELECT request_id FROM gateway_request_retention
+                                WHERE status = 'purged' AND stored_at < ?1 LIMIT ?2)`,
+      )
+      .bind(metaS, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_upstream_usage
+          WHERE id IN (SELECT id FROM gateway_upstream_usage WHERE day < ?1 LIMIT ?2)`,
+      )
+      .bind(ledgerDay, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_upstream_report
+          WHERE id IN (SELECT id FROM gateway_upstream_report WHERE day < ?1 LIMIT ?2)`,
+      )
+      .bind(ledgerDay, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_reconciliation_run
+          WHERE id IN (SELECT id FROM gateway_reconciliation_run WHERE day < ?1 LIMIT ?2)`,
+      )
+      .bind(ledgerDay, limit),
+    db
+      .prepare(
+        `DELETE FROM gateway_admin_audit
+          WHERE id IN (SELECT id FROM gateway_admin_audit
+                        WHERE occurred_at < MIN(?1, CAST(strftime('%s', 'now') AS INTEGER) - ?2)
+                        ORDER BY occurred_at LIMIT ?3)`,
+      )
+      .bind(ledgerS, Math.ceil(GATEWAY_LEDGER_RETENTION_MS / 1000), limit),
+  ]);
+  const changes = results.map((result) => result.meta.changes ?? 0);
+  const [cleared, deleted, tokens, invites, markers, usageRows, reports, runs, audits] = changes as [
+    number, number, number, number, number, number, number, number, number,
+  ];
+  return {
+    ledgerMetadataCleared: cleared,
+    ledgerDeleted: deleted,
+    tokensDeleted: tokens,
+    invitesDeleted: invites,
+    retentionMarkersDeleted: markers,
+    reconciliationDeleted: usageRows + reports + runs,
+    auditDeleted: audits,
+    more: changes.some((count) => count >= limit),
   };
 }
 

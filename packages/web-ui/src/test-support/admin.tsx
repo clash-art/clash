@@ -37,6 +37,21 @@ export function stubAdminFetch(respond: (call: RecordedCall) => Response = () =>
   return calls;
 }
 
+/**
+ * Record files the page hands to the browser as a save (saveDownload): jsdom
+ * has no object URLs and no navigation, so the anchor's `download` name is
+ * what was saved.
+ */
+export function stubDownloads(): string[] {
+  const saved: string[] = [];
+  URL.createObjectURL = () => "blob:test";
+  URL.revokeObjectURL = () => undefined;
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    saved.push(this.download);
+  });
+  return saved;
+}
+
 /** A coded gateway error response, as api-cf sends it. */
 export function gatewayError(status: number, code: string, message = code) {
   return new Response(JSON.stringify({ error: { code, message, type: "invalid_request_error" } }), {

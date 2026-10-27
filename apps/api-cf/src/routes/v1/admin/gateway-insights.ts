@@ -4,10 +4,12 @@
  * narrows a platform-wide read to one tenant.
  *
  *   GET  /overview   (?tenantId)          30-day spend, requests, failures     usage.read_all
- *   GET  /usage      (?tenantId, filters) ledger entries + per-model totals    usage.read_all
+ *   GET  /usage      (?tenantId, filters, cursor) explorer page + per-model totals  usage.read_all
+ *   GET  /usage/export (?tenantId, filters) the same filter as CSV (#355)      usage.read_all
  *   GET  /audit      (?tenantId, filters) admin audit rows                     audit.read_all
  *   POST /prompts/:requestId/access       view a retained prompt + response    prompts.view
  *   POST /retention/purge                 purge expired retained bodies now    retention.purge
+ *   POST /retention/enforce               30-day metadata / 13-month ledger    retention.purge
  *   POST /holds/sweep                     expire stale budget holds now        holds.sweep
  *
  * Prompt access is hosted-only behind GATEWAY_STAFF_PROMPT_ACCESS=enabled
@@ -31,7 +33,9 @@ import {
   GatewayAuditQuerySchema,
   GatewayHoldSweepRequestSchema,
   GatewayPromptAccessRequestSchema,
+  GatewayRetentionEnforceRequestSchema,
   GatewayRetentionPurgeRequestSchema,
+  GatewayUsageExportQuerySchema,
   GatewayUsageQuerySchema,
 } from "../../../domain/requests";
 import { staffPromptAccessEnabled } from "../../../gateway";
@@ -39,7 +43,13 @@ import { adminAuditStatement } from "../../../gateway/d1-admin-audit";
 import { createD1AdminReads } from "../../../gateway/d1-admin-reads";
 import { sweepGatewayHolds } from "../../../gateway/d1-budgets";
 import { monotonicClock, toSeconds } from "../../../gateway/d1-common";
-import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
+import { enforceGatewayDataRetention, gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
+import {
+  createD1UsageExplorer,
+  usageCsvResponse,
+  usageExportFileName,
+  usageFilterOf,
+} from "../../../gateway/d1-usage-explorer";
 import { gatewayParam, gatewayQuery, readGatewayJson } from "../../../services/gateway-admin";
 import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
 
@@ -64,21 +74,29 @@ adminInsightRoutes.get(
   "/usage",
   platformRoute("usage.read_all", async (c) => {
     const query = gatewayQuery(c, GatewayUsageQuerySchema);
-    const from = ms(query.from);
-    const to = ms(query.to);
     return ok(
       c,
-      await reads(c.env).usage({
-        ...(query.tenantId ? { tenantId: query.tenantId } : {}),
-        ...(query.userId ? { userId: query.userId } : {}),
-        ...(query.keyId ? { keyId: query.keyId } : {}),
-        ...(query.modelCode ? { modelCode: query.modelCode } : {}),
-        ...(query.kind ? { kind: query.kind } : {}),
-        ...(from !== undefined ? { from } : {}),
-        ...(to !== undefined ? { to } : {}),
+      await createD1UsageExplorer(c.env.DB).list(usageFilterOf(query), {
         limit: query.limit,
+        ...(query.cursor ? { cursor: query.cursor } : {}),
       }),
     );
+  }),
+);
+
+adminInsightRoutes.get(
+  "/usage/export",
+  platformRoute("usage.read_all", async (c) => {
+    const filter = usageFilterOf(gatewayQuery(c, GatewayUsageExportQuerySchema));
+    const exported = await createD1UsageExplorer(c.env.DB).exportCsv(filter, "platform");
+    return usageCsvResponse({
+      ...exported,
+      fileName: usageExportFileName({
+        ...(filter.tenantId ? { scope: filter.tenantId } : {}),
+        ...(filter.from !== undefined ? { from: filter.from } : {}),
+        ...(filter.to !== undefined ? { to: filter.to } : {}),
+      }),
+    });
   }),
 );
 
@@ -220,5 +238,26 @@ adminInsightRoutes.post(
         nowS: toSeconds(Date.now()),
       }).run();
     return ok(c, { purge: result });
+  }),
+);
+
+adminInsightRoutes.post(
+  "/retention/enforce",
+  platformRoute("retention.purge", async (c, actor) => {
+    const body = await readGatewayJson(c, GatewayRetentionEnforceRequestSchema);
+    const result = await enforceGatewayDataRetention(c.env.DB, body.limit !== undefined ? { limit: body.limit } : {});
+    const { more: _more, ...removed } = result;
+    // Like every mutation, a run that changed nothing records nothing.
+    if (Object.values(removed).some((count) => count > 0))
+      await adminAuditStatement(c.env.DB, {
+        tenantId: "",
+        actor,
+        action: "retention.enforce",
+        targetType: "gateway_retention",
+        targetId: "metadata",
+        after: result,
+        nowS: toSeconds(Date.now()),
+      }).run();
+    return ok(c, { retention: result });
   }),
 );

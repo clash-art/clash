@@ -34,6 +34,56 @@ export const GATEWAY_RETENTION_HEADER = "x-gateway-retention";
 /** Bodies are kept 30 days from storage, then unreadable and purged. */
 export const GATEWAY_BODY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Usage metadata (#355; product decision 2026-10-20): operational ledger
+ * columns (upstream, account, provider request id, error code), ended tokens,
+ * settled invites and body-retention markers are kept 30 days.
+ */
+export const GATEWAY_METADATA_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * The ledger (money, kind, status, model, versions, token counts) and the
+ * admin audit are kept 13 months: 396 days, the window the 0036 audit
+ * trigger enforces, so both age out on the same day.
+ */
+export const GATEWAY_LEDGER_RETENTION_MS = 396 * 24 * 60 * 60 * 1000;
+
+/** Instants (epoch ms) before which each class of retained data is due for removal. */
+export function gatewayRetentionCutoffs(now: number): { metadataBefore: number; ledgerBefore: number } {
+  return { metadataBefore: now - GATEWAY_METADATA_RETENTION_MS, ledgerBefore: now - GATEWAY_LEDGER_RETENTION_MS };
+}
+
+/**
+ * The metadata/ledger retention job runs from the every-minute scheduled
+ * handler once an hour, at this minute; each run is bounded and idempotent,
+ * so a backlog drains over the following hours.
+ */
+export const GATEWAY_RETENTION_ENFORCE_MINUTE = 45;
+
+export function isRetentionEnforcementDue(ms: number): boolean {
+  return Math.floor(ms / 60_000) % 60 === GATEWAY_RETENTION_ENFORCE_MINUTE;
+}
+
+/** What one metadata/ledger retention run removed; every count is rows. */
+export interface GatewayDataRetentionResult {
+  /** Ledger rows whose operational columns were NULLed (older than 30 days). */
+  ledgerMetadataCleared: number;
+  /** Ledger rows deleted (older than 13 months). */
+  ledgerDeleted: number;
+  /** Ended (expired or revoked) gateway tokens deleted 30 days after they ended. */
+  tokensDeleted: number;
+  /** Accepted, revoked or expired invites deleted 30 days after they ended. */
+  invitesDeleted: number;
+  /** Purged body-retention markers deleted 30 days after storage. */
+  retentionMarkersDeleted: number;
+  /** Upstream reports, their groups and reconciliation runs deleted after 13 months. */
+  reconciliationDeleted: number;
+  /** Admin audit rows deleted after 13 months (the 0036 trigger refuses anything younger). */
+  auditDeleted: number;
+  /** True when some statement hit its row limit: more is due on the next run. */
+  more: boolean;
+}
+
 export const GATEWAY_RETENTION_KEY_PREFIX = "gateway-retention/";
 
 export function gatewayRetentionKeys(requestId: string): { request: string; response: string } {

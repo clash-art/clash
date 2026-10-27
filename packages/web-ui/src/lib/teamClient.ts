@@ -8,6 +8,7 @@
  * authorizes every call and `teamCan` only decides what the UI offers.
  */
 import {
+  adminDownload,
   adminRequest,
   type BudgetEnforcement,
   type Budget,
@@ -114,6 +115,8 @@ export interface TeamUsage {
   modelCode: string;
   status: string;
   costMicroCredits: number;
+  /** Settled at zero although a real request (a failed or partial media generation): never charged. */
+  notCharged: boolean;
   inputTokens: number;
   outputTokens: number;
   usageSource: string;
@@ -195,7 +198,15 @@ export const teamApi = {
   setKeyRateLimit: (tenantId: string, keyId: string, rateLimit: RateLimit | null) =>
     request<{ key: GatewayKey }>("PUT", tenantPath(tenantId, `/keys/${seg(keyId)}/rate-limit`), { rateLimit }),
 
-  usage: (tenantId: string) => request<{ usage: TeamUsage[] }>("GET", tenantPath(tenantId, "/usage")),
+  usage: (tenantId: string, page: { cursor?: string } = {}) =>
+    request<{ usage: TeamUsage[]; nextCursor: string | null }>(
+      "GET",
+      tenantPath(tenantId, `/usage${page.cursor ? `?cursor=${seg(page.cursor)}` : ""}`),
+    ),
+  /** The team's usage as CSV (owner); never the upstream that served it. */
+  usageExport: (tenantId: string) => adminDownload(tenantPath(tenantId, "/usage/export"), "gateway-usage.csv"),
+  /** The caller's own usage as CSV (any member). */
+  myUsageExport: (tenantId: string) => adminDownload(tenantPath(tenantId, "/me/usage/export"), "gateway-usage.csv"),
   audit: (tenantId: string) => request<{ entries: TeamAuditEntry[] }>("GET", tenantPath(tenantId, "/audit")),
   me: (tenantId: string) => request<TeamSelf>("GET", tenantPath(tenantId, "/me")),
 

@@ -3,13 +3,25 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AbuseSignals, AdminAccount, Budget, CatalogVersion, GatewayKey, TenantMember } from "../../lib/adminClient";
-import { chooseOption, gatewayError, stubAdminFetch } from "../../test-support/admin";
+import type {
+  AbuseSignals,
+  AdminAccount,
+  Budget,
+  CatalogVersion,
+  GatewayKey,
+  ReconcileRun,
+  TenantMember,
+  UpstreamReport,
+  UsageEntry,
+  UsageResult,
+} from "../../lib/adminClient";
+import { chooseOption, gatewayError, stubAdminFetch, stubDownloads } from "../../test-support/admin";
 import { AdminAbuse } from "./AdminAbuse";
 import { AdminAudit } from "./AdminAudit";
 import { AdminBudgets, type BudgetPermissions } from "./AdminBudgets";
 import { AdminCatalog, AdminPrices } from "./AdminCatalog";
 import { AdminPackages } from "./AdminPackages";
+import { AdminReconciliation } from "./AdminReconciliation";
 import { AdminUsage } from "./AdminUsage";
 import { AdminAccounts, AdminMembers } from "./AdminUsers";
 
@@ -87,8 +99,9 @@ describe("AdminBudgets", () => {
 });
 
 describe("AdminUsage", () => {
-  const usage = { entries: [], byModel: [] };
-  const entry = (requestId: string, kind: string) => ({
+  const usage: UsageResult = { entries: [], byModel: [], nextCursor: null };
+  const entry = (requestId: string, kind: string, extra: Partial<UsageEntry> = {}): UsageEntry => ({
+    id: `${requestId}:${kind}`,
     requestId,
     kind,
     status: "settled",
@@ -96,14 +109,20 @@ describe("AdminUsage", () => {
     userId: "u-ann",
     keyId: "gwk_1",
     amountMicroCredits: 1500,
+    chargeMicroCredits: kind === "settle" ? 1500 : 0,
+    notCharged: false,
     modelCode: "gpt-x",
+    modelKind: "text",
     inputTokens: 4,
     outputTokens: 2,
     priceVersion: "p1",
+    refKind: null,
+    upstreamId: "openai",
     errorCode: null,
     occurredAt: "2026-10-20T10:00:00.000Z",
+    ...extra,
   });
-  const ledger = { entries: [entry("gwr_1", "settle"), entry("gwr_1", "hold")], byModel: [] };
+  const ledger: UsageResult = { entries: [entry("gwr_1", "settle"), entry("gwr_1", "hold")], byModel: [], nextCursor: null };
   // The stored bytes, deliberately not pretty-printed: the viewer must show them unchanged.
   const stored = {
     request: '{"model":"gpt-x","messages":[{"role":"user","content":"why is the sky blue?"}]}',
@@ -172,6 +191,147 @@ describe("AdminUsage", () => {
     chooseOption("Ledger kind", "settle");
     fireEvent.submit(form);
     expect(onFiltersChange).toHaveBeenCalledWith({ tenantId: "team:a", modelCode: "gpt-x", kind: "settle" });
+  });
+
+  it("filters by status and UTC days, and a new filter starts from the newest page", () => {
+    const onFiltersChange = vi.fn();
+    render(<AdminUsage usage={usage} filters={{ cursor: "c1", kind: "settle" }} onFiltersChange={onFiltersChange} promptAccess={false} />);
+    const form = screen.getByRole("region", { name: "Filters" }).querySelector("form")!;
+    type(form, "Status", "upstream_failed");
+    type(form, "From (UTC day)", "2026-10-01");
+    type(form, "Before (UTC day)", "2026-10-08");
+    fireEvent.submit(form);
+    expect(onFiltersChange).toHaveBeenCalledWith({
+      kind: "settle",
+      status: "upstream_failed",
+      from: "2026-10-01T00:00:00.000Z",
+      to: "2026-10-08T00:00:00.000Z",
+    });
+  });
+
+  it("marks a request settled at zero as not charged, in its row and in the model totals", () => {
+    const failed = entry("gwr_9", "settle", { status: "upstream_failed", amountMicroCredits: 0, chargeMicroCredits: 0, notCharged: true, modelCode: "img" });
+    render(
+      <AdminUsage
+        usage={{ entries: [failed], byModel: [{ modelCode: "img", requests: 1, amountMicroCredits: 0, inputTokens: 0, outputTokens: 0, notCharged: 1 }], nextCursor: null }}
+        filters={{}}
+        onFiltersChange={() => undefined}
+        promptAccess={false}
+      />,
+    );
+    expect(within(screen.getByRole("table", { name: "Ledger entries" })).getByText("not charged")).toBeInTheDocument();
+    const totals = within(screen.getByRole("table", { name: "Usage by model" })).getByText("img").closest("tr")!;
+    expect(within(totals).getAllByText("1")).toHaveLength(2);
+  });
+
+  it("pages to older entries and back to the newest", () => {
+    const onFiltersChange = vi.fn();
+    const { rerender } = render(
+      <AdminUsage usage={{ ...ledger, nextCursor: "next-1" }} filters={{ tenantId: "team:a" }} onFiltersChange={onFiltersChange} promptAccess={false} />,
+    );
+    expect(screen.queryByRole("button", { name: "Newest" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Older entries" }));
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ tenantId: "team:a", cursor: "next-1" });
+    rerender(<AdminUsage usage={ledger} filters={{ tenantId: "team:a", cursor: "next-1" }} onFiltersChange={onFiltersChange} promptAccess={false} />);
+    expect(screen.queryByRole("button", { name: "Older entries" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Newest" }));
+    expect(onFiltersChange).toHaveBeenLastCalledWith({ tenantId: "team:a", cursor: undefined });
+  });
+
+  it("exports the current filter, without its page, as CSV, and shows a refused export's code", async () => {
+    const saved = stubDownloads();
+    let refuse = false;
+    const calls = stubAdminFetch(() =>
+      refuse
+        ? gatewayError(413, "GATEWAY_EXPORT_TOO_LARGE", "Narrow the filters.")
+        : new Response("occurred_at\r\n", { headers: { "content-type": "text/csv", "content-disposition": 'attachment; filename="gateway-usage-team_a-2026-10-01-all.csv"' } }),
+    );
+    render(
+      <AdminUsage usage={ledger} filters={{ tenantId: "team:a", from: "2026-10-01T00:00:00.000Z", cursor: "c1", limit: 50 }} onFiltersChange={() => undefined} promptAccess={false} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(saved).toEqual(["gateway-usage-team_a-2026-10-01-all.csv"]));
+    expect(calls[0]!.path).toBe("/api/v1/admin/gateway/usage/export?tenantId=team%3Aa&from=2026-10-01T00%3A00%3A00.000Z");
+    refuse = true;
+    fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    expect(await screen.findByText("GATEWAY_EXPORT_TOO_LARGE")).toBeInTheDocument();
+    expect(saved).toHaveLength(1);
+  });
+});
+
+describe("AdminReconciliation", () => {
+  const usage = { requests: 2, inputTokens: 80, outputTokens: 40, cachedInputTokens: 0, cacheWriteTokens: 0, units: {} };
+  const run: ReconcileRun = {
+    id: "gwrec_000000000000000000000001",
+    day: "2026-10-20",
+    source: "ai_gateway",
+    status: "adjusted",
+    errorCode: null,
+    groups: 1,
+    adjustments: 1,
+    adjustedMicroCredits: 120_000,
+    actorKind: "system",
+    actorId: "nightly",
+    startedAt: "2026-10-21T01:15:00.000Z",
+  };
+  const missing: ReconcileRun = { ...run, id: "gwrec_000000000000000000000002", day: "2026-10-19", source: null, status: "source_missing", errorCode: "GATEWAY_RECONCILE_SOURCE_MISSING", groups: 0, adjustments: 0, adjustedMicroCredits: 0 };
+  const report: UpstreamReport = { day: "2026-10-20", source: "ai_gateway", groups: 1, importedAt: "2026-10-21T00:30:00.000Z", importedBy: "adm_1" };
+
+  it("lists runs read-only without reconciliation.write, a missing report with its code, and opens a run's differences", async () => {
+    const calls = stubAdminFetch(() =>
+      Response.json({
+        run: {
+          ...run,
+          diffs: [
+            { upstreamId: "openai", accountId: "acct_1", modelCode: "gpt-x", ledger: usage, upstream: { ...usage, requests: 3 }, ledgerChargedMicroCredits: 5, priceVersion: "p1", deltaMicroCredits: 120_000, postedMicroCredits: 0, adjustMicroCredits: 120_000 },
+          ],
+        },
+      }),
+    );
+    render(<AdminReconciliation runs={[run, missing]} reports={[report]} canWrite={false} onChanged={() => undefined} />);
+    for (const name of ["Reconcile a day", "Import upstream report"]) expect(screen.queryByRole("form", { name })).toBeNull();
+    const table = screen.getByRole("table", { name: "Reconciliation runs" });
+    expect(within(table).getByText("GATEWAY_RECONCILE_SOURCE_MISSING")).toBeInTheDocument();
+    expect(within(table).getByText("+0.12")).toBeInTheDocument();
+    expect(within(screen.getByRole("table", { name: "Upstream reports" })).getByText("AI Gateway logs")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: `Open run ${run.id}` }));
+    const diffs = await screen.findByRole("table", { name: "Run differences" });
+    expect(within(diffs).getByText("3 req · 80 in · 40 out")).toBeInTheDocument();
+    expect(calls).toEqual([{ method: "GET", path: `/api/v1/admin/gateway/reconciliation/runs/${run.id}`, body: undefined }]);
+  });
+
+  it("reconciles a day on demand and shows what it posted", async () => {
+    const onChanged = vi.fn();
+    const calls = stubAdminFetch(() => Response.json({ run: { ...run, diffs: [] }, posted: 1 }, { status: 201 }));
+    render(<AdminReconciliation runs={[]} reports={[]} canWrite onChanged={onChanged} />);
+    const form = screen.getByRole("form", { name: "Reconcile a day" });
+    type(form, "Day (UTC)", "2026-10-20");
+    chooseOption("Source", "AI Gateway logs", form);
+    fireEvent.submit(form);
+    expect(await screen.findByText("2026-10-20: adjusted, 1 adjustment posted.")).toBeInTheDocument();
+    expect(calls).toEqual([{ method: "POST", path: "/api/v1/admin/gateway/reconciliation/runs", body: { day: "2026-10-20", source: "ai_gateway" } }]);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("imports a report's groups, refusing groups that are not a JSON array before calling the server", async () => {
+    const calls = stubAdminFetch(() => Response.json({ report }));
+    render(<AdminReconciliation runs={[]} reports={[]} canWrite onChanged={() => undefined} />);
+    const form = screen.getByRole("form", { name: "Import upstream report" });
+    type(form, "Report day (UTC)", "2026-10-20");
+    type(form, "Report groups JSON", "{}");
+    fireEvent.submit(form);
+    expect(await within(form.parentElement!).findByText("Report groups must be a JSON array.")).toBeInTheDocument();
+    expect(calls).toEqual([]);
+    const groups = [{ upstreamId: "openai", accountId: "acct_1", modelCode: "gpt-x", requests: 3, inputTokens: 80 }];
+    type(form, "Report groups JSON", JSON.stringify(groups));
+    type(form, "Import reason", "October invoice");
+    fireEvent.submit(form);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: "PUT",
+      path: "/api/v1/admin/gateway/reconciliation/reports/2026-10-20/invoice",
+      body: { groups, reason: "October invoice" },
+    });
   });
 });
 

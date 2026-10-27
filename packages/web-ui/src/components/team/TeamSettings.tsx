@@ -36,7 +36,17 @@ import {
   type TeamUsage,
   type TeamWallet,
 } from "../../lib/teamClient";
-import { AdminCard, AdminErrorAlert, AdminField, AdminSection, AdminTable, StatusPill, formatTime, useAdminAction } from "../admin/AdminKit";
+import {
+  AdminCard,
+  AdminErrorAlert,
+  AdminField,
+  AdminSection,
+  AdminTable,
+  StatusPill,
+  formatTime,
+  saveDownload,
+  useAdminAction,
+} from "../admin/AdminKit";
 import { RateLimitForm } from "../admin/RateLimitForm";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -55,6 +65,8 @@ export interface TeamOwnerData {
   packages: TeamPackage[];
   packs: TeamTopupPack[];
   usage: TeamUsage[];
+  /** The page after `usage`; null or absent on the last page. */
+  usageCursor?: string | null;
   audit: TeamAuditEntry[];
 }
 
@@ -256,9 +268,7 @@ export function TeamOwnerSettings({ team, data, onChanged }: { team: Team; data:
         />
       </AdminSection>
 
-      <AdminSection title="Usage" description="Every member's requests, newest first.">
-        <UsageTable usage={data.usage} nameOf={nameOf} />
-      </AdminSection>
+      <TeamUsageSection tenantId={tenantId} usage={data.usage} nextCursor={data.usageCursor ?? null} nameOf={nameOf} />
 
       <AdminSection title="Audit log" description="Every change to this team, with who made it.">
         <AdminTable
@@ -624,6 +634,55 @@ function BudgetEventTable({ events, subjectName }: { events: BudgetEvent[]; subj
   );
 }
 
+/** The owner's usage: every member's requests, older pages on demand, and the CSV export. */
+function TeamUsageSection({
+  tenantId,
+  usage,
+  nextCursor,
+  nameOf,
+}: {
+  tenantId: string;
+  usage: TeamUsage[];
+  nextCursor: string | null;
+  nameOf: (userId: string) => string;
+}) {
+  const [older, setOlder] = useState<{ rows: TeamUsage[]; cursor: string | null }>({ rows: [], cursor: nextCursor });
+  const more = useAdminAction();
+  const exporting = useAdminAction();
+  return (
+    <AdminSection
+      title="Usage"
+      description="Every member's requests, newest first. Failed media generations are shown at zero, not charged."
+      actions={
+        <Button
+          size="sm"
+          disabled={exporting.pending}
+          onClick={() => void exporting.run(async () => saveDownload(await teamApi.usageExport(tenantId)))}
+        >
+          Export CSV
+        </Button>
+      }
+    >
+      <AdminErrorAlert error={exporting.error ?? more.error} />
+      <UsageTable usage={[...usage, ...older.rows]} nameOf={nameOf} />
+      {older.cursor ? (
+        <Button
+          size="sm"
+          disabled={more.pending}
+          onClick={() =>
+            void more.run(async () => {
+              const page = await teamApi.usage(tenantId, { cursor: older.cursor! });
+              setOlder({ rows: [...older.rows, ...page.usage], cursor: page.nextCursor });
+            })
+          }
+        >
+          Load older
+        </Button>
+      ) : null}
+    </AdminSection>
+  );
+}
+
 function UsageTable({ usage, nameOf }: { usage: TeamUsage[]; nameOf?: (userId: string) => string }) {
   return (
     <AdminTable
@@ -635,7 +694,15 @@ function UsageTable({ usage, nameOf }: { usage: TeamUsage[]; nameOf?: (userId: s
         { header: "When", cell: (row) => formatTime(row.occurredAt) },
         ...(nameOf ? [{ header: "Member", cell: (row: TeamUsage) => nameOf(row.userId) }] : []),
         { header: "Model", cell: (row) => row.modelCode },
-        { header: "Status", cell: (row) => row.status },
+        {
+          header: "Status",
+          cell: (row) => (
+            <span className="flex flex-wrap items-center gap-1">
+              {row.status}
+              {row.notCharged ? <StatusPill tone="muted">not charged</StatusPill> : null}
+            </span>
+          ),
+        },
         { header: "Tokens in / out", cell: (row) => `${row.inputTokens} / ${row.outputTokens}`, align: "right" },
         { header: "Credits", cell: (row) => formatCredits(row.costMicroCredits), align: "right" },
       ]}
@@ -649,6 +716,7 @@ function UsageTable({ usage, nameOf }: { usage: TeamUsage[]; nameOf?: (userId: s
 export function TeamSelfView({ data }: { data: TeamSelf }) {
   const subjectName = (scope: string, scopeId: string) =>
     scope === "user" ? "You" : (data.keys.find((key) => key.id === scopeId)?.name ?? scopeId);
+  const exporting = useAdminAction();
   return (
     <>
       <AdminSection title={data.tenant.name} description={`You are a ${data.member.role} of this team.`}>
@@ -672,7 +740,19 @@ export function TeamSelfView({ data }: { data: TeamSelf }) {
       <AdminSection title="Your budget notifications">
         <BudgetEventTable events={data.events} subjectName={subjectName} />
       </AdminSection>
-      <AdminSection title="Your usage">
+      <AdminSection
+        title="Your usage"
+        actions={
+          <Button
+            size="sm"
+            disabled={exporting.pending}
+            onClick={() => void exporting.run(async () => saveDownload(await teamApi.myUsageExport(data.tenant.id)))}
+          >
+            Export CSV
+          </Button>
+        }
+      >
+        <AdminErrorAlert error={exporting.error} />
         <UsageTable usage={data.usage} />
       </AdminSection>
     </>

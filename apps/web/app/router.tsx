@@ -63,6 +63,7 @@ export const router = createBrowserRouter([
       { path: "admin/budgets", lazy: lazyRoute(() => import("./routes/admin.budgets")) },
       { path: "admin/packages", lazy: lazyRoute(() => import("./routes/admin.packages")) },
       { path: "admin/usage", lazy: lazyRoute(() => import("./routes/admin.usage")) },
+      { path: "admin/reconciliation", lazy: lazyRoute(() => import("./routes/admin.reconciliation")) },
       { path: "admin/abuse", lazy: lazyRoute(() => import("./routes/admin.abuse")) },
       { path: "admin/audit", lazy: lazyRoute(() => import("./routes/admin.audit")) },
       {

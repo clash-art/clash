@@ -45,6 +45,7 @@ async function loadView(team: Team): Promise<TeamView> {
       packages: offers.packages,
       packs: offers.packs,
       usage: usage.usage,
+      usageCursor: usage.nextCursor ?? null,
       audit: audit.entries,
     },
   };

@@ -25,8 +25,9 @@
  * The other routes live in gateway-access.ts (me, admin accounts),
  * gateway-catalog.ts (catalog, upstreams), gateway-tenants.ts (tenants,
  * members, budgets, keys, limits, wallet), gateway-insights.ts (overview,
- * usage, audit, prompts) and gateway-abuse.ts (abuse signals, thresholds and
- * suspensions).
+ * usage explorer and export, audit, prompts, retention), gateway-abuse.ts
+ * (abuse signals, thresholds and suspensions) and gateway-reconciliation.ts
+ * (upstream reports, reconciliation runs).
  */
 import { Hono } from "hono";
 import { z } from "zod";
@@ -49,6 +50,7 @@ import { adminAbuseRoutes } from "./gateway-abuse";
 import { adminAccessRoutes } from "./gateway-access";
 import { adminCatalogRoutes } from "./gateway-catalog";
 import { adminInsightRoutes } from "./gateway-insights";
+import { adminReconciliationRoutes } from "./gateway-reconciliation";
 import { adminTenantRoutes } from "./gateway-tenants";
 
 const PriceStatusSchema = z.enum(["draft", "published"]).optional();
@@ -196,3 +198,4 @@ adminGatewayRoutes.route("/", adminCatalogRoutes);
 adminGatewayRoutes.route("/", adminTenantRoutes);
 adminGatewayRoutes.route("/", adminInsightRoutes);
 adminGatewayRoutes.route("/", adminAbuseRoutes);
+adminGatewayRoutes.route("/", adminReconciliationRoutes);

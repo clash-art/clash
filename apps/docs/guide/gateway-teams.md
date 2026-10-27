@@ -119,13 +119,15 @@ are coded (`x-clash-error-code`).
 | `GET …/budgets` (wallet, budgets, notifications)   | `budgets.read`                     |
 | `PUT …/budgets/(user\|key)/:id`                    | `team.budgets.allocate`            |
 | `GET …/keys`, `PUT …/keys/:keyId/rate-limit`       | `keys.read`, `limits.write`        |
-| `GET …/usage`, `GET …/audit`                       | `usage.read`, `audit.read`         |
+| `GET …/usage` (filters, `cursor`), `GET …/usage/export` (CSV), `GET …/audit` | `usage.read`, `audit.read` |
 | `GET …/billing`, `GET …/billing/offers`            | `billing.read`                     |
 | `POST …/subscription`, `…/subscription/cancel`, `…/topups` | `billing.purchase`         |
 | `GET …/me` (own role, budget, keys, usage)         | `usage.read_own` + `budgets.read_own` |
+| `GET …/me/usage` (filters, `cursor`), `GET …/me/usage/export` | `usage.read_own` (always the caller) |
 
 Usage rows carry billing facts only (model code, status, tokens, credits),
-never the upstream or account that served them.
+never the upstream or account that served them. A failed media generation
+appears at zero with `notCharged: true`. See [gateway-usage.md](gateway-usage.md).
 
 ## Audit
 

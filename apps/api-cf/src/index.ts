@@ -39,7 +39,7 @@ const app = createApp();
 
 export default {
   fetch: app.fetch,
-  scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+  scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
     // Separate waitUntil calls: one failing job must not cancel the others.
     ctx.waitUntil(recoverCloudDurableRuns(env));
     ctx.waitUntil(
@@ -61,6 +61,12 @@ export default {
     // and drop observations past the longest window. Idempotent.
     ctx.waitUntil(
       import("./gateway/d1-abuse").then((m) => m.evaluateGatewayAbuseNow(env)),
+    );
+    // Gateway usage retention and reconciliation (#355), on the every-minute
+    // cron: metadata (30 days) and ledger (13 months) retention once an hour,
+    // upstream reconciliation once a night (gateway-usage.md).
+    ctx.waitUntil(
+      import("./gateway/scheduled").then((m) => m.runScheduledGatewayUsageJobs(env, event.scheduledTime)),
     );
     // Lazy like the other cron graphs; abandoned import staging has no hero
     // request to piggyback on.

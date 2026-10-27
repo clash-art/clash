@@ -437,6 +437,10 @@ export const gatewayUsageLedger = sqliteTable(
       table.status,
       table.expiresAt,
     ),
+    /** Platform-wide explorer reads and the retention job (0052). */
+    timeIdx: index("gateway_usage_ledger_time_idx").on(table.occurredAt),
+    /** Reconciliation adjustments by run (0052). */
+    refIdx: index("gateway_usage_ledger_ref_idx").on(table.refKind, table.refId),
     kindCheck: check(
       "gateway_usage_ledger_kind_check",
       sql`${table.kind} IN (${sql.raw(GATEWAY_LEDGER_KINDS.map((kind) => `'${kind}'`).join(", "))})`,
@@ -738,6 +742,101 @@ export const gatewayRequestRetention = sqliteTable(
     tenantTimeIdx: index("gateway_request_retention_tenant_time_idx").on(
       table.tenantId,
       table.storedAt,
+    ),
+  }),
+);
+
+export const GATEWAY_RECONCILE_SOURCES = ["invoice", "ai_gateway"] as const;
+
+/**
+ * One imported upstream usage report (0052, #355): a UTC day from an invoice
+ * export or AI Gateway logs. A report without groups is still a report.
+ * Re-importing a day and source replaces it and its groups; kept 13 months.
+ */
+export const gatewayUpstreamReports = sqliteTable(
+  "gateway_upstream_report",
+  {
+    id: text("id").primaryKey(),
+    /** `YYYY-MM-DD`, UTC. */
+    day: text("day").notNull(),
+    source: text("source", { enum: GATEWAY_RECONCILE_SOURCES }).notNull(),
+    groups: integer("groups").notNull().default(0),
+    importedAt: integer("imported_at").notNull(),
+    /** The admin account that imported it. */
+    importedBy: text("imported_by").notNull(),
+  },
+  (table) => ({
+    daySourceIdx: uniqueIndex("gateway_upstream_report_day_source_idx").on(table.day, table.source),
+    sourceCheck: check("gateway_upstream_report_source_check", sql`${table.source} IN ('invoice', 'ai_gateway')`),
+  }),
+);
+
+/**
+ * The groups of an upstream report (0052, #355): daily totals per official
+ * upstream account and public model code. Counts only, never content.
+ */
+export const gatewayUpstreamUsage = sqliteTable(
+  "gateway_upstream_usage",
+  {
+    id: text("id").primaryKey(),
+    /** `YYYY-MM-DD`, UTC. */
+    day: text("day").notNull(),
+    source: text("source", { enum: GATEWAY_RECONCILE_SOURCES }).notNull(),
+    upstreamId: text("upstream_id").notNull(),
+    accountId: text("account_id").notNull(),
+    modelCode: text("model_code").notNull(),
+    requests: integer("requests").notNull().default(0),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    unitsJson: text("units_json").notNull().default("{}"),
+  },
+  (table) => ({
+    groupIdx: uniqueIndex("gateway_upstream_usage_group_idx").on(
+      table.day,
+      table.source,
+      table.upstreamId,
+      table.accountId,
+      table.modelCode,
+    ),
+    sourceCheck: check(
+      "gateway_upstream_usage_source_check",
+      sql`${table.source} IN ('invoice', 'ai_gateway')`,
+    ),
+  }),
+);
+
+export const GATEWAY_RECONCILE_RUN_STATUSES = ["matched", "adjusted", "incomplete", "source_missing"] as const;
+
+/**
+ * One reconciliation of one UTC day (0052, #355). Its adjustments are ledger
+ * `adjust` entries (`ref_kind = 'reconcile'`, `ref_id` = this id) written in
+ * the same batch; `source_missing` records a day without an upstream report.
+ */
+export const gatewayReconciliationRuns = sqliteTable(
+  "gateway_reconciliation_run",
+  {
+    id: text("id").primaryKey(),
+    day: text("day").notNull(),
+    source: text("source"),
+    status: text("status", { enum: GATEWAY_RECONCILE_RUN_STATUSES }).notNull(),
+    errorCode: text("error_code"),
+    groups: integer("groups").notNull().default(0),
+    adjustments: integer("adjustments").notNull().default(0),
+    /** Signed: positive when the upstream reported more than the ledger. */
+    adjustedMicroCredits: integer("adjusted_micro_credits").notNull().default(0),
+    diffsJson: text("diffs_json").notNull().default("[]"),
+    /** `admin` (an admin account) or `system` (the nightly job). */
+    actorKind: text("actor_kind").notNull(),
+    actorId: text("actor_id").notNull(),
+    startedAt: integer("started_at").notNull(),
+  },
+  (table) => ({
+    dayIdx: index("gateway_reconciliation_run_day_idx").on(table.day, table.startedAt),
+    statusCheck: check(
+      "gateway_reconciliation_run_status_check",
+      sql`${table.status} IN ('matched', 'adjusted', 'incomplete', 'source_missing')`,
     ),
   }),
 );
