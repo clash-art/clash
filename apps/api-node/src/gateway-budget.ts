@@ -1265,9 +1265,9 @@ export async function checkGatewayInvariants(
       row.amount_micro_credits,
       "amount_micro_credits",
     );
-    const key = `${row.request_id} ${row.budget_id}`;
+    const key = `${row.request_id}\0${row.budget_id}`;
     owners.set(key, { requestId: row.request_id, budgetId: row.budget_id });
-    const settlementKey = `${key} ${row.kind}`;
+    const settlementKey = `${key}\0${row.kind}`;
     if (seen.has(settlementKey)) {
       violations.push({
         rule: "settlement-charge-once",
