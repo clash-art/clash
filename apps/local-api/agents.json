@@ -109,6 +109,7 @@
     "src/cloud-accounts.ts": "Host-private service-origin profiles and legacy credential migration boundaries; logout removes matching stored tokens and leaves a tombstone.",
     "src/cloud-login.ts": "Cloud service discovery and PKCE browser/loopback sign-in; renderer receives only flow status and public identity.",
     "src/cloud-routes.ts": "Origin-guarded local account/login/logout HTTP endpoints; signing in never admits projects.",
+    "src/official-gateway.ts": "Clash official provider handoff (#357): mints sk_gw_ tokens from the cloud sign-in, fills an ACP agent's gateway auth method, renews/re-mints on expiry or session 401, revokes on sign-out; raw tokens stay in memory, only key ids, expiries and the user's BYOK/official priority persist.",
     "src/project-cloud-journey.ts": "Project-bound account and readiness projection for Desktop; Web links require all replication capabilities and matching credentials.",
     "src/project-host.contract.test.ts": "Shared Project Host contract on the real createApp with the bundled Remotion Generator. Known gap: host-command answers a stale Timeline write with HTTP 200 + STALE_READ body instead of 409.",
     "src/auth-flow.ts": "Loopback callback server only (127.0.0.1, random port, one callback, timeout). PKCE, state, authorization URL and code exchange come from @clash/shared-runtime/provider-oauth-flow."

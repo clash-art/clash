@@ -1,6 +1,12 @@
 import { projectCloudJourney } from "./project-cloud-journey.js";
 import { createCloudRoutes } from "./cloud-routes.js";
 import { createCloudLogin } from "./cloud-login.js";
+import {
+  createOfficialGateway,
+  OfficialGatewayError,
+  type OfficialGateway,
+  type OfficialGatewaySessionHook,
+} from "./official-gateway.js";
 import { cloudOrigin } from "./cloud-accounts.js";
 import { LocalProjectUpgradeError } from "./local-project-upgrade.js";
 import { PluginRuntimeUnavailableError } from "./plugin-runtime-unavailable.js";
@@ -12,6 +18,11 @@ import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from 
 import { LOCAL_OTLP_TRACES_PATH, readGeneratorRevision } from "@clash/shared-types";
 import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.js";
 import { commitProjectMutation } from "@clash/shared-types";
+import {
+  OFFICIAL_GATEWAY_PROVIDER_ID,
+  UpdateOfficialGatewayRequestSchema,
+  officialGatewayCodeIn,
+} from "@clash/shared-types";
 import {
   hasLegacyCanvasGeneratorDrafts,
   migrateLegacyCanvasGeneratorDrafts,
@@ -461,6 +472,8 @@ export interface LocalApiOptions {
   mediaAnalysisConfig?: LocalMediaAnalysisConfigStore;
   syncConfig?: LocalSyncConfigStore;
   cloudLogin?: ReturnType<typeof createCloudLogin>;
+  /** Clash official provider handoff (#357); created from dataDir when omitted. */
+  officialGateway?: OfficialGateway;
   /** Machine-level public Asset storage shared by Desktop, CLI, MCP and plugins. */
   publicAssetStorage?: PublicAssetStorageService;
   syncEnv?: RemoteLoroPersistenceEnv;
@@ -812,6 +825,7 @@ export interface LocalAcpAdapter {
     sessionId: string,
   ): Promise<{ events: LocalAcpSessionEvent[] } | null>;
   setSessionEventStore?(store: LocalAcpSessionEventStore): void;
+  setOfficialGateway?(hook: OfficialGatewaySessionHook): void;
   /** Update the environment used by every subsequent agent/tool spawn. */
   updateSpawnEnv?(env: Record<string, string | undefined>): void;
   getSessionRuntimeStatus?(
@@ -4023,6 +4037,13 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       resolveOptions: async () => [],
     });
   const db = createDb(options.dataDir, options.onProjectChanged);
+  const officialGateway =
+    options.officialGateway ??
+    createOfficialGateway({ dataDir: options.dataDir });
+  if (options.localAcp) {
+    officialGateway.attachHarnesses(options.localAcp);
+    options.localAcp.setOfficialGateway?.(officialGateway.sessionHook);
+  }
   /**
    * Project identity commits before any workspace filesystem work. If the
    * minimal marker cannot be written, remove the just-created row so the
@@ -8372,7 +8393,57 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     return new Response(null, { status: 204 });
   });
   app.route("/", createLocalMarketplaceRoutes({ ...options, reconcileSkillProjects: async () => { for (const project of activeProjects(await db.load())) await options.prepareProjectWorkspace?.(project.id); }, validateInstallProjects: async ids => { const state = await db.load(); return ids.every(id => activeProjects(state).some(project => project.id === id)); }, readInstalledPlugin: options.pluginPackages ? id => options.pluginPackages!.read(id) : undefined }));
-  app.route("/api/v1/local/cloud",createCloudRoutes({dataDir:options.dataDir,login:options.cloudLogin??createCloudLogin({dataDir:options.dataDir})}));
+  const cloudLogin =
+    options.cloudLogin ?? createCloudLogin({ dataDir: options.dataDir });
+  cloudLogin.onSignedIn?.((serviceUrl) => {
+    void officialGateway.onSignedIn(serviceUrl);
+  });
+  app.route(
+    "/api/v1/local/cloud",
+    createCloudRoutes({
+      dataDir: options.dataDir,
+      login: cloudLogin,
+      beforeLogout: (serviceUrl) => officialGateway.onSignedOut(serviceUrl),
+    }),
+  );
+  app.get("/api/v1/local/official-gateway", async (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json(await officialGateway.status());
+  });
+  app.patch("/api/v1/local/official-gateway", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as
+      | (Record<string, unknown> & ProjectWriteBody)
+      | null;
+    const parsed = UpdateOfficialGatewayRequestSchema.safeParse({
+      priority: body?.priority,
+    });
+    if (!parsed.success)
+      return c.json(
+        {
+          error: "priority must be byok-first or official-first",
+          code: "GATEWAY_INVALID_REQUEST",
+        },
+        400,
+      );
+    await officialGateway.setPriority(parsed.data.priority);
+    const mutation = hostMutationSucceeded(
+      {
+        operation: "official_gateway_update",
+        entity: { kind: "local-config", id: "official-gateway" },
+      },
+      { resultEntityId: "official-gateway" },
+    );
+    await db.appendMutationAudit(
+      mutationAuditRecord({
+        mutation,
+        actorClientType: requestProjectWritePreconditions(c, body ?? {})
+          .actorClientType,
+        reason: "official gateway priority update",
+      }),
+    );
+    c.header("Cache-Control", "no-store");
+    return c.json({ ...(await officialGateway.status()), mutation });
+  });
   app.get("/api/v1/local/sync", async (c) =>
     c.json(publicLocalSyncConfig(await localSyncReadState(syncConfig))),
   );
@@ -9746,6 +9817,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         method_id?: unknown;
         methodId?: unknown;
         values?: unknown;
+        credential_source?: unknown;
       } & ProjectWriteBody;
       const preconditions = requestProjectWritePreconditions(c, body);
       const needsReadProof =
@@ -9798,12 +9870,19 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         ...(methodId ? { methodId } : {}),
         ...(values && Object.keys(values).length > 0 ? { values } : {}),
       };
-      const result = await options.localAcp.authenticateHarness(
-        harnessId,
-        Object.keys(authenticateOptions).length > 0
-          ? authenticateOptions
-          : undefined,
-      );
+      // Clash official: the Host mints and fills the gateway fields itself;
+      // the token never passes through the renderer.
+      const result =
+        body.credential_source === OFFICIAL_GATEWAY_PROVIDER_ID
+          ? await officialGateway.handoff(harnessId, methodId)
+          : await options.localAcp.authenticateHarness(
+              harnessId,
+              Object.keys(authenticateOptions).length > 0
+                ? authenticateOptions
+                : undefined,
+            );
+      if (body.credential_source !== OFFICIAL_GATEWAY_PROVIDER_ID)
+        await officialGateway.forgetHandoff(harnessId);
       const afterReadToken = localHarnessesReceiptReadToken(result);
       const mutation = hostMutationSucceeded(
         hostMutation?.envelope ?? envelope,
@@ -9826,6 +9905,16 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       });
     } catch (error) {
       const message = errorMessage(error);
+      if (error instanceof OfficialGatewayError)
+        return c.json(
+          {
+            error: message,
+            code: error.code,
+            ...(error.reason ? { reason: error.reason } : {}),
+            mutation: hostMutationRejected(envelope, message),
+          },
+          error.status as 400,
+        );
       return c.json(
         {
           error: message,
@@ -10104,6 +10193,7 @@ const ForkPointBodySchema = z.object({
       });
     } catch (error) {
       const message = formatLocalAcpSessionError(error);
+      const gatewayCode = officialGatewayCodeIn(message);
       if (localSessionId) {
         try {
           await sessionEventStore.appendEvent(localSessionId, {
@@ -10137,6 +10227,7 @@ const ForkPointBodySchema = z.object({
         return c.json(
           {
             error: message,
+            ...(gatewayCode ? { code: gatewayCode } : {}),
             session_id: localSessionId,
             mutation,
           },
@@ -10146,6 +10237,7 @@ const ForkPointBodySchema = z.object({
       return c.json(
         {
           error: message,
+          ...(gatewayCode ? { code: gatewayCode } : {}),
           mutation: hostMutationRejected(envelope, message),
         },
         503,

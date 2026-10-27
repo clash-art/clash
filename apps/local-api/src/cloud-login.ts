@@ -23,6 +23,7 @@ export function createCloudLogin(options: {
   const accounts = createCloudAccounts(options.dataDir);
   const fetcher = options.fetch ?? fetch;
   let active: { status: LoginStatus; cancel: () => void } | undefined;
+  const signedInListeners = new Set<(serviceUrl: string) => void>();
   const request: typeof fetch = (url, init) =>
     fetcher(url, {
       ...init,
@@ -100,8 +101,10 @@ export function createCloudLogin(options: {
             { token: token.accessToken, user: identity.user },
             () => active === entry && status.state === "pending",
           );
-          if (active === entry && status.state === "pending")
+          if (active === entry && status.state === "pending") {
             status.state = "succeeded";
+            for (const listener of signedInListeners) listener(serviceUrl);
+          }
         } catch {
           if (status.state === "pending") {
             status.state = "failed";
@@ -118,8 +121,16 @@ export function createCloudLogin(options: {
     cancel() {
       active?.cancel();
     },
+    /** Called with the service origin after a sign-in is saved. */
+    onSignedIn(listener: (serviceUrl: string) => void) {
+      signedInListeners.add(listener);
+      return () => {
+        signedInListeners.delete(listener);
+      };
+    },
     close() {
       active?.cancel();
+      signedInListeners.clear();
     },
   };
 }

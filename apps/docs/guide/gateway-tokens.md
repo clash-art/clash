@@ -56,6 +56,40 @@ session middleware, and no header, `x-user-id` included, is read as identity.
 Errors use the OpenAI error shape with `x-clash-error-code`; `details` carry a
 reason and non-secret ids only. Neither responses nor logs contain the token.
 
+## Desktop Host handoff (Clash official provider)
+
+The Local Host (`apps/local-api/src/official-gateway.ts`, #357) is the only
+desktop caller. It mints with the `clsh_` token saved by the cloud sign-in and
+passes the `sk_gw_` token straight to an ACP agent's gateway auth method (the
+`fields` method with `baseUrl` and `api-key`; `providerName` is `clash`). The
+renderer never sees the token, and it is never written to disk: the Host
+persists only the key id, expiry and service per agent, plus the user's
+priority.
+
+| Host route                                                     | Purpose                                                                 |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `GET /api/v1/local/official-gateway`                           | Sign-in, key state/expiry, agents on the official key, last coded error |
+| `PATCH /api/v1/local/official-gateway` `{ priority }`          | `byok-first` (default) or `official-first`                              |
+| `POST /api/v1/local/harnesses/:id/authenticate` `{ credential_source: "clash-official" }` | Mint and hand off to this agent           |
+
+- **Priority is the user's.** `byok-first` keeps an agent's own sign-in or key
+  and uses Clash official only for agents with none; `official-first` hands
+  off whenever the user is signed in. Authenticating an agent with its own
+  credential removes its official handoff.
+- **Lifecycle.** A token is minted at sign-in for the first handoff. Before a
+  session starts, a handoff within two minutes of expiry is renewed; an expired
+  or revoked one is re-minted. A session 401 (`GATEWAY_TOKEN_EXPIRED`,
+  `GATEWAY_TOKEN_REVOKED`, or a bare 401 on an official handoff) re-mints once
+  per 30 s and restarts the agent after the turn. Sign-out revokes every token
+  the Host minted before the credential is deleted.
+- **No fallback.** Signed out, offline, or with a rejected sign-in, the official
+  path fails with `GATEWAY_AUTH_REQUIRED`; there is no platform key.
+- **Coded errors.** Session errors carry `gateway_code` and read
+  `CODE: message` for `GATEWAY_AUTH_REQUIRED`, `GATEWAY_TOKEN_EXPIRED`,
+  `GATEWAY_TOKEN_REVOKED`, `GATEWAY_MODEL_NOT_ALLOWED` and
+  `GATEWAY_BUDGET_EXCEEDED` (not re-minted). The table lives in
+  `packages/shared-types/src/official-gateway.ts`.
+
 ## Sign-out cascade
 
 Both Better Auth instances (web Worker and api-cf) install

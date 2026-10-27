@@ -1761,6 +1761,24 @@ export {
   type ProjectCloudJourney,
 } from "./cloud-connection";
 export {
+  OFFICIAL_GATEWAY_PROVIDER_ID,
+  OFFICIAL_GATEWAY_ACP_PROVIDER_NAME,
+  AGENT_CREDENTIAL_PRIORITIES,
+  DEFAULT_AGENT_CREDENTIAL_PRIORITY,
+  OFFICIAL_GATEWAY_CLIENT_CODES,
+  isOfficialGatewayClientCode,
+  isOfficialGatewayAuthMethod,
+  officialGatewayCodeIn,
+  officialGatewayErrorText,
+  OfficialGatewayStatusSchema,
+  UpdateOfficialGatewayRequestSchema,
+  MintedGatewayTokenSchema,
+  RenewedGatewayTokenSchema,
+  type AgentCredentialPriority,
+  type OfficialGatewayClientCode,
+  type OfficialGatewayStatus,
+} from "./official-gateway.js";
+export {
   MediaOperationTraceSchema,
   MediaObservationSchema,
   AssetEvidenceQuerySchema,

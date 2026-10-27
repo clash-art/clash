@@ -4811,6 +4811,108 @@ describe("SettingsClient runtime harnesses", () => {
     });
   });
 
+  it("lets a desktop user hand an agent's gateway method to Clash official", async () => {
+    globalThis.__CLASH_RUNTIME_CONFIG__ = {
+      mode: "desktop",
+      apiBaseUrl: "http://127.0.0.1:49152",
+    };
+    const harness = {
+      id: "codex-acp",
+      label: "Codex",
+      binary: "/tmp/codex-acp",
+      enabled: false,
+      available: true,
+      installed: true,
+      installable: true,
+      auth: {
+        status: "needs-auth",
+        message: "Codex is not signed in for ACP.",
+        methods: [
+          {
+            id: "custom-endpoint",
+            name: "Custom endpoint",
+            type: "agent",
+            form: "fields",
+            vars: [
+              { name: "baseUrl", label: "Base URL" },
+              { name: "api-key", label: "API key", secret: true },
+            ],
+          },
+        ],
+      },
+    };
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/v1/local/agent-servers"))
+          return Response.json({ agent_servers: {} });
+        if (url.includes("/api/v1/local/harnesses/codex-acp/authenticate"))
+          return Response.json(
+            {
+              error: "Sign in to your Clash account to use the Clash official provider.",
+              code: "GATEWAY_AUTH_REQUIRED",
+            },
+            { status: 401 },
+          );
+        if (
+          url.includes("/api/v1/local/harnesses") &&
+          (!init || init.method === "GET")
+        )
+          return Response.json({ harnesses: [harness] });
+        return new Response("not found", { status: 404 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(
+        <MemoryRouter>
+          <AppFeedbackProvider>
+            <SettingsClient
+              initialTokens={[]}
+              initialVariables={[]}
+              initialActions={[]}
+              initialSkills={[]}
+              activeSection={"agents" as any}
+              embedded
+            />
+          </AppFeedbackProvider>
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Sign in to Codex" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Use Clash official instead",
+        }),
+      );
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "/api/v1/local/harnesses/codex-acp/authenticate",
+          ),
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              method_id: "custom-endpoint",
+              credential_source: "clash-official",
+            }),
+          }),
+        );
+      });
+      expect(
+        await screen.findByText(
+          "GATEWAY_AUTH_REQUIRED: Sign in to your Clash account to use the Clash official provider.",
+        ),
+      ).toBeTruthy();
+    } finally {
+      globalThis.__CLASH_RUNTIME_CONFIG__ = undefined;
+    }
+  });
+
   it("automatically rechecks auth after a sign-in launch", async () => {
     let authConfigured = false;
     const fetchMock = vi.fn(

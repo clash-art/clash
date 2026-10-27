@@ -54,6 +54,10 @@ import {
 } from "@clash/shared-types";
 import { authFormControls, type AuthFormControl } from "@clash/shared-types";
 import {
+  OFFICIAL_GATEWAY_PROVIDER_ID,
+  isOfficialGatewayAuthMethod,
+} from "@clash/shared-types";
+import {
   ACCOUNT_SETTINGS,
   ACTION_PROVIDER_PRESETS,
   CustomActionDefinitionSchema,
@@ -102,8 +106,13 @@ import {
 } from "@clash/web-ui/lib/provider-authorization";
 import {
   getRuntimeCapabilities,
+  isDesktopRuntime,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
+import {
+  OfficialGatewayProviderRow,
+  officialGatewayResponseError,
+} from "./OfficialGatewayProvider";
 import {
   clearHarnessOperation,
   setHarnessOperation,
@@ -6151,6 +6160,7 @@ function ModelRoutingSection({
               )}
 
               <OfficialProviderRow />
+              {isDesktopRuntime() && <OfficialGatewayProviderRow />}
 
               {configuredProviderRows.length > 0 && (
                 <SettingsCollection
@@ -8475,6 +8485,7 @@ function AgentsSection() {
     harnessId: string,
     methodId?: string,
     values?: Record<string, string>,
+    credentialSource?: typeof OFFICIAL_GATEWAY_PROVIDER_ID,
   ) => {
     const harness = harnesses.find((candidate) => candidate.id === harnessId);
     const label = harness?.label ?? "agent";
@@ -8533,23 +8544,21 @@ function AgentsSection() {
           method: "POST",
           credentials: "include",
           signal: authAbortController.signal,
-          ...(methodId || values
+          ...(methodId || values || credentialSource
             ? {
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({
                   ...(methodId ? { method_id: methodId } : {}),
                   ...(values ? { values } : {}),
+                  ...(credentialSource
+                    ? { credential_source: credentialSource }
+                    : {}),
                 }),
               }
             : {}),
         },
       );
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw await officialGatewayResponseError(res);
       const json = (await res.json()) as { harnesses?: LocalHarnessInfo[] };
       const nextHarnesses = json.harnesses ?? [];
       setHarnesses((current) =>
@@ -9381,6 +9390,20 @@ function AgentsSection() {
             authMethodHasFields(method) ? values : undefined,
           );
         }}
+        onUseOfficial={
+          isDesktopRuntime()
+            ? (method) => {
+                if (!authDialogHarnessId) return;
+                setAuthDialogError(null);
+                void onAuthenticateHarness(
+                  authDialogHarnessId,
+                  method.id,
+                  undefined,
+                  OFFICIAL_GATEWAY_PROVIDER_ID,
+                );
+              }
+            : undefined
+        }
       />
       <CustomAgentServerDialog
         open={customAgentDialogOpen}
@@ -9437,6 +9460,7 @@ function HarnessAuthDialog({
   onBack,
   onFieldChange,
   onSubmit,
+  onUseOfficial,
 }: {
   harness: LocalHarnessInfo | null;
   methodId: string | null;
@@ -9450,6 +9474,8 @@ function HarnessAuthDialog({
   onBack: () => void;
   onFieldChange: (methodId: string, name: string, value: string) => void;
   onSubmit: (method: LocalAuthMethod, values: Record<string, string>) => void;
+  /** Desktop Host only: the Host mints a Clash gateway key and fills this method. */
+  onUseOfficial?: (method: LocalAuthMethod) => void;
 }) {
   const methods = harness?.auth?.methods ?? [];
   const detailMethod =
@@ -9566,6 +9592,17 @@ function HarnessAuthDialog({
                 >
                   Continue
                 </Button>
+                {onUseOfficial && isOfficialGatewayAuthMethod(detailMethod) ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => onUseOfficial(detailMethod)}
+                  >
+                    Use Clash official instead
+                  </Button>
+                ) : null}
               </form>
             ) : (
               <Button
