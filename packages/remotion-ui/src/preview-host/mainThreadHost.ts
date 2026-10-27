@@ -34,19 +34,16 @@ export function createMainThreadPreviewHost(
   options: MainThreadPreviewHostOptions,
 ): PreviewHost {
   const emitter = new PreviewHostEmitter();
-  let composition: PreviewCompositionDescriptor | null = null;
   let currentFrame: number | null = null;
   let mounted = false;
 
   return {
     mode: "main-thread",
-    mount(next: PreviewCompositionDescriptor) {
-      composition = next;
+    mount(_next: PreviewCompositionDescriptor) {
       mounted = true;
     },
     unmount() {
       mounted = false;
-      composition = null;
       currentFrame = null;
       options.resolvePlayer()?.pause();
     },

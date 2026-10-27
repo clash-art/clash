@@ -1,7 +1,6 @@
 import { PreviewHostEmitter } from "./emitter";
 import {
   PREVIEW_HOST_PROTOCOL,
-  isPreviewHostEvent,
   type PreviewCompositionDescriptor,
   type PreviewHostCommand,
   type PreviewHostEvent,
@@ -61,7 +60,6 @@ export function createIframePreviewHost(
   const emitter = new PreviewHostEmitter();
   let bridge: PreviewHostBridge | null = null;
   let unsubscribe: (() => void) | null = null;
-  let composition: PreviewCompositionDescriptor | null = null;
   let currentFrame: number | null = null;
 
   const handleEvent = (event: PreviewHostEvent) => {
@@ -76,7 +74,6 @@ export function createIframePreviewHost(
   return {
     mode: "iframe",
     mount(next: PreviewCompositionDescriptor) {
-      composition = next;
       bridge = options.createBridge();
       unsubscribe = bridge.onEvent(handleEvent);
       bridge.send({
@@ -91,7 +88,6 @@ export function createIframePreviewHost(
       unsubscribe = null;
       bridge?.dispose();
       bridge = null;
-      composition = null;
       currentFrame = null;
     },
     seek(frame: number) {
