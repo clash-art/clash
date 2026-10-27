@@ -1,9 +1,9 @@
 /**
- * Contract of deploy/compose.yaml (#374): the self-host topology is
- * PostgreSQL multi-node — three api nodes, a worker and an admin node behind
- * a one-shot migrate gate — with the mock upstream only in the `test` profile.
- * Services are classified by the package script entry they run, and their
- * environment is checked with the same functions the processes use.
+ * Contract of deploy/compose.yaml (#374 + #373): the self-host topology is
+ * PostgreSQL multi-node — three api nodes, an outbox process (not a
+ * GATEWAY_ROLE), an admin node, and a one-shot migrate gate — with the mock
+ * upstream only in the `test` profile and an optional `all` colocation under
+ * `demo`. GATEWAY_ROLE is api|admin|all|migrate only.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -12,12 +12,18 @@ import { parse } from "yaml";
 import { isLoadBalancerConfig } from "../../../scripts/check-anti-patterns.ts";
 import { databaseUrl, publicUrl } from "./config.ts";
 import { gatewayDrainTimingsFromEnv } from "./gateway-health.ts";
-import { gatewayRole } from "./gateway-node.ts";
+import {
+  gatewayRole,
+  gatewayServesAdminConsole,
+  gatewayServesDataPlane,
+} from "./gateway-node.ts";
 
 const packageDir = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(packageDir, "../..");
 const deployDir = join(packageDir, "deploy");
 const composePath = join(deployDir, "compose.yaml");
+const dockerfilePath = join(deployDir, "Dockerfile");
+const entrypointPath = join(deployDir, "entrypoint.sh");
 
 interface Service {
   image?: string;
@@ -31,6 +37,8 @@ interface Service {
   ports?: string[];
   restart?: string;
   init?: boolean;
+  read_only?: boolean;
+  tmpfs?: string[];
   stop_grace_period?: string;
 }
 
@@ -61,11 +69,18 @@ const env = (service: Service) => service.environment ?? {};
 const servicesRunning = (script: string) =>
   services.filter(([, service]) => runs(service, script));
 
-const apiNodes = servicesRunning("start").filter(
-  ([, service]) => gatewayRole(env(service)) === "api",
+const roleOf = (service: Service) =>
+  "GATEWAY_ROLE" in env(service) ? gatewayRole(env(service)) : undefined;
+
+const apiNodes = services.filter(
+  ([, service]) => roleOf(service) === "api" && !service.profiles,
 );
-const adminNodes = servicesRunning("start").filter(
-  ([, service]) => gatewayRole(env(service)) === "admin",
+const adminNodes = services.filter(
+  ([, service]) => roleOf(service) === "admin" && !service.profiles,
+);
+const allNodes = services.filter(([, service]) => roleOf(service) === "all");
+const migrateGates = services.filter(
+  ([, service]) => roleOf(service) === "migrate",
 );
 const workers = servicesRunning("worker:outbox");
 const appServices = [...apiNodes, ...adminNodes, ...workers];
@@ -126,8 +141,8 @@ function filesUnder(directory: string): string[] {
   );
 }
 
-describe("gateway-node compose: distributed topology (#374)", () => {
-  it("runs three api nodes, one worker and one admin, all on PostgreSQL", () => {
+describe("gateway-node compose: distributed topology (#374 + #373)", () => {
+  it("runs three api nodes, one outbox process and one admin, all on PostgreSQL", () => {
     expect(apiNodes).toHaveLength(3);
     expect(workers).toHaveLength(1);
     expect(adminNodes).toHaveLength(1);
@@ -140,6 +155,18 @@ describe("gateway-node compose: distributed topology (#374)", () => {
       expect(url.hostname, name).toBe(postgres[0]![0]);
       expect(service.profiles, name).toBeUndefined();
     }
+  });
+
+  it("GATEWAY_ROLE is only api|admin|all|migrate (no gateway worker role)", () => {
+    for (const [name, service] of services) {
+      if (!("GATEWAY_ROLE" in env(service))) continue;
+      const role = gatewayRole(env(service));
+      expect(["api", "admin", "all", "migrate"], name).toContain(role);
+      expect(role, name).not.toBe("worker");
+    }
+    // Outbox process is a command override, not GATEWAY_ROLE.
+    for (const [name, service] of workers)
+      expect(env(service).GATEWAY_ROLE, name).toBeUndefined();
   });
 
   it("the api nodes are interchangeable: one image, one environment, one shared blob volume", () => {
@@ -168,14 +195,12 @@ describe("gateway-node compose: distributed topology (#374)", () => {
     }
   });
 
-  it("every application process waits for the one-shot migrate gate", () => {
-    const gates = services.filter(([, service]) =>
-      service.command?.join(" ").match(/\brun\b.*\bmigrate$/),
-    );
-    expect(gates).toHaveLength(1);
-    const [gateName, gate] = gates[0]!;
+  it("every application process waits for the one-shot migrate gate (GATEWAY_ROLE=migrate)", () => {
+    expect(migrateGates).toHaveLength(1);
+    const [gateName, gate] = migrateGates[0]!;
     expect(gate.restart).toBe("no");
     expect(gate.profiles).toBeUndefined();
+    expect(gate.command, gateName).toBeUndefined();
     expect(Object.values(gate.depends_on ?? {})).toEqual([
       { condition: "service_healthy" },
     ]);
@@ -184,13 +209,31 @@ describe("gateway-node compose: distributed topology (#374)", () => {
         .filter(([, service]) => service.image?.startsWith("postgres:"))
         .map(([name]) => name),
     );
-    // The gate runs the package's own migrate script, whatever it invokes.
     expect(scripts.migrate).toBeTruthy();
     for (const [name, service] of appServices) {
       expect(service.depends_on?.[gateName], name).toEqual({
         condition: "service_completed_successfully",
       });
-      expect(service.command?.join(" "), name).not.toMatch(/migrat/);
+      expect(service.command?.join(" ") ?? "", name).not.toMatch(/migrat/);
+      expect(roleOf(service), name).not.toBe("migrate");
+    }
+  });
+
+  it("wires admin (+ demo all) to the separate admin listener (#371/#372)", () => {
+    for (const [name, service] of [...adminNodes, ...allNodes]) {
+      const role = roleOf(service)!;
+      expect(gatewayServesAdminConsole(role), name).toBe(true);
+      expect(env(service).GATEWAY_ADMIN_PORT, name).toMatch(/^\d+$/);
+      expect(env(service).GATEWAY_ADMIN_WEB_DIR, name).toBeTruthy();
+      expect(service.ports?.join(" "), name).toContain(
+        `:${env(service).GATEWAY_ADMIN_PORT}`,
+      );
+    }
+    for (const [name, service] of apiNodes)
+      expect(gatewayServesDataPlane(roleOf(service)!), name).toBe(true);
+    for (const [name, service] of allNodes) {
+      expect(service.profiles, name).toEqual(["demo"]);
+      expect(gatewayServesDataPlane(roleOf(service)!), name).toBe(true);
     }
   });
 
@@ -228,7 +271,7 @@ describe("gateway-node compose: distributed topology (#374)", () => {
     }
   });
 
-  it("keeps api nodes LB-friendly: readiness check, drain-length stop grace, init", () => {
+  it("keeps api nodes LB-friendly: readiness check, drain-length stop grace, init, read-only rootfs", () => {
     for (const [name, service] of apiNodes) {
       const port = env(service).PORT;
       expect(service.healthcheck?.test.join(" "), name).toContain(
@@ -240,6 +283,8 @@ describe("gateway-node compose: distributed topology (#374)", () => {
         name,
       ).toBeGreaterThan(drain.delayMs + drain.graceMs + drain.settleMs);
       expect(service.init, name).toBe(true);
+      expect(service.read_only, name).toBe(true);
+      expect(service.tmpfs, name).toContain("/tmp");
     }
   });
 
@@ -268,7 +313,7 @@ describe("gateway-node compose: distributed topology (#374)", () => {
   });
 });
 
-describe("gateway-node deploy directory (#374)", () => {
+describe("gateway-node deploy directory (#374 + #373)", () => {
   it("ships no load balancer config (CONTRIBUTING anti-pattern 4)", () => {
     for (const file of filesUnder(deployDir))
       expect(isLoadBalancerConfig(relative(repoRoot, file)), file).toBe(false);
@@ -278,7 +323,7 @@ describe("gateway-node deploy directory (#374)", () => {
       );
   });
 
-  it("builds every role from one Dockerfile whose copied repository files exist", () => {
+  it("builds every role from one multi-stage Dockerfile with digest pin, tini, healthz, entrypoint", () => {
     const builds = new Set(
       services
         .filter(([, service]) => service.build)
@@ -288,16 +333,30 @@ describe("gateway-node deploy directory (#374)", () => {
     );
     expect(builds.size).toBe(1);
     const [dockerfile] = [...builds];
+    expect(dockerfile).toBe(dockerfilePath);
     expect(existsSync(dockerfile!)).toBe(true);
-    for (const [name, service] of appServices)
+    expect(existsSync(entrypointPath)).toBe(true);
+    for (const [name, service] of [...appServices, ...migrateGates])
       expect(
         service.build && resolve(deployDir, service.build.context),
         name,
       ).toBe(repoRoot);
+    const body = readFileSync(dockerfile!, "utf8");
+    expect(body).toMatch(/pnpm deploy --filter @clash\/api-node --prod/);
+    expect(body).toMatch(/Deliberate tsx ship/i);
+    expect(body).toMatch(/node:24-slim@sha256:[a-f0-9]{64}/);
+    expect(body).toMatch(/\btini\b/);
+    expect(body).toMatch(/USER node/);
+    expect(body).toMatch(/HEALTHCHECK[\s\S]*\/healthz/);
+    expect(body).toMatch(/gateway-entrypoint/);
+    expect(body).not.toMatch(/GATEWAY_ENCRYPTION_KEYS=|POSTGRES_PASSWORD=/);
+    const entry = readFileSync(entrypointPath, "utf8");
+    for (const role of ["api", "admin", "all", "migrate"])
+      expect(entry).toContain(role);
+    expect(entry).not.toMatch(/GATEWAY_ROLE=worker|role\) in\s*\n\s*worker/);
+    expect(entry).toMatch(/api\|admin\|all/);
     const copied = [
-      ...readFileSync(dockerfile!, "utf8").matchAll(
-        /^COPY --from=builder \/app\/(\S+)/gm,
-      ),
+      ...body.matchAll(/^COPY --from=builder \/app\/(\S+)/gm),
     ].map((match) => match[1]!);
     expect(copied.length).toBeGreaterThan(0);
     for (const file of copied)

@@ -66,17 +66,27 @@ docker compose -f apps/api-node/deploy/compose.yaml --profile test up -d --build
 | Service | Runs | Notes |
 | --- | --- | --- |
 | `postgres` | PostgreSQL 16 | Authority for every node: ledger, budgets, sessions, BullMQ queues. |
-| `migrate` | `migrate` script, then exits | One-shot gate. Every application service waits for `service_completed_successfully`; startup never migrates. |
-| `api-1`…`api-3` | `src/server.ts`, `GATEWAY_ROLE=api` | Identical, stateless gateway nodes (model data plane, relay, auth). Health check `GET /readyz`. |
-| `worker` | `src/outbox-worker.ts` | Outbox notifications, checkpoint handoff, BullMQ-on-PostgreSQL workers. |
-| `admin` | `src/server.ts`, `GATEWAY_ROLE=admin` | Same server without the model-gateway data plane. |
+| `migrate` | `GATEWAY_ROLE=migrate` (entrypoint → `gateway-cli migrate`), then exits | One-shot gate. Every application service waits for `service_completed_successfully`; startup never migrates. |
+| `api-1`…`api-3` | `GATEWAY_ROLE=api` | Identical, stateless gateway nodes (model data plane, relay, auth). Health check `GET /readyz`. |
+| `worker` | `src/outbox-worker.ts` (command override; **not** a `GATEWAY_ROLE`) | Outbox notifications, checkpoint handoff, BullMQ-on-PostgreSQL. No Redis sidecar. |
+| `admin` | `GATEWAY_ROLE=admin` + `GATEWAY_ADMIN_PORT` | Admin API + shared `/admin` console on the admin listener (#371/#372); public `PORT` is health only. |
+| `all` | `GATEWAY_ROLE=all`, `profiles: [demo]` | Colocates api+admin in one process for demos; still requires Postgres (not SQLite). |
 | `mock-upstream` | `src/mock-upstream/cli.ts` | `profiles: [test]` only; never part of the default topology. |
 
-All roles run one image built from [`deploy/Dockerfile`](deploy/Dockerfile).
+`GATEWAY_ROLE` is only **`api` \| `admin` \| `all` \| `migrate`** (#373). There is no
+gateway `worker` role.
+
+All of those processes run one multi-stage image from
+[`deploy/Dockerfile`](deploy/Dockerfile) (`pnpm deploy --prod`, non-root,
+tini, `HEALTHCHECK` `/healthz`, base digest pinned). **Deliberate tsx ship:**
+api-node has no compile/`dist` step yet; the entrypoint runs TypeScript through
+tsx. Secrets come from the deployer's environment, never image layers. Compose
+sets `read_only: true` with tmpfs `/tmp` and the `blobs` volume at `/data`.
 Compose refuses to start without `POSTGRES_PASSWORD`, `CLOUD_PUBLIC_URL` and the
-encryption key ring; secrets come from the deployer's environment, never the image.
-`BETTER_AUTH_SECRET` is optional, as above. Ports publish on `127.0.0.1` unless
-`GATEWAY_PUBLISH_HOST` says otherwise.
+encryption key ring. Admin / `all` also need `ADMIN_AUTH_SECRET` (or
+`BETTER_AUTH_SECRET`) and a real `apps/web` build at `GATEWAY_ADMIN_WEB_DIR`
+(the image ships a placeholder `index.html`). Ports publish on `127.0.0.1`
+unless `GATEWAY_PUBLISH_HOST` says otherwise.
 
 What the deployer provides, on purpose not shipped here:
 
