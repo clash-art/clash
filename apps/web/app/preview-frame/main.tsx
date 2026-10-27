@@ -20,10 +20,24 @@ import {
   type PreviewTransportEvent,
 } from "@clash/remotion-ui/preview-host";
 
-type MountedScene = PreviewCompositionDescriptor & {
+type MountedScene = {
+  width: number;
+  height: number;
+  fps: number;
+  durationInFrames: number;
   tracks: Track[];
+  allNodes?: Map<string, any>;
   parentOrigin: string;
 };
+
+function toNodesMap(raw: unknown): Map<string, any> | undefined {
+  if (!raw) return undefined;
+  if (raw instanceof Map) return raw as Map<string, any>;
+  if (typeof raw === "object") {
+    return new Map(Object.entries(raw as Record<string, unknown>));
+  }
+  return undefined;
+}
 
 function post(event: PreviewHostEvent, targetOrigin: string) {
   window.parent.postMessage(event, targetOrigin);
@@ -57,14 +71,27 @@ function PreviewFrameApp() {
       if (!isPreviewHostCommand(event.data)) return;
       const command = event.data;
       if (command.type === "mount") {
-        parentOriginRef.current = command.parentOrigin;
-        const tracks = Array.isArray(command.composition.tracks)
-          ? (command.composition.tracks as Track[])
+        // Narrow via runtime guard; cast fields so stale package types still compile.
+        const mount = command as {
+          parentOrigin: string;
+          composition: PreviewCompositionDescriptor & {
+            tracks?: unknown[];
+            allNodes?: unknown;
+          };
+        };
+        parentOriginRef.current = mount.parentOrigin;
+        const { composition } = mount;
+        const tracks = Array.isArray(composition.tracks)
+          ? (composition.tracks as Track[])
           : [];
         setScene({
-          ...command.composition,
+          width: composition.width,
+          height: composition.height,
+          fps: composition.fps,
+          durationInFrames: composition.durationInFrames,
           tracks,
-          parentOrigin: command.parentOrigin,
+          allNodes: toNodesMap(composition.allNodes),
+          parentOrigin: mount.parentOrigin,
         });
         return;
       }
@@ -110,12 +137,11 @@ function PreviewFrameApp() {
     const onEnded = () => reportTransport({ type: "ended" });
     const onWaiting = () => reportTransport({ type: "waiting" });
     const onResume = () => reportTransport({ type: "resume" });
-    const onError = (err: { message?: string } | Error) => {
-      const message =
-        err && typeof err === "object" && "message" in err && err.message
-          ? String(err.message)
-          : "Preview player error";
-      reportTransport({ type: "error", message });
+    const onError = (event: { detail: { error: Error } }) => {
+      reportTransport({
+        type: "error",
+        message: event.detail.error?.message || "Preview player error",
+      });
     };
 
     player.addEventListener("frameupdate", onFrame);
