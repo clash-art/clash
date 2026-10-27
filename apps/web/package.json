@@ -24,7 +24,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:e2e:preview-longtask": "node e2e/preview-iframe-longtask.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^2.0.43",
