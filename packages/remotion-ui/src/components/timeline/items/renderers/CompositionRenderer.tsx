@@ -4,7 +4,8 @@ import type { ItemRenderProps } from '../registry';
 
 export const CompositionRenderer: React.FC<ItemRenderProps> = ({ item, width, height }) => {
   const composition = item as CompositionItem;
-  const badge = composition.runtime === 'remotion' ? 'R' : 'Comp';
+  const badge =
+    composition.runtime === 'remotion' ? 'R' : composition.runtime === 'html' ? 'H' : 'Comp';
 
   return (
     <div

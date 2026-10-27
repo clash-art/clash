@@ -10,7 +10,8 @@
   "module": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./html-scene": "./src/html-scene/index.ts"
   },
   "files": [
     "dist"

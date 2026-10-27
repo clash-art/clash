@@ -10,6 +10,8 @@ export type ResolvedTimelineItem = Item & {
   resolvedSrcUrl?: string;
   /** Render-start-only source resolved from a live Remotion Canvas node. */
   componentSource?: string;
+  /** Live HTML document resolved from a Canvas html-motion node (runtime: html). */
+  htmlSource?: string;
 };
 
 export type TimelineMediaMergeFieldMode =
