@@ -424,10 +424,10 @@ async function openCreateMenuAndCapture(cdp: CdpClient) {
 
 async function publishEvidence(filename: string) {
   await mkdir(repoEvidenceDir, { recursive: true });
-  await mkdir(artifactEvidenceDir, { recursive: true });
+  await mkdir(artifactEvidenceDir, { recursive: true }).catch(() => undefined);
   const source = path.join(captureDir, filename);
   await copyFile(source, path.join(repoEvidenceDir, filename));
-  await copyFile(source, path.join(artifactEvidenceDir, filename));
+  await copyFile(source, path.join(artifactEvidenceDir, filename)).catch(() => undefined);
 }
 
 async function main() {
