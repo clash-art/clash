@@ -522,6 +522,12 @@ describe("ChatInput", () => {
       container.querySelector(".clash-chat-input-toolbar-row"),
     ).toBeTruthy();
     expect(
+      container.querySelector(".openma-composer-toolbar.clash-chat-input-toolbar-row"),
+    ).toBeTruthy();
+    expect(
+      container.querySelector("[data-openma-composer-toolbar]"),
+    ).toBeTruthy();
+    expect(
       container.querySelector(".clash-chat-input-toolbar-start"),
     ).toBeTruthy();
     expect(
@@ -540,7 +546,10 @@ describe("ChatInput", () => {
       /:where\(\.clash-chat-input-surface,\s*\[data-context="composer"\]\)[\s\S]*?--control-height-sm:\s*var\(--clash-workspace-control-size\)/,
     );
     expect(globalCss).toMatch(
-      /\.clash-chat-input-toolbar-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(2\.25rem,\s*1fr\)\s+minmax\(0,\s*max-content\);/,
+      /\.clash-chat-input-toolbar-row:not\(\.openma-composer-toolbar\)\s*\{[\s\S]*?grid-template-columns:\s*minmax\(2\.25rem,\s*1fr\)\s+minmax\(0,\s*max-content\);/,
+    );
+    expect(globalCss).toMatch(
+      /\.clash-chat-input-toolbar-row\.openma-composer-toolbar\s*\{/,
     );
     expect(globalCss).toMatch(
       /@container clash-chat-composer \(max-width:\s*32rem\)\s*\{[\s\S]*?\.clash-session-state-tag-label\s*\{[\s\S]*?display:\s*none;/,
@@ -933,8 +942,12 @@ describe("ChatInput", () => {
       /\.clash-chat-input-icon-control\s*\{[\s\S]*?\}/,
     )?.[0];
     expect(densityRule).toBeTruthy();
-    expect(densityRule).toMatch(/height:\s*var\(--control-height-sm\)/);
-    expect(densityRule).toMatch(/width:\s*var\(--control-height-sm\)/);
+    expect(densityRule).toMatch(
+      /height:\s*var\(--composer-control-height,\s*var\(--control-height-sm\)\)/,
+    );
+    expect(densityRule).toMatch(
+      /width:\s*var\(--composer-control-height,\s*var\(--control-height-sm\)\)/,
+    );
   });
 
   it("lets the shared compact Composer own dashboard internal geometry", () => {

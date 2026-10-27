@@ -49,6 +49,7 @@ import {
   VoiceInputSetupPopover,
   type VoiceInputNotice,
 } from "./VoiceInputSetupPopover";
+import { ComposerToolbar } from "@openma/common/chat-ui";
 
 // Lazy load MilkdownEditor to avoid SSR issues
 const MilkdownEditor = lazy(() => import("../MilkdownEditor"));
@@ -827,120 +828,121 @@ function ChatInputInner(
                 }
               />
             ) : (
-              <div
-                className={`clash-chat-input-actions clash-chat-input-toolbar-row items-center ${isHero ? "" : "flex items-center justify-between gap-2"}`}
-              >
-                <div
-                  className={`clash-chat-input-toolbar-start flex min-w-0 items-center gap-0.5 ${isHero ? "" : "-m-1 flex-1 overflow-hidden p-1"}`}
-                >
-                  {attachmentsEnabled ? (
-                    <IconButton
-                      onClick={openAttachments}
-                      disabled={actionLocked}
-                      label={t("copilot.chatInput.attach")}
-                      shape="rounded"
-                      size="sm"
-                      data-composer-attach="true"
-                      icon={<Plus className="w-4 h-4" weight="bold" />}
-                      className="clash-chat-input-icon-control"
-                    />
-                  ) : null}
-                  {toolbarAccessory ? (
-                    <div className="clash-chat-input-toolbar-accessory min-w-0">
-                      {toolbarAccessory}
-                    </div>
-                  ) : null}
-                </div>
-                <div
-                  className="clash-chat-input-toolbar-end flex min-w-0 shrink-0 items-center justify-end gap-0.5"
-                  data-composer-run-actions="true"
-                >
-                  {rightToolbarAccessory ? (
-                    <div className="clash-chat-input-toolbar-config min-w-0">
-                      {rightToolbarAccessory}
-                    </div>
-                  ) : null}
-                  {voiceInputAvailable ? (
-                    <VoiceInputSetupPopover
-                      open={Boolean(voiceNotice)}
-                      onOpenChange={(open) => {
-                        if (open) {
-                          void startListening();
-                        } else {
-                          setVoiceNotice(null);
-                        }
-                      }}
-                      notice={voiceNotice}
-                      trigger={
-                        <IconButton
-                          disabled={actionLocked || isCheckingVoice}
-                          aria-busy={isCheckingVoice}
-                          label={t("copilot.chatInput.voice")}
-                          shape="rounded"
-                          size="sm"
-                          className="clash-chat-input-icon-control"
-                          icon={
-                            isCheckingVoice ? (
-                              <CircleNotch
-                                className="w-4 h-4 animate-spin motion-reduce:animate-none"
-                                weight="bold"
-                              />
-                            ) : (
-                              <Microphone className="w-4 h-4" weight="bold" />
-                            )
+              <ComposerToolbar
+                clipStart={!isHero}
+                className="clash-chat-input-actions clash-chat-input-toolbar-row items-center"
+                startClassName="clash-chat-input-toolbar-start"
+                endClassName="clash-chat-input-toolbar-end"
+                start={
+                  <>
+                    {attachmentsEnabled ? (
+                      <IconButton
+                        onClick={openAttachments}
+                        disabled={actionLocked}
+                        label={t("copilot.chatInput.attach")}
+                        shape="rounded"
+                        size="sm"
+                        data-composer-attach="true"
+                        icon={<Plus className="w-4 h-4" weight="bold" />}
+                        className="clash-chat-input-icon-control"
+                      />
+                    ) : null}
+                    {toolbarAccessory ? (
+                      <div className="clash-chat-input-toolbar-accessory min-w-0">
+                        {toolbarAccessory}
+                      </div>
+                    ) : null}
+                  </>
+                }
+                end={
+                  <>
+                    {rightToolbarAccessory ? (
+                      <div className="clash-chat-input-toolbar-config min-w-0">
+                        {rightToolbarAccessory}
+                      </div>
+                    ) : null}
+                    {voiceInputAvailable ? (
+                      <VoiceInputSetupPopover
+                        open={Boolean(voiceNotice)}
+                        onOpenChange={(open) => {
+                          if (open) {
+                            void startListening();
+                          } else {
+                            setVoiceNotice(null);
                           }
-                        />
-                      }
-                    />
-                  ) : null}
-                  {showQueuedSend ? (
-                    <IconButton
-                      onClick={handleFormSubmit}
-                      disabled={!canSend}
-                      label={t("copilot.chatInput.send")}
-                      shape="rounded"
-                      size="sm"
-                      className="clash-chat-input-icon-control clash-chat-input-primary"
-                      icon={<ArrowUp className="w-3.5 h-3.5" weight="bold" />}
-                    />
-                  ) : null}
-                  {isProcessing && onStop ? (
-                    <IconButton
-                      onClick={onStop}
-                      label={t("copilot.chatInput.stop")}
-                      shape="rounded"
-                      size="sm"
-                      className="clash-chat-input-icon-control"
-                      icon={
-                        <span className="h-2.5 w-2.5 rounded-[3px] bg-current" />
-                      }
-                    />
-                  ) : (
-                    <IconButton
-                      onClick={handleFormSubmit}
-                      disabled={!canSend && !isCreatingSession}
-                      label={t("copilot.chatInput.send")}
-                      aria-busy={isCreatingSession || uploading > 0}
-                      shape="rounded"
-                      size="sm"
-                      className={`clash-chat-input-icon-control ${
-                        isCreatingSession || uploading > 0
-                          ? "clash-chat-input-primary focus-visible:ring-ring"
-                          : canSend
+                        }}
+                        notice={voiceNotice}
+                        trigger={
+                          <IconButton
+                            disabled={actionLocked || isCheckingVoice}
+                            aria-busy={isCheckingVoice}
+                            label={t("copilot.chatInput.voice")}
+                            shape="rounded"
+                            size="sm"
+                            className="clash-chat-input-icon-control"
+                            icon={
+                              isCheckingVoice ? (
+                                <CircleNotch
+                                  className="w-4 h-4 animate-spin motion-reduce:animate-none"
+                                  weight="bold"
+                                />
+                              ) : (
+                                <Microphone className="w-4 h-4" weight="bold" />
+                              )
+                            }
+                          />
+                        }
+                      />
+                    ) : null}
+                    {showQueuedSend ? (
+                      <IconButton
+                        onClick={handleFormSubmit}
+                        disabled={!canSend}
+                        label={t("copilot.chatInput.send")}
+                        shape="rounded"
+                        size="sm"
+                        className="clash-chat-input-icon-control clash-chat-input-primary"
+                        icon={<ArrowUp className="w-3.5 h-3.5" weight="bold" />}
+                      />
+                    ) : null}
+                    {isProcessing && onStop ? (
+                      <IconButton
+                        onClick={onStop}
+                        label={t("copilot.chatInput.stop")}
+                        shape="rounded"
+                        size="sm"
+                        className="clash-chat-input-icon-control"
+                        icon={
+                          <span className="h-2.5 w-2.5 rounded-[3px] bg-current" />
+                        }
+                      />
+                    ) : (
+                      <IconButton
+                        onClick={handleFormSubmit}
+                        disabled={!canSend && !isCreatingSession}
+                        label={t("copilot.chatInput.send")}
+                        aria-busy={isCreatingSession || uploading > 0}
+                        shape="rounded"
+                        size="sm"
+                        className={`clash-chat-input-icon-control ${
+                          isCreatingSession || uploading > 0
                             ? "clash-chat-input-primary focus-visible:ring-ring"
-                            : "bg-warm-muted text-slate-500 dark:text-slate-500 cursor-not-allowed focus-visible:ring-ring"
-                      }`}
-                      icon={
-                        isCreatingSession || uploading > 0 ? (
-                          <CircleNotch className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />
-                        ) : (
-                          <ArrowUp className="w-3.5 h-3.5" weight="bold" />
-                        )
-                      }
-                    />
-                  )}
-                </div>
-              </div>
+                            : canSend
+                              ? "clash-chat-input-primary focus-visible:ring-ring"
+                              : "bg-warm-muted text-slate-500 dark:text-slate-500 cursor-not-allowed focus-visible:ring-ring"
+                        }`}
+                        icon={
+                          isCreatingSession || uploading > 0 ? (
+                            <CircleNotch className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />
+                          ) : (
+                            <ArrowUp className="w-3.5 h-3.5" weight="bold" />
+                          )
+                        }
+                      />
+                    )}
+                  </>
+                }
+              />
             )}
           </div>
         </div>

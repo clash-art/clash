@@ -5348,11 +5348,19 @@ html.dark .clash-download-card {
 }
 
 .clash-chat-input-icon-control {
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  min-width: var(--control-height-sm);
-  min-height: var(--control-height-sm);
+  width: var(--composer-control-height, var(--control-height-sm));
+  height: var(--composer-control-height, var(--control-height-sm));
+  min-width: var(--composer-control-height, var(--control-height-sm));
+  min-height: var(--composer-control-height, var(--control-height-sm));
   border-radius: var(--clash-workspace-control-radius);
+}
+
+/* Keep harness/config chips the same control height as mic/send squares. */
+.openma-composer-toolbar .clash-session-config-trigger,
+.openma-composer-toolbar .clash-session-permission-trigger,
+.openma-composer-toolbar .clash-inline-session-config-trigger {
+  height: var(--composer-control-height, var(--clash-workspace-control-size));
+  min-height: var(--composer-control-height, var(--clash-workspace-control-size));
 }
 
 .clash-user-message-bubble {
@@ -5362,10 +5370,18 @@ html.dark .clash-download-card {
   box-shadow: none;
 }
 
-.clash-chat-input-toolbar-row {
+/* Prefer shared @openma/common ComposerToolbar flex topology when present.
+ * Legacy grid only applies to host-owned rows that lack the openma class. */
+.clash-chat-input-toolbar-row:not(.openma-composer-toolbar) {
   display: grid;
   grid-template-columns: minmax(2.25rem, 1fr) minmax(0, max-content);
   column-gap: 0.375rem;
+}
+
+.clash-chat-input-toolbar-row.openma-composer-toolbar {
+  /* Shared start|end flex; keep Clash gap token for host polish. */
+  column-gap: 0.375rem;
+  gap: var(--composer-toolbar-gap, 0.375rem);
 }
 
 .clash-chat-input-toolbar-start,
