@@ -9,7 +9,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Team, TeamSelf } from "../../lib/teamClient";
-import { chooseOption, gatewayError, stubAdminFetch } from "../../test-support/admin";
+import { chooseOption, gatewayError, stubAdminFetch, stubDownloads } from "../../test-support/admin";
 import { TeamInviteAccept } from "./TeamInviteAccept";
 import { TeamSettings, type TeamOwnerData } from "./TeamSettings";
 
@@ -69,8 +69,10 @@ const owner: TeamOwnerData = {
   packages: [{ id: "pkg_1", name: "Pro", billingPeriod: "month", priceMinor: 2000, priceCurrency: "USD", periodMicroCredits: 50_000_000 }],
   packs: [{ id: "pack_1", name: "Boost", priceMinor: 500, priceCurrency: "USD", microCredits: 5_000_000 }],
   usage: [
-    { requestId: "gwr_1", userId: "u-ann", keyId: null, modelCode: "gpt-5.4", status: "settled", costMicroCredits: 1_250_000, inputTokens: 10, outputTokens: 20, usageSource: "reported", errorCode: null, occurredAt: "2026-10-23T00:00:00.000Z" },
+    { requestId: "gwr_1", userId: "u-ann", keyId: null, modelCode: "gpt-5.4", status: "settled", costMicroCredits: 1_250_000, notCharged: false, inputTokens: 10, outputTokens: 20, usageSource: "reported", errorCode: null, occurredAt: "2026-10-23T00:00:00.000Z" },
+    { requestId: "gwr_2", userId: "u-ann", keyId: null, modelCode: "image-gen", status: "upstream_failed", costMicroCredits: 0, notCharged: true, inputTokens: 0, outputTokens: 0, usageSource: "reported", errorCode: "GATEWAY_UPSTREAM_ERROR", occurredAt: "2026-10-22T00:00:00.000Z" },
   ],
+  usageCursor: "older-1",
   audit: [
     { id: "a1", actorKind: "user", actorId: "u-olga", actorRole: "owner", action: "budget.override", targetType: "budget", targetId: "user:u-ann", reason: "freeze", occurredAt: "2026-10-23T00:00:00.000Z" },
   ],
@@ -98,6 +100,36 @@ describe("TeamSettings (owner)", () => {
     expect(within(screen.getByRole("table", { name: "Budget notifications" })).getByText("Alert: 80% reached")).toBeInTheDocument();
     expect(within(screen.getByRole("table", { name: "Usage" })).getByText("gpt-5.4")).toBeInTheDocument();
     expect(within(screen.getByRole("table", { name: "Audit log" })).getByText("budget.override")).toBeInTheDocument();
+  });
+
+  it("marks a failed media generation not charged, loads older usage, and exports the team's CSV", async () => {
+    const saved = stubDownloads();
+    const calls = stubAdminFetch((call) =>
+      call.path.includes("/usage/export")
+        ? new Response("occurred_at,request_id\r\n", { headers: { "content-type": "text/csv", "content-disposition": 'attachment; filename="gateway-usage-team_a.csv"' } })
+        : Response.json({ usage: [{ ...owner.usage[0]!, requestId: "gwr_0", modelCode: "older-model" }], nextCursor: null }),
+    );
+    renderOwner();
+    const failed = within(screen.getByRole("table", { name: "Usage" })).getByText("image-gen").closest("tr")!;
+    expect(within(failed).getByText("not charged")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load older" }));
+    expect(await within(screen.getByRole("table", { name: "Usage" })).findByText("older-model")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
+    fireEvent.click(within(screen.getByRole("region", { name: "Usage" })).getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(saved).toEqual(["gateway-usage-team_a.csv"]));
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/v1/gateway/tenants/team%3Aa/usage?cursor=older-1",
+      "/api/v1/gateway/tenants/team%3Aa/usage/export",
+    ]);
+  });
+
+  it("shows a refused export's code instead of saving a file", async () => {
+    const saved = stubDownloads();
+    stubAdminFetch(() => gatewayError(413, "GATEWAY_EXPORT_TOO_LARGE", "Narrow the filters."));
+    renderOwner();
+    fireEvent.click(within(screen.getByRole("region", { name: "Usage" })).getByRole("button", { name: "Export CSV" }));
+    expect(await screen.findByText("GATEWAY_EXPORT_TOO_LARGE")).toBeInTheDocument();
+    expect(saved).toEqual([]);
   });
 
   it("changes a role and removes a member, and shows a coded refusal inline", async () => {
@@ -228,7 +260,16 @@ describe("TeamSettings (member)", () => {
     for (const name of ["Invite member", "Allocate budget", "Team rate limit", "Rate limit for key ci", "Rate limit for Ann"])
       expect(screen.queryByRole("form", { name })).toBeNull();
     for (const name of ["Members", "Budgets", "Audit log", "Packages"]) expect(screen.queryByRole("table", { name })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Remove|Buy|Subscribe/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Remove|Buy|Subscribe|Load older/ })).toBeNull();
+  });
+
+  it("exports only the member's own usage", async () => {
+    const saved = stubDownloads();
+    const calls = stubAdminFetch(() => new Response("occurred_at\r\n", { headers: { "content-type": "text/csv" } }));
+    render(<TeamSettings teams={[memberTeam]} team={memberTeam} view={{ kind: "member", data: self }} onSelect={() => undefined} onChanged={() => undefined} />);
+    fireEvent.click(within(screen.getByRole("region", { name: "Your usage" })).getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(saved).toEqual(["gateway-usage.csv"]));
+    expect(calls.map((call) => call.path)).toEqual(["/api/v1/gateway/tenants/team%3Aa/me/usage/export"]);
   });
 });
 

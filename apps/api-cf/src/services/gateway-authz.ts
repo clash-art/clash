@@ -86,6 +86,8 @@ export const GATEWAY_PLATFORM_PERMISSIONS = [
   "prompts.view",
   "retention.purge",
   "holds.sweep",
+  "reconciliation.read",
+  "reconciliation.write",
 ] as const;
 export type GatewayPlatformPermission = (typeof GATEWAY_PLATFORM_PERMISSIONS)[number];
 

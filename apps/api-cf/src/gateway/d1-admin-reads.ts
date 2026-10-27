@@ -1,7 +1,7 @@
 /**
  * Read models for the admin console (guide: apps/docs/guide/gateway-admin.md):
- * usage (the ledger), admin audit, overview metrics, tenants and abuse
- * signals. Read-only; every query is tenant-filtered when a tenant is given,
+ * admin audit, overview metrics, tenants and abuse signals (the usage
+ * explorer is d1-usage-explorer.ts, #355). Read-only; every query is tenant-filtered when a tenant is given,
  * and the routes only omit the tenant for platform permissions.
  *
  * Nothing here returns key material, token hashes or request content.
@@ -14,38 +14,6 @@ import type { GatewayClock } from "@clash/gateway-core";
 import { parseJson, publishedCatalogVersionSql, toMs, toSeconds } from "./d1-common";
 
 const iso = (seconds: number) => new Date(toMs(seconds)).toISOString();
-
-export interface UsageFilter {
-  tenantId?: string;
-  userId?: string;
-  keyId?: string;
-  modelCode?: string;
-  kind?: string;
-  /** Epoch ms bounds, inclusive from, exclusive to. */
-  from?: number;
-  to?: number;
-  limit: number;
-}
-
-export interface UsageEntryView {
-  requestId: string;
-  kind: string;
-  status: string;
-  tenantId: string;
-  userId: string | null;
-  keyId: string | null;
-  budgetId: string;
-  amountMicroCredits: number;
-  modelCode: string | null;
-  credentialScope: string | null;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  priceVersion: string | null;
-  errorCode: string | null;
-  reason: string | null;
-  occurredAt: string;
-}
 
 export interface AuditFilter {
   tenantId?: string;
@@ -76,26 +44,6 @@ export interface AuditEntryView {
   occurredAt: string;
 }
 
-interface UsageRow {
-  request_id: string;
-  kind: string;
-  status: string;
-  tenant_id: string;
-  user_id: string | null;
-  key_id: string | null;
-  budget_id: string;
-  amount_micro_credits: number;
-  model_code: string | null;
-  credential_scope: string | null;
-  input_tokens: number;
-  output_tokens: number;
-  cached_input_tokens: number;
-  price_version: string | null;
-  error_code: string | null;
-  reason: string | null;
-  occurred_at: number;
-}
-
 interface AuditRow {
   id: string;
   tenant_id: string;
@@ -122,85 +70,6 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
   const nowS = () => toSeconds(deps.clock.now());
 
   return {
-    /**
-     * Ledger entries, newest first. Holds and releases are omitted unless
-     * asked for by `kind`; the summary totals settled usage by model for the
-     * same filter.
-     */
-    async usage(filter: UsageFilter) {
-      const where = `(?1 IS NULL OR tenant_id = ?1) AND (?2 IS NULL OR user_id = ?2) AND (?3 IS NULL OR key_id = ?3)
-        AND (?4 IS NULL OR model_code = ?4) AND (?6 IS NULL OR occurred_at >= ?6) AND (?7 IS NULL OR occurred_at < ?7)`;
-      const binds = [
-        filter.tenantId ?? null,
-        filter.userId ?? null,
-        filter.keyId ?? null,
-        filter.modelCode ?? null,
-        filter.kind ?? null,
-        seconds(filter.from),
-        seconds(filter.to),
-      ];
-      const [entries, summary] = await db.batch([
-        db
-          .prepare(
-            `SELECT request_id, kind, status, tenant_id, user_id, key_id, budget_id, amount_micro_credits,
-                    model_code, credential_scope, input_tokens, output_tokens, cached_input_tokens,
-                    price_version, error_code, reason, occurred_at
-               FROM gateway_usage_ledger
-              WHERE ${where} AND (CASE WHEN ?5 IS NULL THEN kind NOT IN ('hold', 'release') ELSE kind = ?5 END)
-              ORDER BY occurred_at DESC, request_id DESC LIMIT ?8`,
-          )
-          .bind(...binds, filter.limit),
-        db
-          .prepare(
-            `SELECT COALESCE(model_code, '') AS model_code, COUNT(*) AS requests,
-                    SUM(amount_micro_credits) AS amount, SUM(input_tokens) AS input_tokens,
-                    SUM(output_tokens) AS output_tokens
-               FROM gateway_usage_ledger
-              WHERE ${where} AND kind = 'settle' AND (?5 IS NULL OR ?5 = 'settle')
-              GROUP BY model_code ORDER BY amount DESC LIMIT 50`,
-          )
-          .bind(...binds),
-      ]);
-      return {
-        entries: ((entries?.results ?? []) as UsageRow[]).map(
-          (row): UsageEntryView => ({
-            requestId: row.request_id,
-            kind: row.kind,
-            status: row.status,
-            tenantId: row.tenant_id,
-            userId: row.user_id,
-            keyId: row.key_id,
-            budgetId: row.budget_id,
-            amountMicroCredits: row.amount_micro_credits,
-            modelCode: row.model_code,
-            credentialScope: row.credential_scope,
-            inputTokens: row.input_tokens,
-            outputTokens: row.output_tokens,
-            cachedInputTokens: row.cached_input_tokens,
-            priceVersion: row.price_version,
-            errorCode: row.error_code,
-            reason: row.reason,
-            occurredAt: iso(row.occurred_at),
-          }),
-        ),
-        byModel: (
-          (summary?.results ?? []) as Array<{
-            model_code: string;
-            requests: number;
-            amount: number | null;
-            input_tokens: number | null;
-            output_tokens: number | null;
-          }>
-        ).map((row) => ({
-          modelCode: row.model_code,
-          requests: row.requests,
-          amountMicroCredits: row.amount ?? 0,
-          inputTokens: row.input_tokens ?? 0,
-          outputTokens: row.output_tokens ?? 0,
-        })),
-      };
-    },
-
     /** Admin audit rows, newest first. Without a tenant: every row, platform-wide ones included. */
     async audit(filter: AuditFilter): Promise<AuditEntryView[]> {
       const { results } = await db

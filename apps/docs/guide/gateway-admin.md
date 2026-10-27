@@ -125,7 +125,8 @@ Platform permissions, admin accounts only (`platform_admin` holds all;
 `upstreams.write`, `wallet.adjust`, `subscription.limits.write`,
 `admin_accounts.read`, `admin_accounts.write`, `usage.read_all`,
 `audit.read_all`, `abuse.read`, `abuse.suspend`, `abuse.thresholds.write`,
-`prompts.view`, `retention.purge`, `holds.sweep`.
+`prompts.view`, `retention.purge`, `holds.sweep`, `reconciliation.read`,
+`reconciliation.write`.
 
 The admin console authorizes with `platformRoute`: the caller is the admin
 account the middleware verified, and the permission must come from its role.
@@ -237,8 +238,10 @@ Errors are coded (`x-clash-error-code`).
 | Budgets        | `GET /tenants/:t/budgets` (read-only); `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`                                      |
 | Rate limits    | `GET /tenants/:t/keys` (read-only); `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts                                   |
 | Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide; audit also `?actorKind=&actorId=`)                            |
+| Usage          | `GET /usage` (filters, `cursor`), `GET /usage/export` (CSV): see [gateway-usage.md](gateway-usage.md)                                           |
+| Reconciliation | `GET /reconciliation/reports`, `PUT /reconciliation/reports/:day/:source`, `GET/POST /reconciliation/runs`, `GET /reconciliation/runs/:id` ([gateway-usage.md](gateway-usage.md#nightly-reconciliation)) |
 | Abuse          | `GET /abuse`; `PUT /abuse/thresholds/:signal {threshold, reason?}`; `POST /abuse/suspensions {subjectKind, subjectId, reason}`; `POST /abuse/suspensions/:id/lift {reason}` ([Abuse](#abuse)) |
-| Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`                                                                    |
+| Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`; `POST /retention/enforce {limit?}` (metadata/ledger retention)     |
 | Holds          | `POST /holds/sweep {limit?}`: the stale-hold sweeper now ([gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper))                       |
 
 **Catalog.** The data plane routes the newest published catalog version as a
@@ -533,9 +536,10 @@ runs:
 
 Bodies are enforced by the purge above. A purged `gateway_request_retention`
 row stays as a content-free marker (ids, sizes, hashes) so a late view still
-answers `GATEWAY_PROMPT_EXPIRED`. Deleting it, like NULLing the other
-30-day usage metadata, belongs to the gateway metadata retention job, which
-is not implemented yet ([gateway-schema.md](gateway-schema.md#retention)).
+answers `GATEWAY_PROMPT_EXPIRED`. Deleting it 30 days after storage, like
+NULLing the other 30-day usage metadata and deleting the 13-month ledger and
+audit, is the metadata/ledger retention job
+([gateway-usage.md](gateway-usage.md#retention)).
 
 ## UI
 

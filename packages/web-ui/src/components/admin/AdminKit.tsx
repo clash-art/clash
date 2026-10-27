@@ -149,6 +149,26 @@ export function useAdminAction(onDone?: () => void) {
   return { pending, error, setError, run, submit };
 }
 
+/** Hand a downloaded file to the browser as a save. */
+export function saveDownload(download: { blob: Blob; fileName: string }) {
+  const url = URL.createObjectURL(download.blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = download.fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+/** A `YYYY-MM-DD` date input as the ISO instant that UTC day starts at; "" when empty. */
+export function utcDayStart(day: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? `${day}T00:00:00.000Z` : "";
+}
+
+/** The UTC day of an ISO instant, for a date input. */
+export function utcDayOf(iso: string | undefined): string {
+  return iso && !Number.isNaN(Date.parse(iso)) ? new Date(iso).toISOString().slice(0, 10) : "";
+}
+
 export function formatTime(iso: string | null | undefined): string {
   return iso ? new Date(iso).toLocaleString() : "—";
 }

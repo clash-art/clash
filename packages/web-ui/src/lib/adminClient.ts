@@ -25,32 +25,60 @@ export class AdminApiError extends Error {
   }
 }
 
+const apiPath = (path: string) => (path.startsWith("/api/") ? path : `${BASE}${path}`);
+
+function parseJsonText(text: string): unknown {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The server's coded refusal of a failed response. */
+function apiError(response: Response, parsed: unknown): AdminApiError {
+  const error = (parsed as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+  const code =
+    response.headers.get("x-clash-error-code") ??
+    (typeof error?.code === "string" ? error.code : `HTTP_${response.status}`);
+  return new AdminApiError(
+    response.status,
+    code,
+    typeof error?.message === "string" ? error.message : response.statusText || "Request failed",
+  );
+}
+
 export async function adminRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const response = await runtimeFetch(path.startsWith("/api/") ? path : `${BASE}${path}`, {
+  const response = await runtimeFetch(apiPath(path), {
     method,
     credentials: "include",
     headers: body === undefined ? {} : { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const text = await response.text();
-  let parsed: unknown = null;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = null;
-  }
-  if (!response.ok) {
-    const error = (parsed as { error?: { code?: unknown; message?: unknown } } | null)?.error;
-    const code =
-      response.headers.get("x-clash-error-code") ??
-      (typeof error?.code === "string" ? error.code : `HTTP_${response.status}`);
-    throw new AdminApiError(
-      response.status,
-      code,
-      typeof error?.message === "string" ? error.message : response.statusText || "Request failed",
-    );
-  }
+  const parsed = parseJsonText(await response.text());
+  if (!response.ok) throw apiError(response, parsed);
   return parsed as T;
+}
+
+/** A file the server sent as an attachment (a usage CSV export). */
+export interface AdminDownload {
+  blob: Blob;
+  fileName: string;
+  /** `x-gateway-export-rows`, when the server counted them. */
+  rows: number | null;
+}
+
+/** GET a file download; a refusal (for example GATEWAY_EXPORT_TOO_LARGE) is an AdminApiError. */
+export async function adminDownload(path: string, fallbackName: string): Promise<AdminDownload> {
+  const response = await runtimeFetch(apiPath(path), { method: "GET", credentials: "include" });
+  if (!response.ok) throw apiError(response, parseJsonText(await response.text()));
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const rows = Number(response.headers.get("x-gateway-export-rows"));
+  return {
+    blob: await response.blob(),
+    fileName: /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallbackName,
+    rows: response.headers.has("x-gateway-export-rows") && Number.isFinite(rows) ? rows : null,
+  };
 }
 
 /** The admin identity's own Better Auth instance (#394); never the product /api/better-auth. */
@@ -347,25 +375,47 @@ export interface Overview {
   tenant?: { members: number; activeKeys: number; suspendedBudgets: number };
 }
 
+/** One ledger entry in the usage explorer (#355): metadata only, never a prompt or response. */
 export interface UsageEntry {
+  /** The ledger row id. */
+  id: string;
   requestId: string;
   kind: string;
   status: string;
+  /** '' for a platform entry (a reconciliation adjustment). */
   tenantId: string;
   userId: string | null;
   keyId: string | null;
   amountMicroCredits: number;
+  /** Signed usage charge: a settlement its amount, a refund negative, everything else 0. */
+  chargeMicroCredits: number;
+  /** A real request settled at zero (a failed media/AIGC generation, a gateway failure). */
+  notCharged: boolean;
   modelCode: string | null;
+  modelKind: string | null;
   inputTokens: number;
   outputTokens: number;
   priceVersion: string | null;
+  refKind: string | null;
+  /** Kept 30 days, then cleared by retention. */
+  upstreamId: string | null;
   errorCode: string | null;
   occurredAt: string;
 }
 
 export interface UsageResult {
   entries: UsageEntry[];
-  byModel: Array<{ modelCode: string; requests: number; amountMicroCredits: number; inputTokens: number; outputTokens: number }>;
+  byModel: Array<{
+    modelCode: string;
+    requests: number;
+    amountMicroCredits: number;
+    inputTokens: number;
+    outputTokens: number;
+    /** Requests settled at zero: shown, never charged. */
+    notCharged: number;
+  }>;
+  /** Pass back as `cursor` for the next, older page; null on the last page. */
+  nextCursor: string | null;
 }
 
 export interface AuditEntry {
@@ -458,9 +508,86 @@ export interface UsageFilters {
   keyId?: string;
   modelCode?: string;
   kind?: string;
+  /** Entry status: `settled`, `partial`, `upstream_failed`, ... */
+  status?: string;
+  /** ISO instants: inclusive from, exclusive to. */
   from?: string;
   to?: string;
+  /** The page after `nextCursor`; never part of an export. */
+  cursor?: string;
   limit?: number;
+}
+
+/** The explorer filter without paging: what a CSV export takes. */
+export function usageExportFilters({ cursor: _cursor, limit: _limit, ...filters }: UsageFilters): UsageFilters {
+  return filters;
+}
+
+export const RECONCILE_SOURCES = ["invoice", "ai_gateway"] as const;
+export type ReconcileSource = (typeof RECONCILE_SOURCES)[number];
+export type ReconcileRunStatus = "matched" | "adjusted" | "incomplete" | "source_missing";
+
+/** One day's imported upstream usage report (counts only). */
+export interface UpstreamReport {
+  day: string;
+  source: ReconcileSource;
+  groups: number;
+  importedAt: string;
+  importedBy: string;
+}
+
+export interface ReconcileUsage {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  units: Record<string, number>;
+}
+
+/** One upstream account + model of a run: ledger vs upstream, valued at the price book. */
+export interface ReconcileDiff {
+  upstreamId: string;
+  accountId: string;
+  modelCode: string;
+  ledger: ReconcileUsage;
+  upstream: ReconcileUsage;
+  ledgerChargedMicroCredits: number;
+  priceVersion: string | null;
+  /** Upstream minus ledger value, signed; null when the price book could not value it. */
+  deltaMicroCredits: number | null;
+  postedMicroCredits: number;
+  adjustMicroCredits: number;
+  errorCode?: string;
+}
+
+export interface ReconcileRun {
+  id: string;
+  day: string;
+  source: string | null;
+  status: ReconcileRunStatus;
+  errorCode: string | null;
+  groups: number;
+  adjustments: number;
+  /** Signed sum of this run's adjust entries (positive: the upstream reported more). */
+  adjustedMicroCredits: number;
+  actorKind: string;
+  actorId: string;
+  startedAt: string;
+  diffs?: ReconcileDiff[];
+}
+
+/** One group of an upstream report as the import takes it. */
+export interface UpstreamReportGroup {
+  upstreamId: string;
+  accountId: string;
+  modelCode: string;
+  requests?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteTokens?: number;
+  units?: Record<string, number>;
 }
 
 export interface AuditFilters {
@@ -487,6 +614,7 @@ export type AdminPageKey =
   | "budgets"
   | "packages"
   | "usage"
+  | "reconciliation"
   | "abuse"
   | "audit";
 
@@ -509,6 +637,7 @@ export const ADMIN_PAGES: readonly AdminPage[] = [
   { key: "budgets", path: "/admin/budgets", label: "Budgets & limits", permission: "tenants.list", tenantScoped: true },
   { key: "packages", path: "/admin/packages", label: "Packages", permission: "packages.read" },
   { key: "usage", path: "/admin/usage", label: "Usage", permission: "usage.read_all", tenantScoped: true },
+  { key: "reconciliation", path: "/admin/reconciliation", label: "Reconciliation", permission: "reconciliation.read" },
   { key: "abuse", path: "/admin/abuse", label: "Abuse", permission: "abuse.read" },
   { key: "audit", path: "/admin/audit", label: "Audit log", permission: "audit.read_all", tenantScoped: true },
 ];
@@ -533,6 +662,18 @@ export const adminApi = {
 
   overview: (tenantId?: string) => adminRequest<{ overview: Overview }>("GET", `/overview${q({ tenantId })}`),
   usage: (filters: UsageFilters) => adminRequest<UsageResult>("GET", `/usage${q({ ...filters })}`),
+  usageExport: (filters: UsageFilters) =>
+    adminDownload(`/usage/export${q({ ...usageExportFilters(filters) })}`, "gateway-usage.csv"),
+
+  reconcileReports: (range: { from?: string; to?: string } = {}) =>
+    adminRequest<{ reports: UpstreamReport[] }>("GET", `/reconciliation/reports${q(range)}`),
+  importReconcileReport: (day: string, source: ReconcileSource, body: { groups: UpstreamReportGroup[]; reason?: string }) =>
+    adminRequest<{ report: UpstreamReport }>("PUT", `/reconciliation/reports/${seg(day)}/${seg(source)}`, body),
+  reconcileRuns: (filters: { day?: string; status?: string } = {}) =>
+    adminRequest<{ runs: ReconcileRun[] }>("GET", `/reconciliation/runs${q(filters)}`),
+  reconcileRun: (id: string) => adminRequest<{ run: ReconcileRun }>("GET", `/reconciliation/runs/${seg(id)}`),
+  reconcileDay: (day: string, source?: ReconcileSource) =>
+    adminRequest<{ run: ReconcileRun; posted: number }>("POST", "/reconciliation/runs", { day, ...(source ? { source } : {}) }),
   audit: (filters: AuditFilters) => adminRequest<{ entries: AuditEntry[] }>("GET", `/audit${q({ ...filters })}`),
   abuse: () => adminRequest<{ abuse: AbuseSignals }>("GET", "/abuse"),
   setAbuseThreshold: (signal: AbuseSignal, threshold: AbuseThreshold | null, reason?: string) =>

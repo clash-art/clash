@@ -142,23 +142,12 @@ export function createD1GatewayRoutesPort(
 
     /**
      * The newest published price version effective at `at` (request time) that
-     * prices the route: a newer version supersedes an older one, and within a
-     * version rows for the exact upstream win over model-wide rows
-     * (`upstream_id = ''`). Drafts (`published_at IS NULL`) are never charged;
-     * only credit rates are.
+     * prices the route (priceRowsStatement/priceFromRows), with the model's
+     * output ceiling, in one batch.
      */
     async price({ catalogVersion, route, at }): Promise<GatewayPrice> {
-      const atS = toSeconds(at ?? deps.clock.now());
       const [prices, model] = await db.batch([
-        db
-          .prepare(
-            `SELECT price_version, upstream_id, unit, amount_micro, per FROM gateway_price
-              WHERE model_code = ?1 AND upstream_id IN (?2, '') AND currency = 'credit'
-                AND published_at IS NOT NULL
-                AND effective_from <= ?3 AND (effective_to IS NULL OR effective_to > ?3)
-              ORDER BY effective_from DESC, price_version DESC, upstream_id = '' ASC`,
-          )
-          .bind(route.modelCode, route.upstreamId, atS),
+        priceRowsStatement(db, { modelCode: route.modelCode, upstreamId: route.upstreamId, at: at ?? deps.clock.now() }),
         db
           .prepare(
             `SELECT max_output_tokens FROM gateway_model
@@ -166,30 +155,69 @@ export function createD1GatewayRoutesPort(
           )
           .bind(catalogVersion, route.modelCode),
       ]);
-      const rows = (prices?.results ?? []) as PriceRow[];
-      const chosen = rows[0];
-      if (!chosen)
-        throw new GatewayError("GATEWAY_PRICE_UNAVAILABLE", {
-          details: { modelCode: route.modelCode, upstreamId: route.upstreamId },
-        });
-      const rates: GatewayPriceRate[] = [];
-      for (const row of rows) {
-        if (row.price_version !== chosen.price_version || row.upstream_id !== chosen.upstream_id) continue;
-        if (!isGatewayPriceUnit(row.unit)) {
-          deps.logger.warn("gateway.price_unit_unknown", { model: route.modelCode, priceVersion: row.price_version });
-          continue;
-        }
-        rates.push({ unit: row.unit, microCredits: row.amount_micro, per: row.per });
-      }
+      const price = priceFromRows((prices?.results ?? []) as PriceRow[], route, deps);
       const maxOutputTokens = (model?.results?.[0] as { max_output_tokens: number | null } | undefined)
         ?.max_output_tokens;
-      return {
-        modelCode: route.modelCode,
-        ...(chosen.upstream_id ? { upstreamId: chosen.upstream_id } : {}),
-        version: chosen.price_version,
-        rates,
-        ...(typeof maxOutputTokens === "number" ? { maxOutputTokens } : {}),
-      };
+      return { ...price, ...(typeof maxOutputTokens === "number" ? { maxOutputTokens } : {}) };
     },
   };
+}
+
+/**
+ * Published credit price rows for a model and upstream effective at `at`
+ * (epoch ms), newest first: a newer version supersedes an older one, and
+ * within a version rows for the exact upstream sort before model-wide rows
+ * (`upstream_id = ''`). Drafts (`published_at IS NULL`) are never charged.
+ */
+function priceRowsStatement(db: D1Database, input: { modelCode: string; upstreamId: string; at: number }) {
+  return db
+    .prepare(
+      `SELECT price_version, upstream_id, unit, amount_micro, per FROM gateway_price
+        WHERE model_code = ?1 AND upstream_id IN (?2, '') AND currency = 'credit'
+          AND published_at IS NOT NULL
+          AND effective_from <= ?3 AND (effective_to IS NULL OR effective_to > ?3)
+        ORDER BY effective_from DESC, price_version DESC, upstream_id = '' ASC`,
+    )
+    .bind(input.modelCode, input.upstreamId, toSeconds(input.at));
+}
+
+function priceFromRows(
+  rows: PriceRow[],
+  input: { modelCode: string; upstreamId: string },
+  deps: { logger: GatewayLogger },
+): GatewayPrice {
+  const chosen = rows[0];
+  if (!chosen)
+    throw new GatewayError("GATEWAY_PRICE_UNAVAILABLE", {
+      details: { modelCode: input.modelCode, upstreamId: input.upstreamId },
+    });
+  const rates: GatewayPriceRate[] = [];
+  for (const row of rows) {
+    if (row.price_version !== chosen.price_version || row.upstream_id !== chosen.upstream_id) continue;
+    if (!isGatewayPriceUnit(row.unit)) {
+      deps.logger.warn("gateway.price_unit_unknown", { model: input.modelCode, priceVersion: row.price_version });
+      continue;
+    }
+    rates.push({ unit: row.unit, microCredits: row.amount_micro, per: row.per });
+  }
+  return {
+    modelCode: input.modelCode,
+    ...(chosen.upstream_id ? { upstreamId: chosen.upstream_id } : {}),
+    version: chosen.price_version,
+    rates,
+  };
+}
+
+/**
+ * The price a request for this model and upstream would have been charged at
+ * `at`. Reconciliation (d1-reconciliation.ts) values differences with it, so
+ * a difference is priced exactly as the data plane prices a request.
+ */
+export async function publishedPriceAt(
+  db: D1Database,
+  input: { modelCode: string; upstreamId: string; at: number },
+  deps: { logger: GatewayLogger },
+): Promise<GatewayPrice> {
+  const { results } = await priceRowsStatement(db, input).all<PriceRow>();
+  return priceFromRows(results, input, deps);
 }

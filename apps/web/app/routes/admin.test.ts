@@ -19,13 +19,14 @@ import { loader as overviewLoader } from "./admin._index";
 import { loader as loginLoader } from "./admin.login";
 import { loader as modelsLoader } from "./admin.models";
 import { loader as packagesLoader } from "./admin.packages";
+import { loader as reconciliationLoader } from "./admin.reconciliation";
 import { loader as upstreamsLoader } from "./admin.upstreams";
 import { loader as usageLoader } from "./admin.usage";
 import { loader as usersLoader } from "./admin.users";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const ALL_LOADERS = [overviewLoader, modelsLoader, upstreamsLoader, usersLoader, budgetsLoader, packagesLoader, usageLoader, abuseLoader, auditLoader];
+const ALL_LOADERS = [overviewLoader, modelsLoader, upstreamsLoader, usersLoader, budgetsLoader, packagesLoader, usageLoader, reconciliationLoader, abuseLoader, auditLoader];
 
 /** An admin account whose role holds no console permission. */
 const noPermissions: AdminMe = {
@@ -55,6 +56,7 @@ const staff: AdminMe = {
     "abuse.read",
     "prompts.view",
     "retention.purge",
+    "reconciliation.read",
     "budgets.read",
     "team.budgets.allocate",
     "keys.read",
@@ -206,6 +208,25 @@ describe("admin page scope", () => {
     expect(await modelsLoader(args("/admin/models"))).toMatchObject({ selected: { version: "c1" }, prices: [], canWriteCatalog: true, canWritePrices: true });
     expect(await usersLoader(args("/admin/users"))).toMatchObject({ tenantId: undefined, members: null, tenants: [], accounts: [], canWriteAdminAccounts: true });
     expect((await usageLoader(args("/admin/usage"))).me.promptAccess).toBe(true);
+  });
+
+  it("keeps the usage explorer's status, time and page in the URL, and offers reconciliation writes only with reconciliation.write", async () => {
+    const paths = stubApi(staff, (path) => {
+      if (path.startsWith("/api/v1/admin/gateway/usage")) return Response.json({ entries: [], byModel: [], nextCursor: null });
+      if (path === "/api/v1/admin/gateway/reconciliation/runs") return Response.json({ runs: [] });
+      if (path === "/api/v1/admin/gateway/reconciliation/reports") return Response.json({ reports: [] });
+      return undefined;
+    });
+    const usage = await usageLoader(args("/admin/usage?tenant=team%3Aa&status=upstream_failed&from=2026-10-01T00%3A00%3A00.000Z&cursor=abc"));
+    expect(usage.filters).toEqual({ status: "upstream_failed", from: "2026-10-01T00:00:00.000Z", cursor: "abc", tenantId: "team:a" });
+    expect(paths).toContain(
+      "/api/v1/admin/gateway/usage?status=upstream_failed&from=2026-10-01T00%3A00%3A00.000Z&cursor=abc&tenantId=team%3Aa",
+    );
+    expect(await reconciliationLoader(args("/admin/reconciliation"))).toMatchObject({ runs: [], reports: [], canWrite: false });
+    stubApi({ ...staff, permissions: [...staff.permissions, "reconciliation.write"] }, (path) =>
+      path.endsWith("/runs") ? Response.json({ runs: [] }) : Response.json({ reports: [] }),
+    );
+    expect(await reconciliationLoader(args("/admin/reconciliation"))).toMatchObject({ canWrite: true });
   });
 });
 

@@ -46,6 +46,8 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_abuse_alert`         | (0046) Threshold alerts, unique per signal, subject, window start and action; `suspension_id` names the suspension an alert created. |
 | `gateway_suspension`          | (0046) Manual or automatic suspensions of a tenant or key; at most one active (`lifted_at` NULL) per subject. The data plane refuses a suspended caller with `GATEWAY_SUSPENDED`. History, never deleted. See [gateway-admin.md](gateway-admin.md#abuse). |
 | `gateway_request_retention`   | (0037) One row per retained gateway request: tenant, user and key ids, the R2 keys, sizes, SHA-256 and content types of the request and response bodies, the answer status, `status` (`stored`, `failed` with `error_code`, `purged`), `stored_at`, `expires_at` (+30 days), `purged_at`. (0039) `response_truncated` = 1 for a streamed answer whose copy was cut at the retention cap, with `response_observed_bytes` delivered. Never the bodies. |
+| `gateway_upstream_report`, `gateway_upstream_usage` | (0052, #355) One imported upstream usage report per UTC day and source (`invoice`, `ai_gateway`), and its daily totals per upstream account and model code. Counts only. See [gateway-usage.md](gateway-usage.md#nightly-reconciliation). |
+| `gateway_reconciliation_run`  | (0052, #355) One reconciliation of one UTC day: status (`matched`, `adjusted`, `incomplete`, `source_missing`), per-group diffs, and the signed sum of the platform `adjust` ledger entries it wrote (`ref_kind = 'reconcile'`). 0052 also indexes the ledger by `occurred_at` and by `(ref_kind, ref_id)`. |
 | `gateway_package`             | Subscription packages: fiat `price_minor` in `price_currency`, `credits_micro` granted per period. Nullable unique `external_price_id` (0050, #419): the payment provider's price id.                                                                                                  |
 | `gateway_topup_pack`          | One-off credit packs. A purchase is a ledger `topup` entry. Nullable unique `external_price_id` (0050, #419).                                                                                                                                         |
 | `gateway_tenant_subscription` | A tenant's package subscription and period.                                                                                                                                                         |
@@ -100,6 +102,10 @@ Bodies are enforced today: `purgeExpiredGatewayBodies` runs from the api-cf
 `scheduled` handler every minute (and `POST /api/v1/admin/gateway/retention/purge`),
 deletes the R2 objects of every row past `expires_at` and marks it `purged`;
 a row past `expires_at` is unreadable even before that. The 0036 triggers keep
-`gateway_admin_audit` for 13 months. The job that NULLs or deletes the other
-30-day metadata (including purged `gateway_request_retention` markers) is not
-implemented yet.
+`gateway_admin_audit` for 13 months. The metadata/ledger retention job
+(`enforceGatewayDataRetention`, hourly from the same handler and
+`POST /api/v1/admin/gateway/retention/enforce`) NULLs or deletes the other
+30-day metadata (including purged `gateway_request_retention` markers) and
+deletes ledger rows, upstream reports, reconciliation runs and audit rows
+after 13 months, in one bounded D1 batch. See
+[gateway-usage.md](gateway-usage.md#retention).

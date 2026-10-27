@@ -489,6 +489,35 @@ const definitions = {
     anthropic: "not_found_error",
     message: "No active suspension with this id exists.",
   },
+  // Usage reconciliation (#355): a day that has not ended yet, or whose
+  // operational ledger columns are past their 30-day retention.
+  GATEWAY_RECONCILE_WINDOW_CLOSED: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The day cannot be reconciled: it has not ended, or its usage metadata is past retention.",
+  },
+  // A reconciliation run with no upstream usage imported for the day. Recorded
+  // as the run's state so a missing report never reads as "everything matched".
+  GATEWAY_RECONCILE_SOURCE_MISSING: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "No upstream usage report has been imported for this day.",
+  },
+  GATEWAY_RECONCILE_RUN_NOT_FOUND: {
+    status: 404,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "The reconciliation run does not exist.",
+  },
+  // A usage export larger than one download may hold; narrow the filters.
+  GATEWAY_EXPORT_TOO_LARGE: {
+    status: 413,
+    openai: "invalid_request_error",
+    anthropic: "request_too_large",
+    message: "The export matches too many ledger entries; narrow the filters or the time range.",
+  },
   GATEWAY_CONFLICT: {
     status: 409,
     openai: "invalid_request_error",
