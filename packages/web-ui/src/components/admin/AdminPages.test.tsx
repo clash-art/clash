@@ -90,6 +90,7 @@ describe("AdminBudgets", () => {
 describe("AdminUsage", () => {
   const usage = { entries: [], byModel: [], nextCursor: null };
   const entry = (requestId: string, kind: string) => ({
+    id: `${kind}-${requestId}`,
     requestId,
     kind,
     status: "settled",
@@ -97,10 +98,15 @@ describe("AdminUsage", () => {
     userId: "u-ann",
     keyId: "gwk_1",
     amountMicroCredits: 1500,
+    chargeMicroCredits: kind === "settle" ? 1500 : 0,
+    notCharged: false,
     modelCode: "gpt-x",
+    modelKind: "text",
     inputTokens: 4,
     outputTokens: 2,
     priceVersion: "p1",
+    refKind: null,
+    upstreamId: null,
     errorCode: null,
     occurredAt: "2026-10-20T10:00:00.000Z",
   });
