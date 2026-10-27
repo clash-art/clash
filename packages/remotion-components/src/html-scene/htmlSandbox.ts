@@ -122,7 +122,8 @@ export function wrapHtmlDocumentForPreview(
   options?: { csp?: string },
 ): string {
   const csp = options?.csp ?? HTML_SCENE_DEFAULT_CSP;
-  const bootstrap = `<script>${htmlSceneBootstrapScript()}</script>`;
+  const bootstrap =
+    "<script>" + htmlSceneBootstrapScript() + "</scr" + "ipt>";
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${csp.replace(/"/g, "&quot;")}" />`;
   const trimmed = source.trim();
   if (/<head[\s>]/i.test(trimmed)) {
