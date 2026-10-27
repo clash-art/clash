@@ -540,6 +540,10 @@ export interface LocalApiOptions {
   >;
   uninstallMarketplaceAction?: (actionId: string) => Promise<void>;
   marketplaceSkills?: Array<Record<string, unknown> & { id: string }>;
+  /** Lazily resolve skills after optional remote curation overlay. */
+  resolveMarketplaceSkills?: () => Promise<
+    Array<Record<string, unknown> & { id: string }>
+  >;
   marketplaceFeed?: Array<Record<string, unknown> & { id: string }>;
   resolveMarketplaceFeed?: () => Promise<
     Array<Record<string, unknown> & { id: string }>

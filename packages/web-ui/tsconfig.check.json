@@ -246,6 +246,9 @@
       "@clash/shared-types/project-sync-content": [
         "packages/shared-types/src/project-sync-content.ts"
       ],
+      "@clash/shared-types/marketplace-curation": [
+        "packages/shared-types/src/marketplace-curation.ts"
+      ],
       "@clash/shared-types/marketplace-installation": [
         "packages/shared-types/src/marketplace-installation.ts"
       ],
@@ -452,9 +455,6 @@
       ],
       "@/*": [
         "packages/web-ui/src/*"
-      ],
-      "@clash/shared-types/marketplace-curation": [
-        "packages/shared-types/src/marketplace-curation.ts"
       ]
     }
   }
