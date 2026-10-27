@@ -69,5 +69,6 @@
     "src/timeline-occupancy.ts": "Same-lane time-range collision checks at Timeline write boundaries. Legacy revisions remain readable; concurrent visual layers require separate tracks.",
     "src/provider-oauth.ts": "Stable PROVIDER_OAUTH_* error codes with their user-facing messages, and the settings return query keys. Servers send codes; the settings page shows the message for the code."
   },
-  "architecture_notes": "Single Source of Truth (SSOT) pattern. Zod is the master definition. Model cards own provider implementation route metadata via providerImplementations; provider definitions must not reintroduce provider-supported model matrices."
+  "architecture_notes": "Single Source of Truth (SSOT) pattern. Zod is the master definition. Model cards own provider implementation route metadata via providerImplementations; provider definitions must not reintroduce provider-supported model matrices.",
+  "src/marketplace-curation.ts": "Pure marketplace curation overlay: normalize D1/JSON rows and merge featured/hidden/sort/title overrides onto a git catalog without changing install identity."
 }

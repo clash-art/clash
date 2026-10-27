@@ -6,6 +6,7 @@ export const FEATURED_MARKETPLACE_PLUGIN_IDS = [
   "clash.video.sd25-pe",
 ] as const;
 
+/** Build the home Store feed. Pass `featuredPluginIds` from curation overlay when ops control featured; otherwise code defaults + official-picks skills apply. */
 export function selectMarketplaceFeed({
   plugins,
   skills = [],

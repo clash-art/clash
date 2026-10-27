@@ -455,6 +455,9 @@
       ],
       "~/*": [
         "apps/web/app/*"
+      ],
+      "@clash/shared-types/marketplace-curation": [
+        "packages/shared-types/src/marketplace-curation.ts"
       ]
     }
   }
