@@ -432,9 +432,38 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
   /** In-memory adapter spawn overlays (tokens may be present; never persisted). */
   const adapterSpawnEnv = new Map<string, Record<string, string>>();
 
-  function cachedAdapterSpawnEnv(harnessId: string) {
+  function cachedAdapterSpawnEnv(
+    harnessId: string,
+  ): Record<string, string> | undefined {
     const env = adapterSpawnEnv.get(harnessId);
-    return env ? { spawnEnv: { ...env } } : {};
+    return env ? { ...env } : undefined;
+  }
+
+  function sessionResult(input: {
+    gatewayCode?: OfficialGatewayClientCode;
+    handedOff?: boolean;
+    spawnEnv?: Record<string, string>;
+  }): {
+    gatewayCode?: OfficialGatewayClientCode;
+    handedOff?: boolean;
+    spawnEnv?: Record<string, string>;
+  } {
+    return {
+      ...(input.gatewayCode ? { gatewayCode: input.gatewayCode } : {}),
+      ...(input.handedOff ? { handedOff: true } : {}),
+      ...(input.spawnEnv ? { spawnEnv: input.spawnEnv } : {}),
+    };
+  }
+
+  function spawnEnvFromHandoff(result: unknown): Record<string, string> | undefined {
+    if (!result || typeof result !== "object") return undefined;
+    const env = (result as { spawnEnv?: unknown }).spawnEnv;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   async function recordHandoff(
@@ -608,41 +637,44 @@ export function createOfficialGateway(options: OfficialGatewayOptions) {
               const result = await single(agent.id, () =>
                 handoffNow(agent.id, record.methodId),
               );
-              return {
+              return sessionResult({
                 handedOff: true,
-                ...("spawnEnv" in result && result.spawnEnv
-                  ? { spawnEnv: result.spawnEnv }
-                  : cachedAdapterSpawnEnv(agent.id)),
-              };
+                spawnEnv:
+                  spawnEnvFromHandoff(result) ??
+                  cachedAdapterSpawnEnv(agent.id),
+              });
             }
-            return cachedAdapterSpawnEnv(agent.id);
+            return sessionResult({
+              spawnEnv: cachedAdapterSpawnEnv(agent.id),
+            });
           }
           case "auth-required":
-            return { gatewayCode: "GATEWAY_AUTH_REQUIRED" };
+            return sessionResult({ gatewayCode: "GATEWAY_AUTH_REQUIRED" });
           case "handoff": {
             const result = await single(agent.id, () =>
               handoffNow(agent.id, decision.methodId),
             );
-            return {
+            return sessionResult({
               handedOff: true,
-              ...("spawnEnv" in result && result.spawnEnv
-                ? { spawnEnv: result.spawnEnv }
-                : cachedAdapterSpawnEnv(agent.id)),
-            };
+              spawnEnv:
+                spawnEnvFromHandoff(result) ??
+                cachedAdapterSpawnEnv(agent.id),
+            });
           }
           case "refresh": {
             const reminted = await single(agent.id, () =>
               refresh(agent.id, record!),
             );
-            return reminted
-              ? { handedOff: true, ...cachedAdapterSpawnEnv(agent.id) }
-              : cachedAdapterSpawnEnv(agent.id);
+            return sessionResult({
+              handedOff: reminted || undefined,
+              spawnEnv: cachedAdapterSpawnEnv(agent.id),
+            });
           }
         }
       } catch (error) {
         const coded = remember(error);
         return isOfficialGatewayClientCode(coded.code)
-          ? { gatewayCode: coded.code }
+          ? sessionResult({ gatewayCode: coded.code })
           : {};
       }
     },
