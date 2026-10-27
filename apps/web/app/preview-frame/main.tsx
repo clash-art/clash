@@ -40,8 +40,8 @@ type MediaAnalysisGraph = {
   splitter: ChannelSplitterNode;
   leftAnalyser: AnalyserNode;
   rightAnalyser: AnalyserNode;
-  leftSamples: Float32Array;
-  rightSamples: Float32Array;
+  leftSamples: Float32Array<ArrayBuffer>;
+  rightSamples: Float32Array<ArrayBuffer>;
 };
 
 type MountedScene = {
