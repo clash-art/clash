@@ -241,6 +241,11 @@ export default defineConfig(async ({ command, isPreview }) => {
           // frames, even with Origin-Agent-Cluster, stay in the editor's
           // process (verified with CDP Target.getTargets).
           renderFrame: resolve(__dirname, "render-frame.html"),
+          // Live Remotion Timeline preview (#435). Separate from renderFrame
+          // (export). Set VITE_PREVIEW_FRAME_ORIGIN to a different site for
+          // out-of-process isolation; same-site frames stay in the editor
+          // process. No audio-master-clock.
+          previewFrame: resolve(__dirname, "preview-frame.html"),
         },
         output: {
           // Force @phosphor-icons/react into its own chunk. Default chunk

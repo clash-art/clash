@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-27 (America/Detroit)  
 **Parent epic:** #434  
-**Status:** Spike scaffold landed — isolation contract + metric API; InteractiveCanvas not cut over yet  
+**Status:** Scaffold landed (#442). Cutover behind flag + before/after numbers: see `mg-preview-iframe-cutover-435.md`.  
 **Clock:** Remotion Player remains time authority. **No audio-master-clock** in this work.
 
 Related phase plan: `docs/research-mg-remotion-html-2026-10-27.md` §7 / Track A.
@@ -80,7 +80,8 @@ Inspected on user Mac (`c15de77c-…`): `/Users/minimax/Proj/hilo-agent-opencode
 
 ## Next steps
 
-1. Cross-site iframe page that mounts Clash `VideoComposition` + Remotion Player; wire editor behind a flag.  
-2. Run long-task harness; record before/after in Evidence on the cutover PR.  
+1. ~~Cross-site iframe page + flag wiring~~ → `mg-preview-iframe-cutover-435.md`.  
+2. ~~Run long-task harness; record before/after~~ → `docs/evidence/mg-preview-iframe-cutover/`.  
 3. Align HTML producer (#436) with the same host; adopt Hilo-style sandbox CSP for HTML documents.  
-4. Optional desktop: evaluate shared-texture OffscreenBrowserWindow for Electron only.
+4. Restore InteractiveCanvas overlays on top of the iframe surface (or dual-layer).  
+5. Optional desktop: evaluate shared-texture OffscreenBrowserWindow for Electron only.

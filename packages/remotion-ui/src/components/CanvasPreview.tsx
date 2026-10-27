@@ -20,6 +20,11 @@ import {
   InteractiveCanvas,
   type CanvasViewportCommand,
 } from "./InteractiveCanvas";
+import {
+  IframedRemotionPreview,
+  previewHostIsolationWarning,
+  resolvePreviewHostConfig,
+} from "../preview-host";
 import { TimelineIconButton, TimelineRangeInput } from "./ui/controls";
 import { colors, typography } from "./timeline/styles";
 import { formatTimecode } from "./timeline/utils/timeFormatter";
@@ -262,6 +267,18 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
       audioMeterStore?.getSnapshot ?? getSilentAudioLevels,
       audioMeterStore?.getSnapshot ?? getSilentAudioLevels,
     );
+    // Opt-in iframe PreviewHost (#435). Default stays InteractiveCanvas on the
+    // editor UI thread. Remotion Player in the frame keeps its own clock —
+    // no audio-master-clock. Preview isolation is separate from browser-export.
+    const previewHost = useMemo(() => resolvePreviewHostConfig(), []);
+    useEffect(() => {
+      if (typeof window === "undefined") return;
+      const warning = previewHostIsolationWarning(
+        previewHost,
+        window.location.origin,
+      );
+      if (warning) console.warn(warning);
+    }, [previewHost]);
 
     const allNodesMap = useMemo(() => {
       const map = new Map<string, any>();
@@ -428,31 +445,52 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
           className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/45"
           style={styles.stage}
         >
-          <InteractiveCanvas
-            key="interactive-canvas"
-            tracks={tracks}
-            allNodesMap={allNodesMap}
-            selectedItemId={selectedItemId}
-            currentFrame={currentFrame}
-            compositionWidth={compositionWidth}
-            compositionHeight={compositionHeight}
-            fps={fps}
-            durationInFrames={timelineDuration}
-            viewportCommand={viewportCommand}
-            onViewportZoomChange={setCanvasZoom}
-            audioMeterEnabled={audioMeterOpen || Boolean(audioMeterStore)}
-            onAudioLevelsChange={audioMeterStore?.setLevels}
-            onTransformStart={beginHistoryGroup}
-            onTransformEnd={endHistoryGroup}
-            onUpdateItem={handleUpdateItem}
-            onSelectItem={handleSelectItem}
-            playing={playing}
-            onPlayingChange={handlePlayingChange}
-            onTransportEvent={dispatchTransport}
-            mediaEpoch={mediaEpoch}
-            onFrameUpdate={handleFrameUpdate}
-            onSeek={handleSeek}
-          />
+          {previewHost.mode === "iframe" &&
+          previewHost.frameUrl &&
+          previewHost.frameOrigin ? (
+            <IframedRemotionPreview
+              key="iframed-remotion-preview"
+              tracks={tracks}
+              allNodesMap={allNodesMap}
+              currentFrame={currentFrame}
+              compositionWidth={compositionWidth}
+              compositionHeight={compositionHeight}
+              fps={fps}
+              durationInFrames={timelineDuration}
+              playing={playing}
+              frameUrl={previewHost.frameUrl}
+              frameOrigin={previewHost.frameOrigin}
+              onPlayingChange={handlePlayingChange}
+              onTransportEvent={dispatchTransport}
+              onFrameUpdate={handleFrameUpdate}
+            />
+          ) : (
+            <InteractiveCanvas
+              key="interactive-canvas"
+              tracks={tracks}
+              allNodesMap={allNodesMap}
+              selectedItemId={selectedItemId}
+              currentFrame={currentFrame}
+              compositionWidth={compositionWidth}
+              compositionHeight={compositionHeight}
+              fps={fps}
+              durationInFrames={timelineDuration}
+              viewportCommand={viewportCommand}
+              onViewportZoomChange={setCanvasZoom}
+              audioMeterEnabled={audioMeterOpen || Boolean(audioMeterStore)}
+              onAudioLevelsChange={audioMeterStore?.setLevels}
+              onTransformStart={beginHistoryGroup}
+              onTransformEnd={endHistoryGroup}
+              onUpdateItem={handleUpdateItem}
+              onSelectItem={handleSelectItem}
+              playing={playing}
+              onPlayingChange={handlePlayingChange}
+              onTransportEvent={dispatchTransport}
+              mediaEpoch={mediaEpoch}
+              onFrameUpdate={handleFrameUpdate}
+              onSeek={handleSeek}
+            />
+          )}
           {transport.status === "buffering" ? (
             <div
               role="status"

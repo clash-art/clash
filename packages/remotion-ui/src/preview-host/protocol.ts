@@ -27,12 +27,20 @@ export type PreviewTransportEvent = Exclude<
 /**
  * The geometry and timing of the composition a producer must present. The
  * producer derives its own frame rate from `fps`; the host never drives time.
+ *
+ * `tracks` and `allNodes` are opaque JSON the Remotion `VideoComposition`
+ * understands. Keeping them `unknown` keeps this file free of Remotion imports.
+ * An HTML producer may ignore tracks and use a different payload later.
  */
 export interface PreviewCompositionDescriptor {
   width: number;
   height: number;
   fps: number;
   durationInFrames: number;
+  /** Timeline tracks for a Remotion VideoComposition producer. */
+  tracks?: unknown[];
+  /** Optional Canvas node map for live sourceNodeId resolution. */
+  allNodes?: unknown;
 }
 
 export type PreviewHostCommand =
@@ -40,6 +48,8 @@ export type PreviewHostCommand =
       protocol: typeof PREVIEW_HOST_PROTOCOL;
       type: "mount";
       composition: PreviewCompositionDescriptor;
+      /** Origin allowed to receive this frame's replies. */
+      parentOrigin: string;
     }
   | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "seek"; frame: number }
   | { protocol: typeof PREVIEW_HOST_PROTOCOL; type: "play" }
@@ -80,7 +90,8 @@ function isCompositionDescriptor(
     isFrame(value.width) &&
     isFrame(value.height) &&
     isFrame(value.fps) &&
-    isFrame(value.durationInFrames)
+    isFrame(value.durationInFrames) &&
+    (value.tracks === undefined || Array.isArray(value.tracks))
   );
 }
 
@@ -106,7 +117,11 @@ export function isPreviewHostCommand(
   if (!isRecord(value) || value.protocol !== PREVIEW_HOST_PROTOCOL) return false;
   switch (value.type) {
     case "mount":
-      return isCompositionDescriptor(value.composition);
+      return (
+        isCompositionDescriptor(value.composition) &&
+        typeof value.parentOrigin === "string" &&
+        value.parentOrigin.length > 0
+      );
     case "seek":
       return isFrame(value.frame);
     case "play":

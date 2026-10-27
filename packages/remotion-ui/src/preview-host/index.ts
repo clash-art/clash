@@ -53,3 +53,12 @@ export type {
   PreviewHostListener,
   PreviewHostMode,
 } from "./types";
+export {
+  resolvePreviewHostConfig,
+  previewHostIsolationWarning,
+  type PreviewHostRuntimeConfig,
+} from "./previewHostConfig";
+export {
+  IframedRemotionPreview,
+  type IframedRemotionPreviewProps,
+} from "./IframedRemotionPreview";

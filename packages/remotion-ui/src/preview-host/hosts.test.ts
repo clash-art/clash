@@ -19,6 +19,8 @@ const composition = {
   durationInFrames: 300,
 };
 
+const PARENT_ORIGIN = "http://localhost:5173";
+
 function fakePlayer() {
   return {
     getCurrentFrame: vi.fn(() => 12),
@@ -103,23 +105,59 @@ describe("iframe preview host", () => {
     };
   }
 
-  it("posts the mount command with the composition geometry", () => {
-    const { bridge, sent } = fakeBridge();
-    const host = createIframePreviewHost({ createBridge: () => bridge });
+  it("defers mount until the frame announces ready", () => {
+    const { bridge, sent, emit } = fakeBridge();
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
     host.mount(composition);
+    expect(sent).toEqual([]);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
     expect(sent).toEqual([
       {
         protocol: PREVIEW_HOST_PROTOCOL,
         type: "mount",
         composition,
+        parentOrigin: PARENT_ORIGIN,
+      },
+    ]);
+  });
+
+  it("re-sends mount when the composition changes after ready", () => {
+    const { bridge, sent, emit } = fakeBridge();
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
+    host.mount(composition);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
+    const next = { ...composition, durationInFrames: 600, tracks: [] };
+    host.mount(next);
+    expect(sent).toEqual([
+      {
+        protocol: PREVIEW_HOST_PROTOCOL,
+        type: "mount",
+        composition,
+        parentOrigin: PARENT_ORIGIN,
+      },
+      {
+        protocol: PREVIEW_HOST_PROTOCOL,
+        type: "mount",
+        composition: next,
+        parentOrigin: PARENT_ORIGIN,
       },
     ]);
   });
 
   it("posts seek and play intent without inventing a clock", () => {
-    const { bridge, sent } = fakeBridge();
-    const host = createIframePreviewHost({ createBridge: () => bridge });
+    const { bridge, sent, emit } = fakeBridge();
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
     host.mount(composition);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
     host.seek(120);
     host.play();
     host.pause();
@@ -132,10 +170,14 @@ describe("iframe preview host", () => {
 
   it("turns the frame's own facts into editor facts", () => {
     const { bridge, emit } = fakeBridge();
-    const host = createIframePreviewHost({ createBridge: () => bridge });
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
     const facts: PreviewHostFact[] = [];
     host.subscribe((fact) => facts.push(fact));
     host.mount(composition);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
     emit({
       protocol: PREVIEW_HOST_PROTOCOL,
       type: "frame",
@@ -161,10 +203,14 @@ describe("iframe preview host", () => {
 
   it("unmounts the frame and stops listening to it", () => {
     const { bridge, emit, sent } = fakeBridge();
-    const host = createIframePreviewHost({ createBridge: () => bridge });
+    const host = createIframePreviewHost({
+      createBridge: () => bridge,
+      parentOrigin: PARENT_ORIGIN,
+    });
     const listener = vi.fn();
     host.subscribe(listener);
     host.mount(composition);
+    emit({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
     host.unmount();
     expect(sent.at(-1)).toEqual({
       protocol: PREVIEW_HOST_PROTOCOL,
@@ -195,18 +241,26 @@ describe("createPreviewHost", () => {
 
   it("builds an iframe host that talks to a frame", () => {
     const sent: PreviewHostCommand[] = [];
+    const listeners = new Set<(event: PreviewHostEvent) => void>();
     const host = createPreviewHost({
       mode: "iframe",
       iframe: {
+        parentOrigin: PARENT_ORIGIN,
         createBridge: () => ({
           send: (command) => sent.push(command),
-          onEvent: () => () => undefined,
+          onEvent: (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
           dispose: () => undefined,
         }),
       },
     });
     expect(host.mode).toBe("iframe");
     host.mount(composition);
+    for (const listener of [...listeners]) {
+      listener({ protocol: PREVIEW_HOST_PROTOCOL, type: "ready" });
+    }
     host.seek(3);
     expect(sent.map((command) => command.type)).toEqual(["mount", "seek"]);
   });
