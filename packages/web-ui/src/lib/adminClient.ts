@@ -134,7 +134,7 @@ const seg = encodeURIComponent;
  */
 export interface AdminMe {
   admin: { id: string; email: string; name: string; role: string };
-  /** Every permission the account's role holds. */
+  /** The permissions the account's role holds that this host serves (#372): a page shows only for these. */
   permissions: string[];
   promptAccess: boolean;
 }
@@ -502,6 +502,26 @@ export interface AbuseSignals {
   suspensions: Suspension[];
 }
 
+/**
+ * The credential encryption key ring (#366, served by a Node admin listener,
+ * #372): key ids and envelope counts only, never key material.
+ */
+export interface EncryptionKeyRing {
+  /** The kid new envelopes are sealed under; null before the first rotation. */
+  current: string | null;
+  /** Every kid this node holds. */
+  ringKids: string[];
+  /** Stored upstream credentials per sealing kid (`v1`: the legacy envelope) and scope. */
+  envelopes: Array<{ kid: string; scope: string; count: number }>;
+}
+
+export interface EncryptionReencryptResult {
+  current: string | null;
+  resealed: number;
+  failed: number;
+  skipped: number;
+}
+
 export interface UsageFilters {
   tenantId?: string;
   userId?: string;
@@ -616,7 +636,8 @@ export type AdminPageKey =
   | "usage"
   | "reconciliation"
   | "abuse"
-  | "audit";
+  | "audit"
+  | "encryption";
 
 export interface AdminPage {
   key: AdminPageKey;
@@ -640,6 +661,8 @@ export const ADMIN_PAGES: readonly AdminPage[] = [
   { key: "reconciliation", path: "/admin/reconciliation", label: "Reconciliation", permission: "reconciliation.read" },
   { key: "abuse", path: "/admin/abuse", label: "Abuse", permission: "abuse.read" },
   { key: "audit", path: "/admin/audit", label: "Audit log", permission: "audit.read_all", tenantScoped: true },
+  // Only a host with a key ring (a Node admin listener, #372) reports encryption.read.
+  { key: "encryption", path: "/admin/encryption", label: "Encryption keys", permission: "encryption.read" },
 ];
 
 export function adminPage(key: AdminPageKey): AdminPage {
@@ -772,6 +795,13 @@ export const adminApi = {
     adminRequest<unknown>("POST", `/tenants/${seg(tenantId)}/wallet/adjust`, body),
   setWalletStatus: (tenantId: string, status: "active" | "suspended", reason: string) =>
     adminRequest<unknown>("POST", `/tenants/${seg(tenantId)}/wallet/status`, { status, reason }),
+
+  encryption: () => adminRequest<EncryptionKeyRing>("GET", "/encryption"),
+  /** Seal new envelopes under `kid`, which every node's ring must already hold. */
+  rotateEncryption: (kid: string) =>
+    adminRequest<{ previous: string | null; current: string; configVersion: number }>("POST", "/encryption/rotate", { kid }),
+  /** Reseal up to `limit` envelopes not yet under the current kid. */
+  reencrypt: (limit?: number) => adminRequest<EncryptionReencryptResult>("POST", "/encryption/reencrypt", limit ? { limit } : {}),
 };
 
 // ─── Formatting and parsing ───────────────────────────────────────────────

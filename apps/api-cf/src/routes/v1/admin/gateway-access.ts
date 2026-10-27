@@ -15,6 +15,7 @@
  * apps/api-cf/scripts/gateway-admin-account.ts, never by an env variable.
  */
 import { Hono } from "hono";
+import { GATEWAY_KEY_RING_PERMISSIONS, adminConsolePermissions } from "@clash/gateway-core";
 
 import type { Env } from "../../../config";
 import {
@@ -29,7 +30,6 @@ import { requireAdminIdentity } from "../../../services/admin-identity";
 import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
 import {
   adminJson as ok,
-  adminRolePermissions,
   authorizeAdminAccess,
   platformRoute,
 } from "../../../services/gateway-authz";
@@ -44,7 +44,8 @@ adminAccessRoutes.get("/me", async (c) => {
     const admin = requireAdminIdentity(c);
     return ok(c, {
       admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
-      permissions: [...adminRolePermissions(admin.role)],
+      // The role's permissions this Worker serves: it has no encryption key ring (api-node's, #366).
+      permissions: adminConsolePermissions(admin.role, (permission) => !GATEWAY_KEY_RING_PERMISSIONS.includes(permission)),
       promptAccess: staffPromptAccessEnabled(c.env) && authorizeAdminAccess(admin, "prompts.view") !== null,
     });
   } catch (error) {

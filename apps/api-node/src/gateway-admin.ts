@@ -64,7 +64,9 @@ import {
   gatewayErrorResponseInit,
   isBlockedDeepSeekModel,
   parseGatewayJsonBody,
+  presentsGatewayAdminSession,
   toGatewayError,
+  type GatewayAdminAccountIdentity,
   type GatewayBillingPort,
   type GatewayPriceBookPort,
 } from "@clash/gateway-core";
@@ -82,6 +84,8 @@ import {
 } from "./gateway-admin-authz.ts";
 import type { PgGatewayAdminTokens } from "./gateway-admin-tokens.ts";
 import { createGatewayBillingAdminRoutes } from "./gateway-billing-routes.ts";
+import { mountAdminConsole, type AdminWebBuild } from "./gateway-admin-console.ts";
+import { createPgAdminReads } from "./gateway-admin-reads.ts";
 import type {
   GatewayBudgetDatabase,
   GatewayBudgetSqlClient,
@@ -461,6 +465,17 @@ export interface GatewayAdminAppDeps {
   allowedOrigins?: readonly string[];
   /** Epoch milliseconds. */
   now?: () => number;
+  /**
+   * Shared `/admin` SPA (#372): only when GATEWAY_ROLE=admin. Mounts the
+   * apps/web build and optional Better Auth handler for console sign-in.
+   * API-only admin listeners (GATEWAY_ADMIN_PORT without admin role) omit this.
+   */
+  console?: {
+    build: AdminWebBuild;
+    adminAuthHandler?: (request: Request) => Promise<Response>;
+    /** Admin Better Auth session → principal (alongside gwa_ tokens). */
+    verifyAdminSession?: (request: Request) => Promise<GatewayAdminAccountIdentity | null>;
+  };
 }
 
 /** The admin listener's whole app: admin routes, nothing else. */
@@ -469,13 +484,22 @@ export function createGatewayAdminApp(deps: GatewayAdminAppDeps): Hono {
   const now = deps.now ?? Date.now;
   const nowS = () => toSeconds(now());
   const allowed = new Set(deps.allowedOrigins ?? []);
-  // As hosted: no credential at all is 401; a product credential (cookie,
-  // clsh_, sk_gw_, x-api-key) is GATEWAY_ADMIN_SESSION_REQUIRED.
-  const verifyAdmin = async (request: Request) => {
+  // Dual identity (#371 tokens + #372 admin sessions for the shared SPA):
+  // no credential at all is 401; a product credential (cookie, clsh_, sk_gw_,
+  // x-api-key) is GATEWAY_ADMIN_SESSION_REQUIRED; a gwa_ token or clash-admin
+  // session is the principal.
+  const verifyAdmin = async (request: Request): Promise<GatewayAdminPrincipal | null> => {
     const headers = request.headers;
     if (!headers.has("authorization") && !headers.has("x-api-key") && !headers.has("cookie"))
       throw new GatewayError("GATEWAY_AUTH_REQUIRED");
-    return deps.tokens.verify(request);
+    const tokenPrincipal = await deps.tokens.verify(request);
+    if (tokenPrincipal) return tokenPrincipal;
+    if (deps.console?.verifyAdminSession && presentsGatewayAdminSession(request)) {
+      const session = await deps.console.verifyAdminSession(request);
+      if (session)
+        return { id: session.id, role: session.role, email: session.email, name: session.name };
+    }
+    return null;
   };
   const app = new Hono();
 
@@ -554,10 +578,20 @@ export function createGatewayAdminApp(deps: GatewayAdminAppDeps): Hono {
   app.get(`${p}/me`, async (c) => {
     try {
       const caller = await principal(c);
+      // Omit encryption.* when this listener has no key ring so the shared
+      // console never offers the encryption page against an empty host.
+      const permissions = gatewayAdminPermissions(caller).filter(
+        (permission) => deps.keyRing || (permission !== "encryption.read" && permission !== "encryption.rotate"),
+      );
       return c.json(
         {
-          admin: { id: caller.id, role: caller.role },
-          permissions: gatewayAdminPermissions(caller),
+          admin: {
+            id: caller.id,
+            role: caller.role,
+            email: caller.email ?? "",
+            name: caller.name ?? "",
+          },
+          permissions,
           promptAccess: false,
         },
         200,
@@ -810,71 +844,53 @@ export function createGatewayAdminApp(deps: GatewayAdminAppDeps): Hono {
     }),
   );
 
-  // ─── Usage and audit ───────────────────────────────────────────────────────
+  // ─── Overview, usage and audit (#372 console shapes via gateway-admin-reads) ─
 
-  const ledger = createPgGatewayLedgerPort(db);
+  const reads = createPgAdminReads(db, { clock: { now } });
+
+  app.get(
+    `${p}/overview`,
+    scopedRoute("usage.read", "usage.read_all", async (c, tenantId) => {
+      return { overview: await reads.overview(tenantId) };
+    }),
+  );
 
   app.get(
     `${p}/usage`,
     scopedRoute("usage.read", "usage.read_all", async (c, tenantId) => {
-      const filter = query(UsageQuerySchema, c);
+      const filter = query(
+        UsageQuerySchema.extend({
+          modelCode: z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/).optional(),
+          kind: z
+            .enum([
+              "settle",
+              "hold",
+              "release",
+              "charge",
+              "debit",
+              "refund",
+              "adjust",
+              "grant",
+              "topup",
+              "expire",
+            ])
+            .optional(),
+        }),
+        c,
+      );
       const from = filter.from ? Date.parse(filter.from) : undefined;
       const to = filter.to ? Date.parse(filter.to) : undefined;
-      // One charge per request (a request writes one charge line per budget).
-      const { rows } = await db.query<{
-        tenant_id: string;
-        model_code: string | null;
-        requests: number;
-        cost: Num;
-        input_tokens: Num;
-        output_tokens: Num;
-      }>(
-        `SELECT tenant_id, model_code, count(*)::int AS requests,
-                COALESCE(sum(amount_micro_credits), 0)::text AS cost,
-                COALESCE(sum(input_tokens), 0)::text AS input_tokens,
-                COALESCE(sum(output_tokens), 0)::text AS output_tokens
-           FROM (SELECT DISTINCT ON (request_id) request_id, tenant_id, model_code,
-                        amount_micro_credits, input_tokens, output_tokens
-                   FROM gateway_usage_ledger
-                  WHERE kind = 'charge' AND ($1::text IS NULL OR tenant_id = $1)
-                    AND ($2::text IS NULL OR user_id = $2) AND ($3::text IS NULL OR key_id = $3)
-                    AND ($4::bigint IS NULL OR occurred_at >= $4) AND ($5::bigint IS NULL OR occurred_at < $5)
-                  ORDER BY request_id, budget_id) charges
-          GROUP BY tenant_id, model_code
-          ORDER BY sum(amount_micro_credits) DESC, tenant_id, model_code
-          LIMIT $6`,
-        [
-          tenantId ?? null,
-          filter.userId ?? null,
-          filter.keyId ?? null,
-          from === undefined ? null : toSeconds(from),
-          to === undefined ? null : toSeconds(to),
-          filter.limit,
-        ],
-      );
-      const totals = rows.map((row) => ({
-        tenantId: row.tenant_id,
-        modelCode: row.model_code,
-        requests: row.requests,
-        costMicroCredits: num(row.cost),
-        inputTokens: num(row.input_tokens),
-        outputTokens: num(row.output_tokens),
-      }));
-      if (!tenantId) return { usage: { totals } };
-      const events = await ledger.query({
-        tenantId,
+      const result = await reads.usage({
+        ...(tenantId ? { tenantId } : {}),
         ...(filter.userId ? { userId: filter.userId } : {}),
         ...(filter.keyId ? { keyId: filter.keyId } : {}),
+        ...(filter.modelCode ? { modelCode: filter.modelCode } : {}),
+        ...(filter.kind ? { kind: filter.kind } : {}),
         ...(from !== undefined ? { from } : {}),
         ...(to !== undefined ? { to } : {}),
         limit: filter.limit,
       });
-      return {
-        usage: {
-          totals,
-          events: events.map((event) => ({ ...event, occurredAt: new Date(event.occurredAt).toISOString() })),
-        },
-      };
+      return { ...result, nextCursor: null };
     }),
   );
 
@@ -1245,46 +1261,9 @@ export function createGatewayAdminApp(deps: GatewayAdminAppDeps): Hono {
 
   app.get(
     `${p}/abuse`,
-    route("abuse.read", async (c) => {
-      const { windowMinutes, limit } = query(AbuseQuerySchema, c);
-      const since = nowS() - windowMinutes * 60;
-      const [suspended, failures, spend] = await Promise.all([
-        db.query<BudgetRow>(
-          `SELECT ${BUDGET_COLUMNS} FROM gateway_budget
-            WHERE status = 'suspended' AND scope IN ('tenant', 'key')
-            ORDER BY updated_at DESC, id LIMIT $1`,
-          [limit],
-        ),
-        db.query<{ tenant_id: string; failed: number; total: number }>(
-          `SELECT tenant_id, count(*) FILTER (WHERE state IN ('failed', 'expired'))::int AS failed,
-                  count(*)::int AS total
-             FROM gateway_request WHERE created_at >= $1
-            GROUP BY tenant_id ORDER BY 2 DESC, tenant_id LIMIT $2`,
-          [since, limit],
-        ),
-        db.query<{ tenant_id: string; cost: Num; requests: number }>(
-          `SELECT tenant_id, COALESCE(sum(amount_micro_credits), 0)::text AS cost, count(*)::int AS requests
-             FROM (SELECT DISTINCT ON (request_id) request_id, tenant_id, amount_micro_credits
-                     FROM gateway_usage_ledger WHERE kind = 'charge' AND occurred_at >= $1
-                    ORDER BY request_id, budget_id) charges
-            GROUP BY tenant_id ORDER BY sum(amount_micro_credits) DESC, tenant_id LIMIT $2`,
-          [since, limit],
-        ),
-      ]);
-      return [
-        {
-          abuse: {
-            windowMinutes,
-            suspensions: suspended.rows.map(suspensionView),
-            failures: failures.rows.map((row) => ({ tenantId: row.tenant_id, failed: row.failed, total: row.total })),
-            spend: spend.rows.map((row) => ({
-              tenantId: row.tenant_id,
-              costMicroCredits: num(row.cost),
-              requests: row.requests,
-            })),
-          },
-        },
-      ];
+    route("abuse.read", async () => {
+      // Console shape (#372): live rate counters; Node has no abuse signal store yet.
+      return [{ abuse: await reads.abuse() }];
     }),
   );
 
@@ -1441,6 +1420,14 @@ export function createGatewayAdminApp(deps: GatewayAdminAppDeps): Hono {
       "/",
       createGatewayKeyAdminRoutes({ db, ring: deps.keyRing.ring, store: deps.keyRing.store, verifyAdmin }),
     );
+
+  // Shared /admin SPA + admin Better Auth (#372), only when the admin role asked for it.
+  if (deps.console) {
+    mountAdminConsole(app, {
+      build: deps.console.build,
+      ...(deps.console.adminAuthHandler ? { adminAuthHandler: deps.console.adminAuthHandler } : {}),
+    });
+  }
 
   // The admin listener serves nothing else (no data plane, no product API).
   app.notFound((c) => c.json(NOT_FOUND_BODY, 404, NO_STORE));

@@ -15,18 +15,29 @@ import type { AdminMe } from "@clash/web-ui/lib/adminClient";
 import { loader as abuseLoader } from "./admin.abuse";
 import { loader as auditLoader } from "./admin.audit";
 import { loader as budgetsLoader } from "./admin.budgets";
+import { loader as encryptionLoader } from "./admin.encryption";
 import { loader as overviewLoader } from "./admin._index";
 import { loader as loginLoader } from "./admin.login";
 import { loader as modelsLoader } from "./admin.models";
 import { loader as packagesLoader } from "./admin.packages";
-import { loader as reconciliationLoader } from "./admin.reconciliation";
 import { loader as upstreamsLoader } from "./admin.upstreams";
 import { loader as usageLoader } from "./admin.usage";
 import { loader as usersLoader } from "./admin.users";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const ALL_LOADERS = [overviewLoader, modelsLoader, upstreamsLoader, usersLoader, budgetsLoader, packagesLoader, usageLoader, reconciliationLoader, abuseLoader, auditLoader];
+const ALL_LOADERS = [
+  overviewLoader,
+  modelsLoader,
+  upstreamsLoader,
+  usersLoader,
+  budgetsLoader,
+  packagesLoader,
+  usageLoader,
+  abuseLoader,
+  auditLoader,
+  encryptionLoader,
+];
 
 /** An admin account whose role holds no console permission. */
 const noPermissions: AdminMe = {
@@ -56,7 +67,6 @@ const staff: AdminMe = {
     "abuse.read",
     "prompts.view",
     "retention.purge",
-    "reconciliation.read",
     "budgets.read",
     "team.budgets.allocate",
     "keys.read",
@@ -210,23 +220,20 @@ describe("admin page scope", () => {
     expect((await usageLoader(args("/admin/usage"))).me.promptAccess).toBe(true);
   });
 
-  it("keeps the usage explorer's status, time and page in the URL, and offers reconciliation writes only with reconciliation.write", async () => {
-    const paths = stubApi(staff, (path) => {
-      if (path.startsWith("/api/v1/admin/gateway/usage")) return Response.json({ entries: [], byModel: [], nextCursor: null });
-      if (path === "/api/v1/admin/gateway/reconciliation/runs") return Response.json({ runs: [] });
-      if (path === "/api/v1/admin/gateway/reconciliation/reports") return Response.json({ reports: [] });
-      return undefined;
-    });
-    const usage = await usageLoader(args("/admin/usage?tenant=team%3Aa&status=upstream_failed&from=2026-10-01T00%3A00%3A00.000Z&cursor=abc"));
-    expect(usage.filters).toEqual({ status: "upstream_failed", from: "2026-10-01T00:00:00.000Z", cursor: "abc", tenantId: "team:a" });
-    expect(paths).toContain(
-      "/api/v1/admin/gateway/usage?status=upstream_failed&from=2026-10-01T00%3A00%3A00.000Z&cursor=abc&tenantId=team%3Aa",
+  it("opens the key ring page only where /me reports encryption.read (a Node admin listener), with rotation by encryption.rotate", async () => {
+    // A hosted /me never reports the key ring permissions: the page is refused before its API is called.
+    const hostedPaths = stubApi(staff);
+    expect(await thrown(encryptionLoader(args("/admin/encryption")))).toMatchObject({ status: 403, code: "GATEWAY_FORBIDDEN" });
+    expect(hostedPaths).toEqual(["/api/v1/admin/gateway/me"]);
+
+    const ring = { current: "k1", ringKids: ["k1", "k2"], envelopes: [{ kid: "v1", scope: "official", count: 2 }] };
+    const nodePaths = stubApi({ ...staff, permissions: ["encryption.read"] }, (path) =>
+      path === "/api/v1/admin/gateway/encryption" ? Response.json(ring) : undefined,
     );
-    expect(await reconciliationLoader(args("/admin/reconciliation"))).toMatchObject({ runs: [], reports: [], canWrite: false });
-    stubApi({ ...staff, permissions: [...staff.permissions, "reconciliation.write"] }, (path) =>
-      path.endsWith("/runs") ? Response.json({ runs: [] }) : Response.json({ reports: [] }),
-    );
-    expect(await reconciliationLoader(args("/admin/reconciliation"))).toMatchObject({ canWrite: true });
+    expect(await encryptionLoader(args("/admin/encryption"))).toMatchObject({ ring, canRotate: false });
+    expect(nodePaths).toContain("/api/v1/admin/gateway/encryption");
+    stubApi({ ...staff, permissions: ["encryption.read", "encryption.rotate"] }, () => Response.json(ring));
+    expect(await encryptionLoader(args("/admin/encryption"))).toMatchObject({ canRotate: true });
   });
 });
 

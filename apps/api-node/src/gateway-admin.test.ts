@@ -403,8 +403,11 @@ describe("api-node gateway admin listener", () => {
         promptAccess: false,
       });
       expect(me.body.permissions).toEqual(
-        gatewayAdminPermissions({ id: "x", role: "platform_admin" }),
+        gatewayAdminPermissions({ id: "x", role: "platform_admin" }).filter(
+          (permission) => permission !== "encryption.read" && permission !== "encryption.rotate",
+        ),
       );
+      expect(me.body.admin).toMatchObject({ email: "", name: "" });
       expect((me.body.admin as { tenantId?: unknown }).tenantId).toBeUndefined();
     });
   });
@@ -543,19 +546,20 @@ describe("api-node gateway admin listener", () => {
       ).toBe("GATEWAY_KEY_NOT_FOUND");
     });
 
-    it("usage: one charge per request in the totals; a tenant scope adds its ledger events", async () => {
-      const all = (await call(token.platform, "GET", "/usage")).body.usage as {
-        totals: { tenantId: string; requests: number; costMicroCredits: number }[];
+    it("usage: console explorer shape (entries + byModel); tenant scope narrows entries", async () => {
+      const all = (await call(token.platform, "GET", "/usage")).body as {
+        entries: { tenantId: string; amountMicroCredits: number; kind: string }[];
+        byModel: { modelCode: string; requests: number; amountMicroCredits: number }[];
+        nextCursor: null;
       };
-      expect(all.totals).toEqual([
-        expect.objectContaining({ tenantId: TENANT_B, requests: 1, costMicroCredits: 500 }),
-        expect.objectContaining({ tenantId: TENANT_A, requests: 1, costMicroCredits: 300 }),
-      ]);
-      const mine = (await call(token.platform, "GET", `/usage?tenantId=${TENANT_A}`)).body
-        .usage as { totals: { tenantId: string }[]; events: { tenantId: string }[] };
-      expect(mine.totals.map((row) => row.tenantId)).toEqual([TENANT_A]);
-      expect(mine.events.length).toBeGreaterThan(0);
-      expect(mine.events.every((event) => event.tenantId === TENANT_A)).toBe(true);
+      expect(all.nextCursor).toBeNull();
+      expect(all.entries.length).toBeGreaterThan(0);
+      expect(all.byModel.some((row) => row.amountMicroCredits >= 500)).toBe(true);
+      const mine = (await call(token.platform, "GET", `/usage?tenantId=${TENANT_A}`)).body as {
+        entries: { tenantId: string }[];
+      };
+      expect(mine.entries.length).toBeGreaterThan(0);
+      expect(mine.entries.every((entry) => entry.tenantId === TENANT_A)).toBe(true);
     });
 
     it("models: clone the live catalog, edit the draft, publish; non-Flash DeepSeek refused", async () => {
@@ -668,10 +672,12 @@ describe("api-node gateway admin listener", () => {
       ).toBe("GATEWAY_ABUSE_SUBJECT_NOT_FOUND");
       const signals = (await call(token.platform, "GET", "/abuse")).body.abuse as {
         suspensions: { id: string }[];
-        spend: { tenantId: string }[];
+        rateWindows: unknown[];
+        events: { available: boolean };
       };
       expect(signals.suspensions.map((s) => s.id)).toEqual(["gwb_wallet_a"]);
-      expect(signals.spend.map((s) => s.tenantId)).toContain(TENANT_A);
+      expect(signals.events.available).toBe(false);
+      expect(Array.isArray(signals.rateWindows)).toBe(true);
       // Audit rows order by second, then a random id: lift one second later.
       clock += 1_000;
       const lifted = await call(token.platform, "POST", `/abuse/suspensions/${suspension.id}/lift`, {

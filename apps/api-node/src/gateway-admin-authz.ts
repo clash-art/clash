@@ -51,6 +51,8 @@ export const GATEWAY_ADMIN_PLATFORM_READS = [
   "audit.read_all",
   "abuse.read",
   "admin_accounts.read",
+  // Key ring (#366/#372): only when the node mounts encryption routes.
+  "encryption.read",
 ] as const;
 /** Changes to platform resources. */
 export const GATEWAY_ADMIN_PLATFORM_WRITES = [
@@ -64,6 +66,7 @@ export const GATEWAY_ADMIN_PLATFORM_WRITES = [
   // Suspending and lifting take a tenant or key id only (as hosted, #356).
   "abuse.suspend",
   "prompts.view",
+  "encryption.rotate",
 ] as const;
 
 export type GatewayAdminTenantPermission =
@@ -102,9 +105,12 @@ export const isTenantPermission = (
   TENANT_PERMISSIONS.includes(permission);
 
 export interface GatewayAdminPrincipal {
-  /** gateway_admin_token.id (`gat_…`). */
+  /** gateway_admin_token.id (`gat_…`) or admin_account.id (`adm_…`). */
   id: string;
   role: string;
+  /** Present for admin Better Auth sessions (#372); tokens omit these. */
+  email?: string;
+  name?: string;
 }
 
 /** The audit actor of an authorized admin (gateway_admin_audit actor_*). */
