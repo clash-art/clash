@@ -37,6 +37,7 @@ vi.mock("./InteractiveCanvas", () => ({
     mediaEpoch?: number;
     onTransportEvent?: (event: { type: string; message?: string }) => void;
     onPlayingChange?: (playing: boolean) => void;
+    paintSurface?: React.ReactNode;
   }) => {
     // Stand-in for the Remotion Player: it reports play/pause for the intent
     // it receives, and the buttons below emit the Player's other events.
@@ -57,7 +58,10 @@ vi.mock("./InteractiveCanvas", () => ({
             : ""
         }
         data-audio-meter-enabled={props.audioMeterEnabled}
-      />
+        data-preview-paint={props.paintSurface ? "external" : "player"}
+      >
+        {props.paintSurface}
+      </div>
       <button
         type="button"
         aria-label="Simulate canvas drag"

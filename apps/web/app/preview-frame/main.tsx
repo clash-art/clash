@@ -20,6 +20,30 @@ import {
   type PreviewTransportEvent,
 } from "@clash/remotion-ui/preview-host";
 
+function calculateRms(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const sample = samples[i] ?? 0;
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / samples.length);
+}
+
+type CapturableMediaElement = HTMLMediaElement & {
+  captureStream?: () => MediaStream;
+};
+
+type MediaAnalysisGraph = {
+  source: MediaStreamAudioSourceNode;
+  stream: MediaStream;
+  splitter: ChannelSplitterNode;
+  leftAnalyser: AnalyserNode;
+  rightAnalyser: AnalyserNode;
+  leftSamples: Float32Array;
+  rightSamples: Float32Array;
+};
+
 type MountedScene = {
   width: number;
   height: number;
@@ -45,9 +69,17 @@ function post(event: PreviewHostEvent, targetOrigin: string) {
 
 function PreviewFrameApp() {
   const playerRef = useRef<PlayerRef>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [scene, setScene] = useState<MountedScene | null>(null);
+  const [audioMeterEnabled, setAudioMeterEnabled] = useState(false);
   const parentOriginRef = useRef<string | null>(null);
   const lastEmittedFrameRef = useRef<number | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSilentOutputRef = useRef<GainNode | null>(null);
+  const audioAnalysisGraphsRef = useRef<Map<HTMLMediaElement, MediaAnalysisGraph>>(
+    new Map(),
+  );
+  const previousAudioLevelsRef = useRef({ left: 0, right: 0 });
 
   const reportTransport = (event: PreviewTransportEvent) => {
     const origin = parentOriginRef.current;
@@ -64,6 +96,15 @@ function PreviewFrameApp() {
     if (frame === lastEmittedFrameRef.current) return;
     lastEmittedFrameRef.current = frame;
     post({ protocol: PREVIEW_HOST_PROTOCOL, type: "frame", frame }, origin);
+  };
+
+  const reportAudioLevels = (left: number, right: number) => {
+    const origin = parentOriginRef.current;
+    if (!origin) return;
+    post(
+      { protocol: PREVIEW_HOST_PROTOCOL, type: "audio-levels", left, right },
+      origin,
+    );
   };
 
   useEffect(() => {
@@ -97,7 +138,12 @@ function PreviewFrameApp() {
       }
       if (command.type === "unmount") {
         setScene(null);
+        setAudioMeterEnabled(false);
         playerRef.current?.pause();
+        return;
+      }
+      if (command.type === "set-audio-meter") {
+        setAudioMeterEnabled(command.enabled);
         return;
       }
       const player = playerRef.current;
@@ -162,6 +208,147 @@ function PreviewFrameApp() {
     };
   }, [scene]);
 
+  useEffect(() => {
+    if (!audioMeterEnabled) {
+      for (const graph of audioAnalysisGraphsRef.current.values()) {
+        graph.source.disconnect();
+        graph.splitter.disconnect();
+        graph.leftAnalyser.disconnect();
+        graph.rightAnalyser.disconnect();
+        graph.stream.getTracks().forEach((track) => track.stop());
+      }
+      audioAnalysisGraphsRef.current.clear();
+      previousAudioLevelsRef.current = { left: 0, right: 0 };
+      reportAudioLevels(0, 0);
+      return;
+    }
+
+    const AudioContextConstructor = window.AudioContext;
+    if (
+      !AudioContextConstructor ||
+      typeof window.requestAnimationFrame !== "function"
+    ) {
+      reportAudioLevels(0, 0);
+      return;
+    }
+
+    if (!audioContextRef.current) {
+      const context = new AudioContextConstructor();
+      const silentOutput = context.createGain();
+      silentOutput.gain.value = 0;
+      silentOutput.connect(context.destination);
+      audioContextRef.current = context;
+      audioSilentOutputRef.current = silentOutput;
+    }
+
+    const context = audioContextRef.current;
+    const silentOutput = audioSilentOutputRef.current;
+    if (!context || !silentOutput) return;
+    if (context.state === "suspended") {
+      void context.resume().catch(() => undefined);
+    }
+
+    let raf: number | null = null;
+
+    const connectVisibleMedia = () => {
+      const container = rootRef.current;
+      if (!container) return;
+      const visibleMedia = new Set(
+        Array.from(container.querySelectorAll<HTMLMediaElement>("audio, video")),
+      );
+      for (const [element, graph] of audioAnalysisGraphsRef.current) {
+        if (visibleMedia.has(element)) continue;
+        graph.source.disconnect();
+        graph.splitter.disconnect();
+        graph.leftAnalyser.disconnect();
+        graph.rightAnalyser.disconnect();
+        graph.stream.getTracks().forEach((track) => track.stop());
+        audioAnalysisGraphsRef.current.delete(element);
+      }
+      for (const element of visibleMedia) {
+        if (audioAnalysisGraphsRef.current.has(element)) continue;
+        const captureStream = (element as CapturableMediaElement).captureStream;
+        if (typeof captureStream !== "function") continue;
+        try {
+          const stream = captureStream.call(element);
+          if (stream.getAudioTracks().length === 0) {
+            stream.getTracks().forEach((track) => track.stop());
+            continue;
+          }
+          const source = context.createMediaStreamSource(stream);
+          const splitter = context.createChannelSplitter(2);
+          const leftAnalyser = context.createAnalyser();
+          const rightAnalyser = context.createAnalyser();
+          leftAnalyser.fftSize = 256;
+          rightAnalyser.fftSize = 256;
+          source.connect(splitter);
+          splitter.connect(leftAnalyser, 0);
+          splitter.connect(rightAnalyser, 1);
+          leftAnalyser.connect(silentOutput);
+          rightAnalyser.connect(silentOutput);
+          audioAnalysisGraphsRef.current.set(element, {
+            source,
+            stream,
+            splitter,
+            leftAnalyser,
+            rightAnalyser,
+            leftSamples: new Float32Array(leftAnalyser.fftSize),
+            rightSamples: new Float32Array(rightAnalyser.fftSize),
+          });
+        } catch {
+          // Media may exist before its audio track is ready.
+        }
+      }
+    };
+
+    const sample = () => {
+      connectVisibleMedia();
+      let leftSquared = 0;
+      let rightSquared = 0;
+      for (const [element, graph] of audioAnalysisGraphsRef.current) {
+        graph.leftAnalyser.getFloatTimeDomainData(graph.leftSamples);
+        graph.rightAnalyser.getFloatTimeDomainData(graph.rightSamples);
+        const outputGain = element.muted ? 0 : element.volume;
+        const left = calculateRms(graph.leftSamples) * outputGain;
+        let right = calculateRms(graph.rightSamples) * outputGain;
+        if (right < 0.0001 && left >= 0.0001) right = left;
+        leftSquared += left * left;
+        rightSquared += right * right;
+      }
+      const raw = {
+        left: Math.min(1, Math.sqrt(leftSquared)),
+        right: Math.min(1, Math.sqrt(rightSquared)),
+      };
+      const previous = previousAudioLevelsRef.current;
+      const next = {
+        left:
+          raw.left >= previous.left
+            ? raw.left
+            : previous.left * 0.82 + raw.left * 0.18,
+        right:
+          raw.right >= previous.right
+            ? raw.right
+            : previous.right * 0.82 + raw.right * 0.18,
+      };
+      previousAudioLevelsRef.current = next;
+      reportAudioLevels(next.left, next.right);
+      raf = window.requestAnimationFrame(sample);
+    };
+
+    raf = window.requestAnimationFrame(sample);
+    return () => {
+      if (raf !== null) window.cancelAnimationFrame(raf);
+      for (const graph of audioAnalysisGraphsRef.current.values()) {
+        graph.source.disconnect();
+        graph.splitter.disconnect();
+        graph.leftAnalyser.disconnect();
+        graph.rightAnalyser.disconnect();
+        graph.stream.getTracks().forEach((track) => track.stop());
+      }
+      audioAnalysisGraphsRef.current.clear();
+    };
+  }, [audioMeterEnabled, scene]);
+
   const inputProps = useMemo(
     () => ({
       tracks: scene?.tracks ?? [],
@@ -170,38 +357,42 @@ function PreviewFrameApp() {
     [scene],
   );
 
-  if (!scene) {
-    return (
-      <div
-        data-preview-frame="idle"
-        style={{
-          width: "100%",
-          height: "100%",
-          display: "grid",
-          placeItems: "center",
-          color: "#888",
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
-        Clash preview frame ready
-      </div>
-    );
-  }
-
   return (
-    <Player
-      ref={playerRef}
-      component={VideoComposition}
-      compositionWidth={scene.width}
-      compositionHeight={scene.height}
-      durationInFrames={Math.max(1, Math.round(scene.durationInFrames))}
-      fps={scene.fps}
-      inputProps={inputProps}
+    <div
+      ref={rootRef}
+      data-preview-frame={scene ? "mounted" : "idle"}
+      data-audio-meter={audioMeterEnabled ? "on" : "off"}
       style={{ width: "100%", height: "100%" }}
-      controls={false}
-      loop={false}
-      numberOfSharedAudioTags={0}
-    />
+    >
+      {!scene ? (
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "grid",
+            placeItems: "center",
+            color: "#888",
+            fontFamily: "system-ui, sans-serif",
+          }}
+        >
+          Clash preview frame ready
+        </div>
+      ) : (
+        <Player
+          ref={playerRef}
+          component={VideoComposition}
+          compositionWidth={scene.width}
+          compositionHeight={scene.height}
+          durationInFrames={Math.max(1, Math.round(scene.durationInFrames))}
+          fps={scene.fps}
+          inputProps={inputProps}
+          style={{ width: "100%", height: "100%" }}
+          controls={false}
+          loop={false}
+          numberOfSharedAudioTags={0}
+        />
+      )}
+    </div>
   );
 }
 

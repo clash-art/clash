@@ -445,52 +445,57 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
           className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/45"
           style={styles.stage}
         >
-          {previewHost.mode === "iframe" &&
-          previewHost.frameUrl &&
-          previewHost.frameOrigin ? (
-            <IframedRemotionPreview
-              key="iframed-remotion-preview"
-              tracks={tracks}
-              allNodesMap={allNodesMap}
-              currentFrame={currentFrame}
-              compositionWidth={compositionWidth}
-              compositionHeight={compositionHeight}
-              fps={fps}
-              durationInFrames={timelineDuration}
-              playing={playing}
-              frameUrl={previewHost.frameUrl}
-              frameOrigin={previewHost.frameOrigin}
-              onPlayingChange={handlePlayingChange}
-              onTransportEvent={dispatchTransport}
-              onFrameUpdate={handleFrameUpdate}
-            />
-          ) : (
-            <InteractiveCanvas
-              key="interactive-canvas"
-              tracks={tracks}
-              allNodesMap={allNodesMap}
-              selectedItemId={selectedItemId}
-              currentFrame={currentFrame}
-              compositionWidth={compositionWidth}
-              compositionHeight={compositionHeight}
-              fps={fps}
-              durationInFrames={timelineDuration}
-              viewportCommand={viewportCommand}
-              onViewportZoomChange={setCanvasZoom}
-              audioMeterEnabled={audioMeterOpen || Boolean(audioMeterStore)}
-              onAudioLevelsChange={audioMeterStore?.setLevels}
-              onTransformStart={beginHistoryGroup}
-              onTransformEnd={endHistoryGroup}
-              onUpdateItem={handleUpdateItem}
-              onSelectItem={handleSelectItem}
-              playing={playing}
-              onPlayingChange={handlePlayingChange}
-              onTransportEvent={dispatchTransport}
-              mediaEpoch={mediaEpoch}
-              onFrameUpdate={handleFrameUpdate}
-              onSeek={handleSeek}
-            />
-          )}
+          <InteractiveCanvas
+            key="interactive-canvas"
+            tracks={tracks}
+            allNodesMap={allNodesMap}
+            selectedItemId={selectedItemId}
+            currentFrame={currentFrame}
+            compositionWidth={compositionWidth}
+            compositionHeight={compositionHeight}
+            fps={fps}
+            durationInFrames={timelineDuration}
+            viewportCommand={viewportCommand}
+            onViewportZoomChange={setCanvasZoom}
+            audioMeterEnabled={audioMeterOpen || Boolean(audioMeterStore)}
+            onAudioLevelsChange={audioMeterStore?.setLevels}
+            onTransformStart={beginHistoryGroup}
+            onTransformEnd={endHistoryGroup}
+            onUpdateItem={handleUpdateItem}
+            onSelectItem={handleSelectItem}
+            playing={playing}
+            onPlayingChange={handlePlayingChange}
+            onTransportEvent={dispatchTransport}
+            mediaEpoch={mediaEpoch}
+            onFrameUpdate={handleFrameUpdate}
+            onSeek={handleSeek}
+            paintSurface={
+              previewHost.mode === "iframe" &&
+              previewHost.frameUrl &&
+              previewHost.frameOrigin ? (
+                <IframedRemotionPreview
+                  key="iframed-remotion-preview"
+                  tracks={tracks}
+                  allNodesMap={allNodesMap}
+                  currentFrame={currentFrame}
+                  compositionWidth={compositionWidth}
+                  compositionHeight={compositionHeight}
+                  fps={fps}
+                  durationInFrames={timelineDuration}
+                  playing={playing}
+                  frameUrl={previewHost.frameUrl}
+                  frameOrigin={previewHost.frameOrigin}
+                  audioMeterEnabled={
+                    audioMeterOpen || Boolean(audioMeterStore)
+                  }
+                  onAudioLevelsChange={audioMeterStore?.setLevels}
+                  onPlayingChange={handlePlayingChange}
+                  onTransportEvent={dispatchTransport}
+                  onFrameUpdate={handleFrameUpdate}
+                />
+              ) : undefined
+            }
+          />
           {transport.status === "buffering" ? (
             <div
               role="status"

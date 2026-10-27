@@ -3,12 +3,17 @@
  *
  * Opt-in via VITE_PREVIEW_HOST_MODE=iframe + VITE_PREVIEW_FRAME_ORIGIN.
  * The Remotion Player inside the frame remains the time authority — this
- * component never invents a clock. Transform overlays / audio meter from
- * InteractiveCanvas are out of scope for this cutover slice.
+ * component never invents a clock.
+ *
+ * When used as InteractiveCanvas `paintSurface`, parent-side selection
+ * handles / scrub affordances sit above this element; Remotion paint stays
+ * in the frame. Audio levels cross the boundary via `audio-levels` facts
+ * (cross-origin media is unreachable from the editor document).
  */
 import React, { useEffect, useMemo, useRef } from "react";
 import type { Track } from "@clash/remotion-core";
 import type { PlayerTransportEvent } from "../components/playerTransport";
+import type { StereoAudioLevels } from "../components/previewAudioMeter";
 import { createPreviewHost } from "./createPreviewHost";
 import { createPostMessageFrameBridge } from "./postMessageFrame";
 import type { PreviewCompositionDescriptor } from "./protocol";
@@ -25,6 +30,9 @@ export type IframedRemotionPreviewProps = {
   playing?: boolean;
   frameUrl: string;
   frameOrigin: string;
+  /** When true, the frame samples media and posts audio-levels facts. */
+  audioMeterEnabled?: boolean;
+  onAudioLevelsChange?: (levels: StereoAudioLevels) => void;
   onFrameUpdate?: (frame: number) => void;
   onPlayingChange?: (playing: boolean) => void;
   onTransportEvent?: (event: PlayerTransportEvent) => void;
@@ -53,6 +61,8 @@ export const IframedRemotionPreview: React.FC<IframedRemotionPreviewProps> =
     playing = false,
     frameUrl,
     frameOrigin,
+    audioMeterEnabled = false,
+    onAudioLevelsChange,
     onFrameUpdate,
     onPlayingChange,
     onTransportEvent,
@@ -65,6 +75,8 @@ export const IframedRemotionPreview: React.FC<IframedRemotionPreviewProps> =
     onPlayingChangeRef.current = onPlayingChange;
     const onTransportEventRef = useRef(onTransportEvent);
     onTransportEventRef.current = onTransportEvent;
+    const onAudioLevelsChangeRef = useRef(onAudioLevelsChange);
+    onAudioLevelsChangeRef.current = onAudioLevelsChange;
     const lastEmittedFrameRef = useRef<number | null>(null);
     const lastPlayingRef = useRef(playing);
 
@@ -125,6 +137,13 @@ export const IframedRemotionPreview: React.FC<IframedRemotionPreviewProps> =
           }
           return;
         }
+        if (fact.type === "audio-levels") {
+          onAudioLevelsChangeRef.current?.({
+            left: fact.left,
+            right: fact.right,
+          });
+          return;
+        }
         if (fact.type === "error") {
           onTransportEventRef.current?.({
             type: "error",
@@ -138,12 +157,16 @@ export const IframedRemotionPreview: React.FC<IframedRemotionPreviewProps> =
         host.unmount();
         hostRef.current = null;
       };
-      // Mount once per frame URL / origin. Composition updates remount below.
+      // Mount once per frame URL / origin. Composition / meter sync below.
     }, [frameUrl, frameOrigin]);
 
     useEffect(() => {
       hostRef.current?.mount(composition);
     }, [composition]);
+
+    useEffect(() => {
+      hostRef.current?.setAudioMeterEnabled(audioMeterEnabled);
+    }, [audioMeterEnabled]);
 
     useEffect(() => {
       const host = hostRef.current;
@@ -165,12 +188,16 @@ export const IframedRemotionPreview: React.FC<IframedRemotionPreviewProps> =
         ref={containerRef}
         data-testid="iframed-remotion-preview"
         data-preview-host-mode="iframe"
+        data-preview-paint-surface="iframe"
+        // Overlays above this surface own pointer hit-testing; Remotion paint
+        // must not steal selection / scrub gestures from the parent layer.
         style={{
           position: "relative",
           width: "100%",
           height: "100%",
           overflow: "hidden",
           background: "#000",
+          pointerEvents: "none",
         }}
       />
     );

@@ -42,6 +42,8 @@ function factFromEvent(event: PreviewHostEvent): PreviewHostFact | null {
       return { type: "frame", frame: event.frame };
     case "transport":
       return { type: "transport", event: event.event };
+    case "audio-levels":
+      return { type: "audio-levels", left: event.left, right: event.right };
     case "error":
       return { type: "error", message: event.message };
     case "ready":
@@ -128,6 +130,13 @@ export function createIframePreviewHost(
     },
     pause() {
       bridge?.send({ protocol: PREVIEW_HOST_PROTOCOL, type: "pause" });
+    },
+    setAudioMeterEnabled(enabled: boolean) {
+      bridge?.send({
+        protocol: PREVIEW_HOST_PROTOCOL,
+        type: "set-audio-meter",
+        enabled,
+      });
     },
     getCurrentFrame() {
       return currentFrame;

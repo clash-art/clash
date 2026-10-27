@@ -60,6 +60,14 @@ interface InteractiveCanvasProps {
   onAudioLevelsChange?: (levels: StereoAudioLevels) => void;
   onTransformStart?: () => void;
   onTransformEnd?: () => void;
+  /**
+   * Optional Remotion paint surface that replaces the main-thread Player.
+   * Used when `VITE_PREVIEW_HOST_MODE=iframe`: the iframe hosts Player paint
+   * while this component keeps parent-side selection handles, scrub hit
+   * targets, pan/zoom, and minimap. No audio-master-clock — the hosted
+   * Player remains the time authority.
+   */
+  paintSurface?: React.ReactNode;
 }
 
 type CapturableMediaElement = HTMLMediaElement & {
@@ -127,6 +135,7 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   onAudioLevelsChange,
   onTransformStart,
   onTransformEnd,
+  paintSurface,
 }) => {
   const playerRef = useRef<PlayerRef>(null);
   // Parents pass fresh callbacks; read them through refs so the Player
@@ -400,7 +409,9 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   const lastEmittedFrameRef = useRef<number>(Math.round(currentFrame));
 
   useEffect(() => {
-    if (!playerRef.current) return;
+    // External paint (iframe PreviewHost) owns Player sync; do not touch a
+    // missing main-thread Player.
+    if (paintSurface || !playerRef.current) return;
 
     const playerFrame = playerRef.current.getCurrentFrame();
     const action = getPlaybackSyncAction({
@@ -434,7 +445,7 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
     }
 
     lastPlayingStateRef.current = playing;
-  }, [playing, currentFrame, durationInFrames]);
+  }, [playing, currentFrame, durationInFrames, paintSurface]);
 
   // 监听 Player 事件. Every transport fact comes from the Player itself.
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -449,6 +460,7 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   useEffect(() => clearStallTimer, [clearStallTimer]);
 
   useEffect(() => {
+    if (paintSurface) return;
     const player = playerRef.current;
     if (!player) return;
 
@@ -536,7 +548,7 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
       player.removeEventListener("resume", handleResume);
       player.removeEventListener("error", handleError);
     };
-  }, [clearStallTimer, durationInFrames]);
+  }, [clearStallTimer, durationInFrames, paintSurface]);
 
   const lastViewportCommandIdRef = useRef(0);
   useEffect(() => {
@@ -594,11 +606,16 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
 
     const connectVisibleMedia = () => {
       const container = containerRef.current;
-      if (!container) return;
+      // Iframe paint keeps media cross-origin; the frame posts audio-levels.
+      // Still sample editor-document timeline audio tags when present.
+      const fromContainer =
+        paintSurface || !container
+          ? []
+          : Array.from(
+              container.querySelectorAll<HTMLMediaElement>("audio, video"),
+            );
       const visibleMedia = new Set([
-        ...Array.from(
-          container.querySelectorAll<HTMLMediaElement>("audio, video"),
-        ),
+        ...fromContainer,
         ...Array.from(
           document.querySelectorAll<HTMLAudioElement>(
             "audio[data-timeline-audio]",
@@ -700,7 +717,12 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
       previousAudioLevelsRef.current = { left: 0, right: 0 };
       onAudioLevelsChange?.({ left: 0, right: 0 });
     };
-  }, [audioMeterEnabled, disconnectAudioAnalysisGraphs, onAudioLevelsChange]);
+  }, [
+    audioMeterEnabled,
+    disconnectAudioAnalysisGraphs,
+    onAudioLevelsChange,
+    paintSurface,
+  ]);
 
   useEffect(
     () => () => {
@@ -1427,8 +1449,12 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   const aspectRatio = compositionWidth / compositionHeight;
 
   return (
-    <div style={styles.container}>
-      {/* Remotion Player - 底层渲染 */}
+    <div
+      style={styles.container}
+      data-testid="interactive-canvas"
+      data-preview-paint={paintSurface ? "external" : "player"}
+    >
+      {/* Remotion Player or isolated paint surface - 底层渲染 */}
       <div
         ref={containerRef}
         style={{
@@ -1470,7 +1496,7 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
               transformOrigin: "center center",
             }}
           >
-            {playerElement}
+            {paintSurface ?? playerElement}
           </div>
         </div>
 

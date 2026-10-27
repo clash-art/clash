@@ -23,6 +23,14 @@ describe("preview host protocol", () => {
     expect(isPreviewHostCommand(command({ type: "seek", frame: 42 }))).toBe(true);
     expect(
       isPreviewHostCommand(
+        command({ type: "set-audio-meter", enabled: true }),
+      ),
+    ).toBe(true);
+    expect(
+      isPreviewHostCommand(command({ type: "set-audio-meter" })),
+    ).toBe(false);
+    expect(
+      isPreviewHostCommand(
         command({
           type: "mount",
           parentOrigin: "http://localhost:5173",
@@ -77,6 +85,14 @@ describe("preview host protocol", () => {
   it("accepts the facts a hosted producer reports", () => {
     expect(isPreviewHostEvent(command({ type: "ready" }))).toBe(true);
     expect(isPreviewHostEvent(command({ type: "frame", frame: 7 }))).toBe(true);
+    expect(
+      isPreviewHostEvent(
+        command({ type: "audio-levels", left: 0.2, right: 0.1 }),
+      ),
+    ).toBe(true);
+    expect(
+      isPreviewHostEvent(command({ type: "audio-levels", left: 0.2 })),
+    ).toBe(false);
     expect(
       isPreviewHostEvent(
         command({ type: "transport", event: { type: "waiting" } }),

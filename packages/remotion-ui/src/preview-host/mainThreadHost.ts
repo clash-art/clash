@@ -59,6 +59,9 @@ export function createMainThreadPreviewHost(
       if (!mounted) return;
       options.resolvePlayer()?.pause();
     },
+    setAudioMeterEnabled(_enabled: boolean) {
+      // Main-thread InteractiveCanvas samples media in the editor document.
+    },
     getCurrentFrame() {
       return currentFrame;
     },
