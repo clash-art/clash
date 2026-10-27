@@ -85,6 +85,12 @@ import {
 } from "./bundled-plugins.js";
 import { selectMarketplaceFeed } from "./marketplace-feed.js";
 import {
+  curationUrlFromEnv,
+  fetchMarketplaceCurationOverlay,
+  selectMarketplaceFeedWithOverlay,
+  applyRemoteOverlayToCatalog,
+} from "./marketplace-curation-remote.js";
+import {
   TRUSTED_BUNDLED_PLUGIN_MODULES,
   loadTrustedBundledPluginModule,
 } from "./bundled-plugin-modules.js";
@@ -1393,11 +1399,18 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       ...officialPluginsMarketplace.plugins,
     ];
   };
-  const resolveMarketplaceFeed = async () =>
-    selectMarketplaceFeed({
+  const resolveMarketplaceFeed = async () => {
+    const overlay = await fetchMarketplaceCurationOverlay(curationUrlFromEnv());
+    return selectMarketplaceFeedWithOverlay({
       plugins: await resolveMarketplacePlugins(),
       skills: marketplaceSkills,
+      overlay,
     });
+  };
+  const resolveMarketplaceSkills = async () => {
+    const overlay = await fetchMarketplaceCurationOverlay(curationUrlFromEnv());
+    return applyRemoteOverlayToCatalog(marketplaceSkills, overlay).items;
+  };
   const projectAssetFileReplica = new FileReplicaStore(
     join(options.dataDir, "projects"),
   );
@@ -2079,6 +2092,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         ? codexImagegenMarketplace.listInstalled()
         : [],
     marketplaceSkills,
+    resolveMarketplaceSkills,
     resolveMarketplaceFeed,
     listInstalledMarketplaceSkills: () => npxSkillsMarketplace.listInstalled(),
     installMarketplaceSkill: (skillId, installation) => npxSkillsMarketplace.install(skillId, installation),

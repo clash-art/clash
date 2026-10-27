@@ -14,6 +14,8 @@ type PluginItem = Item & { packageId: string };
 export interface LocalMarketplaceOptions {
   marketplaceActions?: Item[];
   marketplaceSkills?: Item[];
+  /** Lazily resolve skills after optional remote curation overlay. */
+  resolveMarketplaceSkills?: () => Promise<Item[]>;
   marketplacePlugins?: PluginItem[];
   marketplaceFeed?: Item[];
   /** Lazily resolve plugins whose availability is known only after Host listen. */
@@ -76,6 +78,10 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
     options.resolveMarketplacePlugins
       ? await options.resolveMarketplacePlugins()
       : options.marketplacePlugins ?? [];
+  const resolveSkills = async () =>
+    options.resolveMarketplaceSkills
+      ? await options.resolveMarketplaceSkills()
+      : options.marketplaceSkills ?? [];
   const resolveFeed = async () =>
     options.resolveMarketplaceFeed
       ? await options.resolveMarketplaceFeed()
@@ -87,21 +93,23 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
         item.type === "plugin" &&
         item.runtime === "local",
     );
-  const skill = (id: string) =>
-    options.marketplaceSkills?.find(
+  const skill = async (id: string) =>
+    (await resolveSkills()).find(
       (item) => item.id === id && item.type === "skill",
     );
   app.get("/api/marketplace/registry", async (c) => {
     const plugins = await resolvePlugins();
+    const skills = await resolveSkills();
     return c.json({
       version: 1,
       actions: (options.marketplaceActions ?? []).map(describe),
-      skills: (options.marketplaceSkills ?? []).map(describe),
+      skills: skills.map(describe),
       plugins: plugins.map(describe),
     });
   });
   app.get("/api/marketplace/feed", async (c) => {
     const plugins = await resolvePlugins();
+    const skills = await resolveSkills();
     const feed = await resolveFeed();
     return c.json({
       version: 1,
@@ -111,7 +119,7 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
           item.type === "plugin"
             ? plugins
             : item.type === "skill"
-              ? options.marketplaceSkills
+              ? skills
               : options.marketplaceActions;
         const admitted = catalog?.find(
           (candidate) =>
@@ -199,13 +207,13 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
     });
   app.get("/api/marketplace/skills/:skillId/install", async c => {
     const id = c.req.param("skillId");
-    if (!skill(id)) return c.json({ error: "Unknown skill plugin" }, 404);
+    if (!(await skill(id))) return c.json({ error: "Unknown skill plugin" }, 404);
     const record = (await options.listInstalledMarketplaceSkills?.() ?? []).find(item => item.skillId === id);
     return c.json(record?.installation ?? { scope: "global" });
   });
   app.post("/api/marketplace/skills/:skillId/install", async (c) => {
-    const id = c.req.param("skillId"),
-      item = skill(id);
+    const id = c.req.param("skillId");
+    const item = await skill(id);
     if (!item) return c.json({ error: "Unknown local marketplace skill" }, 404);
     if (!marketplaceInstallation(describe(item)))
       return c.json(
@@ -247,7 +255,7 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
   if (options.uninstallMarketplaceSkill)
     app.delete("/api/marketplace/skills/:skillId/install", async (c) => {
       const id = c.req.param("skillId");
-      if (!skill(id))
+      if (!(await skill(id)))
         return c.json({ error: "Unknown local marketplace skill" }, 404);
       await options.uninstallMarketplaceSkill!(id);
       await options.reconcileSkillProjects?.();

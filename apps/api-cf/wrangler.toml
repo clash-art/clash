@@ -26,6 +26,7 @@ compatibility_flags = ["nodejs_compat"]
 "@clash/shared-types/executable-plugin" = "../../packages/shared-types/src/executable-plugin.ts"
 "@clash/shared-types/actions/asset-edit" = "../../packages/shared-types/src/actions/asset-edit.ts"
 "@clash/shared-types/project-sync-content" = "../../packages/shared-types/src/project-sync-content.ts"
+"@clash/shared-types/marketplace-curation" = "../../packages/shared-types/src/marketplace-curation.ts"
 "@clash/shared-types/marketplace-installation" = "../../packages/shared-types/src/marketplace-installation.ts"
 "@clash/shared-types/sync-error-severity" = "../../packages/shared-types/src/sync-error-severity.ts"
 "@clash/shared-types/project-metadata" = "../../packages/shared-types/src/project-metadata.ts"
