@@ -48,6 +48,7 @@ import {
 } from "./timeline-media-merge";
 import { isTimelineTransitionRenderItem } from "./timeline-render-field-consumers";
 import { RemotionSourceComposition } from "./inline-remotion-source";
+import { HtmlSceneSurface } from "./html-scene";
 import { resolveProjectedMediaUrl } from "./projected-media-url";
 
 export {
@@ -430,6 +431,10 @@ const resolveTimelineItem = (
       item.type === "composition" &&
       item.runtime === "remotion" &&
       asset.type === "remotion-component";
+    const isLiveHtmlMotion =
+      item.type === "composition" &&
+      item.runtime === "html" &&
+      asset.type === "html-motion";
 
     // Get natural dimensions from asset node
     let naturalWidth = assetData.naturalWidth;
@@ -458,12 +463,18 @@ const resolveTimelineItem = (
         isLiveRemotionComponent && typeof assetData.content === "string"
           ? assetData.content
           : undefined,
+      htmlSource:
+        isLiveHtmlMotion && typeof assetData.content === "string"
+          ? assetData.content
+          : undefined,
       compositionId:
         isLiveRemotionComponent && typeof assetData.componentId === "string"
           ? assetData.componentId
-          : item.type === "composition"
-            ? item.compositionId
-            : undefined,
+          : isLiveHtmlMotion && typeof assetData.documentId === "string"
+            ? assetData.documentId
+            : item.type === "composition"
+              ? item.compositionId
+              : undefined,
       resolvedSrcUrl: resolveAssetUrl(
         assetData.src || ("src" in item ? item.src : undefined),
       ),
@@ -826,7 +837,7 @@ const ItemComponent: React.FC<{
   duckingWindows = [],
 }) => {
   const frame = useCurrentFrame();
-  const { width: compWidth, height: compHeight } = useVideoConfig();
+  const { width: compWidth, height: compHeight, fps } = useVideoConfig();
   const resolvedItem = item;
 
   // Soft-hide while a transition above is painting our content. We just zero
@@ -1084,6 +1095,61 @@ const ItemComponent: React.FC<{
               }}
             >
               Missing Remotion component source for Canvas node{" "}
+              {compositionItem.sourceNodeId ?? "(unset)"}.
+            </div>
+          )}
+        </AbsoluteFill>
+      );
+    }
+
+    if (compositionItem.runtime === "html") {
+      const htmlItem = compositionItem as typeof compositionItem & {
+        htmlSource?: string;
+      };
+      return (
+        <AbsoluteFill
+          ref={(el) => {
+            if (!itemsDomMapRef?.current || !el) return;
+            itemsDomMapRef.current.set(resolvedItem.id, el as HTMLElement);
+          }}
+          data-composition-item-id={resolvedItem.id}
+          data-composition-id={compositionItem.compositionId}
+          data-composition-kind={compositionItem.compositionKind}
+          data-composition-runtime="html"
+          data-html-source-node-id={compositionItem.sourceNodeId}
+          style={applyTransform({
+            overflow: "hidden",
+            opacity: isObscured ? 0 : 1,
+          })}
+        >
+          {htmlItem.htmlSource ? (
+            <HtmlSceneSurface
+              source={htmlItem.htmlSource}
+              frame={itemLocalFrame}
+              fps={fps}
+              durationInFrames={resolvedItem.durationInFrames}
+              sourceNodeId={compositionItem.sourceNodeId}
+              compositionItemId={resolvedItem.id}
+              title={`HTML MG ${compositionItem.compositionId ?? resolvedItem.id}`}
+            />
+          ) : (
+            <div
+              role="alert"
+              data-html-scene-error="missing-source"
+              style={{
+                boxSizing: "border-box",
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 24,
+                color: "#fecaca",
+                background: "#450a0a",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              }}
+            >
+              Missing HTML Motion source for Canvas node{" "}
               {compositionItem.sourceNodeId ?? "(unset)"}.
             </div>
           )}

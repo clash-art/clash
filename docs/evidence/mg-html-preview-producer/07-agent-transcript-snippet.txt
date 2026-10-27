@@ -1,0 +1,27 @@
+# Clash Agent (dsh-acp + DeepSeek Flash) — HTML PreviewFrameProducer (#447)
+
+Coding for this PR: Grok Bot executor (no Claude / mcode / cloud).
+Clash Agent Evidence only: `dsh --profile headless` (default model deepseek-flash).
+
+## Prompt
+
+You are Clash Agent on DeepSeek Flash (dsh-acp), not a coding agent. In 5 short
+English bullets confirm: (1) HTML MG Timeline items paint via PreviewFrameProducer
+kind html-scene (sandboxed iframe allow-scripts without same-origin, blob URL,
+capacity fail-closed) speaking clash.preview-host.v1; (2) HTML-only Timelines do
+not mount Remotion Player; mixed Timelines keep Remotion Player as clock for
+Remotion items while HtmlSceneSurface paints HTML layers without Remotion JSX
+compile; (3) no audio-master-clock; (4) export and Agent/Library contracts are
+out of scope (#448); (5) InteractiveCanvas overlay parity is out of scope (#449).
+No tools. No repo exploration.
+
+## Flash reply (2026-10-27 America/Detroit)
+
+- HTML MG Timeline items paint through `PreviewFrameProducer kind html-scene`: a sandboxed iframe (`allow-scripts`, deliberately **no** `allow-same-origin`), blob URL with capacity fail-closed, speaking `clash.preview-host.v1`.
+- HTML-only Timelines never mount the Remotion Player; mixed Timelines keep the Remotion Player as the clock for Remotion items while `HtmlSceneSurface` paints HTML layers without any Remotion JSX compile.
+- No audio-master-clock — audio is not the timeline's time authority.
+- Export and Agent/Library contracts are out of scope (#448).
+- InteractiveCanvas overlay parity is out of scope (#449).
+
+Harness screenshots: `00-agents-dsh-enabled.png`, `01-harness-menu-deepseek-flash.png`
+(same Flash harness used in Clash Agent UI).

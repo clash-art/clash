@@ -19,3 +19,20 @@ export {
 } from "./timeline-render-field-consumers";
 export { EffectSdkDemo } from "./effect-demo/EffectSdkDemo";
 export { TimelineLibraryDemo } from "./library-demo/TimelineLibraryDemo";
+
+export {
+  HTML_SCENE_SANDBOX,
+  HTML_SCENE_DOCUMENT_PROTOCOL,
+  HTML_SCENE_DEFAULT_CSP,
+  measureHtmlDocumentBytes,
+  validateHtmlDocumentCapacity,
+  htmlSceneBootstrapScript,
+  wrapHtmlDocumentForPreview,
+  createHtmlSceneBlobUrl,
+  isHtmlSceneDocCommand,
+  HtmlSceneSurface,
+  type HtmlDocumentCapacityResult,
+  type HtmlSceneBlobHandle,
+  type HtmlSceneDocCommand,
+  type HtmlSceneSurfaceProps,
+} from "./html-scene";
