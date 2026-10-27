@@ -541,6 +541,72 @@ NULLing the other 30-day usage metadata and deleting the 13-month ledger and
 audit, is the metadata/ledger retention job
 ([gateway-usage.md](gateway-usage.md#retention)).
 
+## Node admin listener
+
+The self-hosted Node gateway (`apps/api-node`, #371) serves the admin API on
+a **separate listener** so it can sit on a private network (N14). The public
+data-plane listener answers 404 for every `/api/v1/admin` path, however it is
+spelled (case, percent-encoding, repeated slashes), and the admin listener
+serves nothing but the admin API.
+
+| Variable                | Default     | Effect                                                     |
+| ----------------------- | ----------- | ---------------------------------------------------------- |
+| `GATEWAY_ADMIN_PORT`    | unset       | no admin listener; must differ from `PORT`                 |
+| `GATEWAY_ADMIN_HOST`    | `127.0.0.1` | bind address of the admin listener                         |
+| `GATEWAY_ADMIN_ORIGINS` | none        | comma-separated browser origins allowed to send mutations |
+
+**Identity.** An admin is an admin token (`gwa_<24 hex>.<64 hex>`, table
+`gateway_admin_token`, Postgres 0021), never a product user: a Better Auth
+cookie, `clsh_`, `sk_gw_` or `x-api-key` is `GATEWAY_ADMIN_SESSION_REQUIRED`
+(403), no credential at all `GATEWAY_AUTH_REQUIRED` (401), a revoked or
+expired token `GATEWAY_TOKEN_REVOKED` / `GATEWAY_TOKEN_EXPIRED`. Only the
+SHA-256 is stored; the plaintext is shown once, when it is issued. The token
+travels in `Authorization` only, so a browser never attaches it on its own.
+The first `platform_admin` token comes from a shell with database access:
+
+```bash
+DATABASE_URL=… pnpm --filter @clash/api-node admin-token --role platform_admin [--label ops]
+```
+
+Further tokens are issued and revoked under `/admin-tokens`; the last live
+`platform_admin` token cannot be revoked (`GATEWAY_LAST_ADMIN_ACCOUNT`).
+
+**Role** (`apps/api-node/src/gateway-admin-authz.ts`, the one table; the
+permission names are the hosted ones above, plus `keys.revoke`):
+
+- **Single** `platform_admin` only (#371 trimmed AC). No `tenant_admin` /
+  `viewer` / support matrix. Team owner/member stay in the product. The
+  platform admin holds every permission on every tenant.
+
+**CSRF.** A mutation carrying `Origin` must come from
+`GATEWAY_ADMIN_ORIGINS`; without `Origin`, a `Sec-Fetch-Site` other than
+`same-origin` or `none` is refused too (`GATEWAY_ADMIN_ORIGIN_REJECTED`,
+403). A CLI (no `Origin`) may mutate. No CORS header is ever sent.
+
+**Endpoints**, under `/api/v1/admin/gateway`: `me`; `tenants` and
+`tenants/:t/members` (teams and users); `tenants/:t/budgets` and `PUT
+tenants/:t/budgets/(user|key)/:id` (allocation under the wallet, with the
+hosted below-usage override); `tenants/:t/keys` and `…/keys/:id/revoke`;
+`usage` and `audit` (`?tenantId=` narrows; without it the `*_all`
+permission is needed); `catalog…` (models: clone, edit a draft, publish,
+DeepSeek Flash only, hosted response shapes); `prices…`, `packages…`,
+`topup-packs…`, `billing/rollover`, `tenants/:t/wallet/*` (the shared
+billing routes); `upstreams` and `PATCH upstreams/:id` (routes: enable,
+priority, weight, max rps; credential metadata only); `encryption…` on a
+node holding the key ring; `abuse` and `abuse/suspensions…`. Node has no
+abuse signal store, so a suspension is the `suspended` status of the
+subject's budget (a tenant wallet or a key cap), which admission refuses;
+its id is that budget's id, and a key without its own budget is stopped by
+revoking it. Every mutation writes its `gateway_admin_audit` row in the same
+transaction. No response or audit row carries a token hash, an upstream
+envelope or a key hash.
+
+**Prompts.** Self-host keeps no request or response body (decisions 8 and
+10): the Node schema has no body column and `retention` is unavailable, so
+`POST prompts/:requestId/access` answers `GATEWAY_PROMPT_ACCESS_DISABLED`
+even for `platform_admin`, and `/me` reports `promptAccess: false`. The
+hosted staff policy above does not apply.
+
 ## UI
 
 `apps/web/app/routes/admin._index.tsx` and `admin.<page>.tsx` are
@@ -648,6 +714,14 @@ or the coded error (expired, not retained).
   mutation, a `support_agent` suspending while every key, credential and
   prompt route refuses it); `apps/api-cf/src/gateway/abuse-migration.test.ts`
   (0046 constraints and the `admin_accounts` rebuild).
+- `apps/api-node/src/gateway-admin.test.ts` (#371, PGlite and real
+  sockets): the public listener's 404 for every admin path spelling, the
+  admin listener serving nothing else, admin tokens only (product
+  credentials, revoked and expired tokens refused), single
+  `platform_admin` role (no tenant_admin/viewer), the CSRF origin check, no
+  secret in any response or audit row, each endpoint group with its audit
+  row (and rollback when the audit write fails), and the self-host prompt
+  refusal.
 - `apps/web/app/routes/admin.test.ts`: loader guard (redirect to
   `/admin/login` without an admin session or with only a product session,
   403 without calling the page API, unavailable deployment, tenant scoping)

@@ -182,7 +182,8 @@ describe("api-node gateway billing routes", () => {
     expect(
       (
         await admin.request("/api/v1/admin/gateway/packages", {
-          headers: { "x-test-admin": "viewer" },
+          // Only platform_admin holds permissions (#371); any other role is refused.
+          headers: { "x-test-admin": "member" },
         })
       ).status,
     ).toBe(403);

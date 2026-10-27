@@ -536,7 +536,9 @@ Postgres ports on the **api** role (`GATEWAY_ROLE`, default `api`; the full
 role matrix is #373). Surfaces: `/v1/*` and `/api/v1/gateway/*`
 (`/api/v1/gateway/chat/completions` is `/v1/chat/completions`), plus
 `GET /v1/models` / `GET /api/v1/gateway/models` (published catalog after the
-DeepSeek Flash-only policy, filtered by the key's allowlist).
+DeepSeek Flash-only policy, filtered by the key's allowlist). The admin API
+is never on this listener (404 for `/api/v1/admin/*`); it has its own
+(`GATEWAY_ADMIN_PORT`, [gateway-admin.md](gateway-admin.md#node-admin-listener), #371).
 
 - Identity: `sk_gw_` virtual key (`gateway_virtual_key`, migration 0018;
   tenant, user, allowlist and credential scope come from the row), a `clsh_`

@@ -23,6 +23,7 @@ it("applies the postgres gateway migration on PGlite (0016)", async () => {
     );
     expect(tables.rows.map((row) => row.relname)).toEqual([
       "gateway_admin_audit",
+      "gateway_admin_token",
       "gateway_budget",
       "gateway_config",
       "gateway_credential_priority",

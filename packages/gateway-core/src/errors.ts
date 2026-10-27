@@ -420,6 +420,13 @@ const definitions = {
     anthropic: "permission_error",
     message: "The admin console accepts an admin account session only; product sessions and tokens are refused.",
   },
+  // The admin listener's CSRF check (#371): a browser mutation from another origin.
+  GATEWAY_ADMIN_ORIGIN_REJECTED: {
+    status: 403,
+    openai: "permission_error",
+    anthropic: "permission_error",
+    message: "Admin changes are accepted only from the admin console's own origin.",
+  },
   GATEWAY_ADMIN_ACCOUNT_EXISTS: {
     status: 409,
     openai: "invalid_request_error",
