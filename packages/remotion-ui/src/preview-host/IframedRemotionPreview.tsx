@@ -139,7 +139,6 @@ export const IframedRemotionPreview: React.FC<IframedRemotionPreviewProps> =
         hostRef.current = null;
       };
       // Mount once per frame URL / origin. Composition updates remount below.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [frameUrl, frameOrigin]);
 
     useEffect(() => {
