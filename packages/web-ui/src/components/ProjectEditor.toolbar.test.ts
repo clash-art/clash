@@ -8,6 +8,10 @@ const projectEditorSource = readFileSync(
   resolve(root, "packages/web-ui/src/components/ProjectEditor.tsx"),
   "utf8",
 );
+const canvasCreateMenuSource = readFileSync(
+  resolve(root, "packages/web-ui/src/components/CanvasCreateMenuItems.tsx"),
+  "utf8",
+);
 const projectWorkspaceNavigatorSource = readFileSync(
   resolve(root, "packages/web-ui/src/components/ProjectWorkspaceNavigator.tsx"),
   "utf8",
@@ -55,12 +59,22 @@ describe("ProjectEditor toolbar surface", () => {
   });
 
   it("creates Remotion components as their own first-class Canvas tool", () => {
-    expect(projectEditorSource).toContain(
+    expect(canvasCreateMenuSource).toContain(
       '{ id: "remotion-component", label: "Remotion Component", icon: Code }',
     );
     expect(projectEditorSource).toMatch(
       /type === ["']remotion-component["'][\s\S]*componentId:[\s\S]*content:[\s\S]*durationInFrames:/,
     );
+  });
+
+  it("creates HTML Motion documents as their own first-class Canvas tool", () => {
+    expect(canvasCreateMenuSource).toContain(
+      '{ id: "html-motion", label: "HTML Motion", icon: Browser }',
+    );
+    expect(projectEditorSource).toMatch(
+      /type === ["']html-motion["'][\s\S]*documentId:[\s\S]*content:[\s\S]*durationInFrames:/,
+    );
+    expect(projectEditorSource).toContain('"html-motion": HtmlMotionNode');
   });
 
   it("uses canvas-specific chrome instead of the shared floating surface", () => {

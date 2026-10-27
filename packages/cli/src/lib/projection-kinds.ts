@@ -101,6 +101,20 @@ const KINDS: readonly ProjectionKind[] = [
     },
     dsl: { source: "format", format: "remotion-tsx" },
   },
+  {
+    kind: "html-motion",
+    description: "Canvas html-motion HTML document",
+    directory: ["projections", "html-motion"],
+    suffix: ".html",
+    idKind: "canvas-node",
+    nodeType: "html-motion",
+    source: {
+      from: "canvas-node",
+      nodeType: "html-motion",
+      field: "content",
+    },
+    dsl: { source: "format", format: "html" },
+  },
 ];
 
 export function listProjectionKinds(): readonly ProjectionKind[] {

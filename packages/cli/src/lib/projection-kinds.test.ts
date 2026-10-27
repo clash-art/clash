@@ -147,6 +147,13 @@ test("a projection declares where its content comes from, not just where the fil
     nodeType: "remotion-component",
     field: "content",
   });
+  const htmlMotion = getProjectionKind("html-motion");
+  assert.deepEqual(htmlMotion.source, {
+    from: "canvas-node",
+    nodeType: "html-motion",
+    field: "content",
+  });
+  assert.equal(htmlMotion.suffix, ".html");
   assert.deepEqual(getProjectionKind("stage").source, {
     from: "host-entity",
     entity: "director-stage",

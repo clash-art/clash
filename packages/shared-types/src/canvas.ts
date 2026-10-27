@@ -85,9 +85,26 @@ export const RF_NODE_TYPE = {
   Model: 'model',
   /** Agent-authored Remotion TSX component with live Canvas/Timeline preview */
   RemotionComponent: 'remotion-component',
+  /**
+   * Agent/human-authored HTML Motion Graphics document with live Canvas/Timeline
+   * preview. Peer of remotion-component: Timeline stores sourceNodeId only;
+   * preview/export resolve data.content (HTML document) from this node.
+   */
+  HtmlMotion: 'html-motion',
   /** Generation node — renders as ActionBadge */
   ActionBadge: 'action-badge',
 } as const;
+
+/**
+ * Product capacity bounds for HTML MG interactive documents (inspired by Hilo
+ * interactive hosting — Clash ports the bounds, not the Electron protocol or clock).
+ * Preview hosts must fail closed with a coded capacity error rather than silently
+ * truncating or evicting the last-good visible preview.
+ */
+export const HTML_MOTION_DOCUMENT_MAX_BYTES = 2_000_000;
+export const HTML_MOTION_DOCUMENTS_PER_OWNER_MAX = 16;
+export const HTML_MOTION_DOCUMENTS_AGGREGATE_MAX = 128;
+export const HTML_MOTION_DOCUMENTS_AGGREGATE_BYTES_MAX = 16_000_000;
 
 /** Subtypes for action-badge nodes, stored in node.data.actionType */
 export const ACTION_TYPE = {
@@ -126,6 +143,7 @@ export const AGENT_NODE_TYPE_MAP = {
   audio:     { rfType: RF_NODE_TYPE.Audio },
   model:     { rfType: RF_NODE_TYPE.Model },
   remotion:  { rfType: RF_NODE_TYPE.RemotionComponent },
+  html_motion: { rfType: RF_NODE_TYPE.HtmlMotion },
   image_gen: { rfType: RF_NODE_TYPE.ActionBadge, actionType: ACTION_TYPE.ImageGen },
   video_gen: { rfType: RF_NODE_TYPE.ActionBadge, actionType: ACTION_TYPE.VideoGen },
   audio_gen: { rfType: RF_NODE_TYPE.ActionBadge, actionType: ACTION_TYPE.AudioGen },
@@ -149,16 +167,22 @@ export type NodeStatus = z.infer<typeof NodeStatusSchema>;
 export let NodeDataSchema = lazySchema(() => (
 z.object({
   label: z.string().optional(),
+  /** Editable body: markdown for text, TSX for remotion-component, HTML document for html-motion. */
   content: z.string().optional(),
   /** Stable component export id for a remotion-component Canvas node. */
   componentId: z.string().min(1).optional(),
-  /** Product-scaffold preview/render width for a remotion-component node. */
+  /**
+   * Stable document id for an html-motion Canvas node (compositionId on the
+   * Timeline live reference). Defaults to the Canvas node id when omitted.
+   */
+  documentId: z.string().min(1).optional(),
+  /** Product-scaffold preview/render width for remotion-component / html-motion. */
   compositionWidth: z.number().int().positive().optional(),
-  /** Product-scaffold preview/render height for a remotion-component node. */
+  /** Product-scaffold preview/render height for remotion-component / html-motion. */
   compositionHeight: z.number().int().positive().optional(),
-  /** Product-scaffold frame rate for a remotion-component node. */
+  /** Product-scaffold frame rate for remotion-component / html-motion. */
   fps: z.number().positive().optional(),
-  /** Product-scaffold duration for a remotion-component node. */
+  /** Product-scaffold duration for remotion-component / html-motion. */
   durationInFrames: z.number().int().positive().optional(),
   /** Direct text entered in a music action's dedicated Lyrics input. */
   lyrics: z.string().optional(),

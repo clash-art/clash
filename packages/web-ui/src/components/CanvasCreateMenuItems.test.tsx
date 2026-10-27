@@ -27,6 +27,7 @@ it.each([
   ["Editor", "video-editor"],
   ["Director Stage", "director-stage"],
   ["Remotion Component", "remotion-component"],
+  ["HTML Motion", "html-motion"],
   ["Group", "group"],
   ["Text", "text"],
 ])("dispatches the existing %s workflow and closes the menu", (label, type) => {

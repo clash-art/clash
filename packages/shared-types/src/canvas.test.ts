@@ -11,6 +11,10 @@ import {
   validateGenerationInput,
   ACTION_TYPE,
   AGENT_NODE_TYPE_MAP,
+  HTML_MOTION_DOCUMENT_MAX_BYTES,
+  HTML_MOTION_DOCUMENTS_PER_OWNER_MAX,
+  HTML_MOTION_DOCUMENTS_AGGREGATE_MAX,
+  HTML_MOTION_DOCUMENTS_AGGREGATE_BYTES_MAX,
   RF_NODE_TYPE,
   NodeType,
   GENERATION_NODE_TYPES,
@@ -146,6 +150,36 @@ describe("Remotion component canvas node contract", () => {
     expect(parsed.compositionHeight).toBe(1280);
     expect(parsed.fps).toBe(30);
     expect(parsed.durationInFrames).toBe(120);
+  });
+
+  it("exposes a distinct html-motion Canvas node type for live HTML MG sources", () => {
+    expect(RF_NODE_TYPE.HtmlMotion).toBe("html-motion");
+    expect(AGENT_NODE_TYPE_MAP.html_motion).toEqual({
+      rfType: "html-motion",
+    });
+    expect(HTML_MOTION_DOCUMENT_MAX_BYTES).toBe(2_000_000);
+    expect(HTML_MOTION_DOCUMENTS_PER_OWNER_MAX).toBe(16);
+    expect(HTML_MOTION_DOCUMENTS_AGGREGATE_MAX).toBe(128);
+    expect(HTML_MOTION_DOCUMENTS_AGGREGATE_BYTES_MAX).toBe(16_000_000);
+  });
+
+  it("stores the editable HTML document and preview configuration on html-motion nodes", () => {
+    const parsed = NodeDataSchema.parse({
+      label: "Lower third",
+      content: "<!doctype html><html><body><h1>Lower third</h1></body></html>",
+      documentId: "lower-third",
+      compositionWidth: 1920,
+      compositionHeight: 1080,
+      fps: 30,
+      durationInFrames: 90,
+    });
+
+    expect(parsed.documentId).toBe("lower-third");
+    expect(parsed.content).toContain("<h1>Lower third</h1>");
+    expect(parsed.compositionWidth).toBe(1920);
+    expect(parsed.compositionHeight).toBe(1080);
+    expect(parsed.fps).toBe(30);
+    expect(parsed.durationInFrames).toBe(90);
   });
 });
 
