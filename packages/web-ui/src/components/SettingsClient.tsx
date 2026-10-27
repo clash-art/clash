@@ -106,7 +106,6 @@ import {
 } from "@clash/web-ui/lib/provider-authorization";
 import {
   getRuntimeCapabilities,
-  isDesktopRuntime,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
 import {
@@ -6160,7 +6159,9 @@ function ModelRoutingSection({
               )}
 
               <OfficialProviderRow />
-              {isDesktopRuntime() && <OfficialGatewayProviderRow />}
+              {getRuntimeCapabilities().assets.storage === "local" && (
+                <OfficialGatewayProviderRow />
+              )}
 
               {configuredProviderRows.length > 0 && (
                 <SettingsCollection
@@ -9391,7 +9392,7 @@ function AgentsSection() {
           );
         }}
         onUseOfficial={
-          isDesktopRuntime()
+          getRuntimeCapabilities().assets.storage === "local"
             ? (method) => {
                 if (!authDialogHarnessId) return;
                 setAuthDialogError(null);
@@ -9474,7 +9475,7 @@ function HarnessAuthDialog({
   onBack: () => void;
   onFieldChange: (methodId: string, name: string, value: string) => void;
   onSubmit: (method: LocalAuthMethod, values: Record<string, string>) => void;
-  /** Desktop Host only: the Host mints a Clash gateway key and fills this method. */
+  /** Local Host only: the Host mints a Clash gateway key and fills this method. */
   onUseOfficial?: (method: LocalAuthMethod) => void;
 }) {
   const methods = harness?.auth?.methods ?? [];
