@@ -1,15 +1,24 @@
 ---
 name: clash-mg-character
-description: Create expressive motion-graphics characters as editable Remotion TSX, connect them to a Clash Timeline through a live Canvas source, and judge their final rendered performance. Use this skill whenever a brief calls for an animated mascot, geometric character, presenter, reaction figure, or character-led motion graphic.
+description: Create expressive motion-graphics characters as editable Remotion TSX **or** HTML Motion documents, connect them to a Clash Timeline through a live Canvas source, and judge their final rendered performance. Use this skill whenever a brief calls for an animated mascot, geometric character, presenter, reaction figure, or character-led motion graphic.
 ---
 
 # Clash MG Character
 
 Design the character and its performance; let the base `clash` skill and each
-live tool description provide the product syntax. The executable character has
-one representation: a default-exported, single-file Remotion TSX component in
-its own Canvas `remotion-component` node. The CLI spelling for creation is
-`--type remotion`.
+live tool description provide the product syntax. Clash Motion Graphics is a
+**dual-runtime** product: Remotion TSX and HTML Motion are both valid.
+
+- **Remotion MG:** a default-exported, single-file Remotion TSX component in a
+  Canvas `remotion-component` node. CLI: `--type remotion`.
+- **HTML MG:** an HTML document in a Canvas `html-motion` node. CLI:
+  `--type html_motion`. Timeline items use `runtime: html` with the same live
+  `sourceNodeId` identity (never a deleted `MgCompositionSpec` / `render-mg`
+  command path).
+
+Prefer Remotion when the brief needs Remotion springs, sequences, or TSX
+composition; prefer HTML when the brief is DOM/CSS/SVG motion that should stay
+editable as HTML.
 
 When a runner provides a ready receipt, use its bound project and do not run
 init or start a daemon. Outside that environment, let the base `clash` skill
@@ -133,6 +142,27 @@ tracks or items. Its essential live-source shape is:
 
 `sourcePath` is a safe project-local authoring path; `sourceNodeId` is the live
 product identity. The Timeline must not contain a duplicate of the TSX.
+
+For HTML Motion, create the Canvas node with `--type html_motion`, then add a
+composition item whose essential live-source shape is:
+
+```yaml
+- id: <item-id>
+  type: composition
+  from: <start-frame>
+  durationInFrames: <duration>
+  compositionKind: motion-graphics
+  runtime: html
+  compositionId: <document-id>
+  sourcePath: html-motion/<html-motion-node-id>.html
+  sourceNodeId: <html-motion-node-id>
+```
+
+Preview and export both resolve the Canvas node's latest HTML when they start.
+Do not invent `render-mg`, `export-mg`, `verify-mg-preview`, or
+`MgCompositionSpec` — those deleted commands stay banned. Use
+`clash timeline render --timeline` (or `clash_timeline_render`) for delivery
+evidence on either runtime.
 
 Do not copy output pixel dimensions into an item's `properties.width` or
 `properties.height`. Those two fields are scale multipliers, and both default

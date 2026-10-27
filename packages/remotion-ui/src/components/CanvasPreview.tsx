@@ -25,6 +25,9 @@ import {
   previewHostIsolationWarning,
   resolvePreviewHostConfig,
 } from "../preview-host";
+import {
+  publishTimelineExportNodes,
+} from "../preview-host/exportNodesRegistry";
 import { TimelineIconButton, TimelineRangeInput } from "./ui/controls";
 import { colors, typography } from "./timeline/styles";
 import { formatTimecode } from "./timeline/utils/timeFormatter";
@@ -304,6 +307,13 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
       }
       return map;
     }, [assets, runtimeNodes]);
+
+    useEffect(() => {
+      publishTimelineExportNodes(allNodesMap);
+      return () => {
+        publishTimelineExportNodes(undefined);
+      };
+    }, [allNodesMap]);
 
     const aspectRatio = useMemo(() => {
       const divisor =
