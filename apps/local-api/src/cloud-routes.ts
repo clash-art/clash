@@ -4,6 +4,8 @@ import { createCloudLogin } from "./cloud-login.js";
 export function createCloudRoutes(options: {
   dataDir: string;
   login: ReturnType<typeof createCloudLogin>;
+  /** Runs while the credential still exists (revokes its gateway tokens). */
+  beforeLogout?: (serviceUrl: string) => Promise<void>;
 }) {
   const app = new Hono();
   const accounts = createCloudAccounts(options.dataDir);
@@ -47,14 +49,16 @@ export function createCloudRoutes(options: {
     const body = await c.req.json().catch(() => null);
     if (typeof body?.serviceUrl !== "string")
       return c.json({ error: "Service address is required" }, 400);
+    let url: string;
     try {
-      const url = cloudOrigin(body.serviceUrl);
-      options.login.cancel();
-      await accounts.logout(url);
-      return c.json(await accounts.status());
+      url = cloudOrigin(body.serviceUrl);
     } catch {
       return c.json({ error: "Invalid service address" }, 400);
     }
+    options.login.cancel();
+    await options.beforeLogout?.(url).catch(() => undefined);
+    await accounts.logout(url);
+    return c.json(await accounts.status());
   });
   return app;
 }

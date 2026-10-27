@@ -70,8 +70,18 @@ import {
 } from "@openma/common/acp-harnesses/installer";
 import { createSqliteLocalConfigStore } from "./local-config-store.js";
 import { createClashUserConfigStore } from "./user-config.js";
+import {
+  OFFICIAL_GATEWAY_CLIENT_CODES,
+  officialGatewayCodeIn,
+  officialGatewayErrorText,
+  type OfficialGatewayClientCode,
+} from "@clash/shared-types";
+import type { OfficialGatewaySessionHook } from "./official-gateway.js";
 
 export const DESKTOP_LOCAL_RUNTIME_ID = "desktop-local";
+
+/** At most one gateway re-mint per session in this window. */
+const OFFICIAL_GATEWAY_REMINT_COOLDOWN_MS = 30_000;
 
 /** Mirrors the official ACP registry's own cache TTL (`@openma/common` registry-fetch). */
 const ACP_REGISTRY_TTL_MS = 60 * 60 * 1000;
@@ -315,6 +325,8 @@ export interface LocalAcpAdapterOptions {
   osTag?: () => string;
   nowSeconds?: () => number;
   nowMilliseconds?: () => number;
+  /** Clash official provider handoff (#357); see `official-gateway.ts`. */
+  officialGateway?: OfficialGatewaySessionHook;
 }
 
 interface BrowserMessage {
@@ -1315,12 +1327,41 @@ function redactAuthenticationError(message: string): string {
     .slice(0, 4_000);
 }
 
+/**
+ * The official-gateway code of a session error: named in the agent's text
+ * (the gateway's `error.code`), or a bare 401 from a harness running on an
+ * official handoff, which can only be its gateway token.
+ */
+function sessionGatewayCode(
+  message: string,
+  officialHandoff: boolean,
+): OfficialGatewayClientCode | null {
+  const named = officialGatewayCodeIn(message);
+  if (named) return named;
+  return officialHandoff && /\b401\b|\bunauthori[sz]ed\b/i.test(message)
+    ? "GATEWAY_TOKEN_EXPIRED"
+    : null;
+}
+
 function normalizeSessionAuthenticationError(
   msg: unknown,
   agentId: string,
+  officialHandoff = false,
 ): unknown {
   if (!isSessionErrorMessage(msg)) return msg;
   const raw = msg as Record<string, unknown>;
+  const gatewayCode =
+    typeof raw.gateway_code === "string"
+      ? null
+      : sessionGatewayCode(msg.message, officialHandoff);
+  if (gatewayCode)
+    return {
+      ...raw,
+      code: gatewayCode,
+      gateway_code: gatewayCode,
+      agent_id: agentId,
+      message: officialGatewayErrorText(gatewayCode),
+    };
   const message = redactAuthenticationError(msg.message);
   const authRequired =
     raw.code === "auth_required" || ACP_AUTH_FAILURE_PATTERN.test(msg.message);
@@ -1724,6 +1765,8 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   private readonly nowSeconds: () => number;
   private readonly nowMilliseconds: () => number;
   private sessionEventStore: LocalAcpSessionEventStore | null = null;
+  private officialGateway: OfficialGatewaySessionHook | null = null;
+  private readonly gatewayRemintAt = new WeakMap<LocalAcpSession, number>();
   private readonly sessions = new Map<string, LocalAcpSession>();
   private detectedAgentsCache: DetectedAcpAgent[] | null = null;
   private detectedAgentsCacheProbesAuth = false;
@@ -1756,6 +1799,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
 
   constructor(options: LocalAcpAdapterOptions = {}) {
     this.spawnEnv = options.spawnEnv ?? {};
+    this.officialGateway = options.officialGateway ?? null;
     this.harnessDownloadDir = options.harnessDownloadDir ?? null;
     this.registryCachePath = options.registryCachePath ?? null;
     this.agentCatalog = options.agentCatalog ?? [];
@@ -1905,6 +1949,42 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
 
   setSessionEventStore(store: LocalAcpSessionEventStore): void {
     this.sessionEventStore = store;
+  }
+
+  setOfficialGateway(hook: OfficialGatewaySessionHook): void {
+    this.officialGateway = hook;
+  }
+
+  /** A gateway 401 in a session: re-mint, hand off again, then restart the agent. */
+  private recoverOfficialGatewayAuth(
+    entry: LocalAcpSession,
+    agentId: string,
+  ): void {
+    const hook = this.officialGateway;
+    if (!hook?.hasHandoff(agentId)) return;
+    const last = this.gatewayRemintAt.get(entry);
+    const at = this.nowMilliseconds();
+    if (last !== undefined && at - last < OFFICIAL_GATEWAY_REMINT_COOLDOWN_MS)
+      return;
+    this.gatewayRemintAt.set(entry, at);
+    void hook.onUnauthorized(agentId).then(async (code) => {
+      if (this.sessions.get(entry.id) !== entry) return;
+      if (code) {
+        this.sendToSession(entry, {
+          type: "session.error",
+          session_id: entry.id,
+          code,
+          gateway_code: code,
+          agent_id: agentId,
+          message: officialGatewayErrorText(code),
+        });
+        return;
+      }
+      // The running agent still holds the old token; a restart reads the new one.
+      await this.restartSession(entry.id, { mode: "after-turn" }).catch(
+        () => undefined,
+      );
+    });
   }
 
   private acpDetectOptions(extra: {
@@ -2894,6 +2974,10 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     let agent = params.agentId
       ? agents.find((candidate) => candidate.id === params.agentId)
       : chooseDefaultAgent(agents, recentAgentId);
+    // Renew, re-mint or hand off the Clash official token before the agent starts.
+    let gatewayPreparation:
+      | Awaited<ReturnType<OfficialGatewaySessionHook["prepareSession"]>>
+      | undefined;
     if (!agent && params.agentId) {
       const detectedAgents = await this.getDetectedAgents({
         probeAuth: true,
@@ -2911,26 +2995,64 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         enabledByConfig &&
         authBlocksAgent(requestedAgent.auth)
       ) {
+        // The agent has no credential of its own: the official provider may supply one.
+        gatewayPreparation = this.officialGateway
+          ? await this.officialGateway.prepareSession(requestedAgent)
+          : {};
+        if (gatewayPreparation.handedOff)
+          agent = (
+            await this.detectEnabledAgents({
+              probeAuth: true,
+              probeScope: "enabled",
+              refresh: true,
+            })
+          ).find((candidate) => candidate.id === params.agentId);
+        if (!agent)
+          throw new Error(
+            gatewayPreparation.gatewayCode
+              ? officialGatewayErrorText(gatewayPreparation.gatewayCode)
+              : agentAuthRequiredMessage(requestedAgent, requestedAgent.auth),
+          );
+      } else {
         throw new Error(
-          agentAuthRequiredMessage(requestedAgent, requestedAgent.auth),
+          `Local agent harness is not enabled or unavailable: ${params.agentId}`,
         );
       }
-      throw new Error(
-        `Local agent harness is not enabled or unavailable: ${params.agentId}`,
-      );
     }
     if (!agent) throw new Error("No enabled local agent harness found");
     const agentIdForConfigUpdates = agent.id;
     const harnessVersion = await this.installedHarnessVersion(agent.id);
     const requestedFork = Boolean(params.forkFromAcpSessionId || params.forkPoint);
+    gatewayPreparation ??= this.officialGateway
+      ? await this.officialGateway.prepareSession(agent)
+      : {};
+    if (this.shuttingDown)
+      throw new Error("Local ACP runtime is shutting down");
 
     let entry: LocalAcpSession;
     const send: SessionSender = (msg) => {
       if (isTransportDiagnosticManagerMessage(msg)) return;
+      const officialHandoff =
+        this.officialGateway?.hasHandoff(agentIdForConfigUpdates) ?? false;
       const normalizedMsg = normalizeSessionAuthenticationError(
         msg,
         agentIdForConfigUpdates,
+        officialHandoff,
       );
+      // Host-coded errors already carry gateway_code; only an agent's report recovers.
+      const agentReported =
+        (msg as { gateway_code?: unknown }).gateway_code === undefined;
+      const gatewayCode = (normalizedMsg as { gateway_code?: unknown })
+        .gateway_code;
+      if (
+        officialHandoff &&
+        agentReported &&
+        typeof gatewayCode === "string" &&
+        gatewayCode in OFFICIAL_GATEWAY_CLIENT_CODES &&
+        OFFICIAL_GATEWAY_CLIENT_CODES[gatewayCode as OfficialGatewayClientCode]
+          .remint
+      )
+        this.recoverOfficialGatewayAuth(entry, agentIdForConfigUpdates);
       const persisted = this.persistManagerMessage(entry, normalizedMsg);
       const publicMsg = publicSessionMessage(normalizedMsg);
       if (isSessionReadyMessage(normalizedMsg)) {
@@ -3042,13 +3164,17 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       throw new Error("Local ACP runtime is shutting down");
     }
     if (agent.auth?.status === "needs-auth") {
+      const gatewayCode = gatewayPreparation.gatewayCode;
       send({
         type: "session.error",
         session_id: sessionId,
         code: "auth_required",
         agent_id: agent.id,
         auth: publicAuthForResponse(agent.auth),
-        message: agentAuthRequiredMessage(agent, agent.auth),
+        message: gatewayCode
+          ? officialGatewayErrorText(gatewayCode)
+          : agentAuthRequiredMessage(agent, agent.auth),
+        ...(gatewayCode ? { gateway_code: gatewayCode } : {}),
       } as SessionManagerOut);
       return { session_id: sessionId };
     }
