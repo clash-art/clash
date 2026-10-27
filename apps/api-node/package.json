@@ -9,13 +9,14 @@
   "scripts": {
     "dev": "tsx watch --tsconfig tsconfig.check.json --import ./src/telemetry.ts src/server.ts",
     "start": "tsx --tsconfig tsconfig.check.json --import ./src/telemetry.ts src/server.ts",
-    "migrate": "node src/migrate.ts",
+    "migrate": "node src/gateway-cli.ts migrate",
+    "gateway": "node src/gateway-cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "worker:outbox": "tsx --tsconfig tsconfig.check.json --import ./src/telemetry-outbox.ts src/outbox-worker.ts",
     "test:cluster": "node scripts/test-cluster.ts",
     "test:gateway-lite": "node scripts/test-gateway-lite.ts",
-    "seed:gateway": "tsx --tsconfig tsconfig.check.json src/gateway-seed.ts",
+    "seed:gateway": "node src/gateway-cli.ts seed",
     "mock-upstream": "tsx --tsconfig tsconfig.check.json src/mock-upstream/cli.ts"
   },
   "dependencies": {

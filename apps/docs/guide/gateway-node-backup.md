@@ -107,8 +107,9 @@ production.
 7. Record the drill: backup id, recovery target, duration, who ran it, pass/fail.
 
 Rollback of a bad **code** deploy (not data loss) is redeploy previous image
-with expand/contract-compatible schema (#377 canary stub) — that is separate
-from this data restore drill.
+with expand/contract-compatible schema
+([gateway-node-rollout.md](gateway-node-rollout.md#roll-back)) — that is
+separate from this data restore drill.
 
 ## Key rotation, drain, rollback (self-host)
 
