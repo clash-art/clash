@@ -29,9 +29,9 @@ const artifactDir = "/opt/cursor/artifacts/mg-preview-host";
 
 async function publish(name: string) {
   await mkdir(captureDir, { recursive: true });
-  await mkdir(artifactDir, { recursive: true });
+  await mkdir(artifactDir, { recursive: true }).catch(() => undefined);
   const src = path.join(captureDir, name);
-  await copyFile(src, path.join(artifactDir, name));
+  await copyFile(src, path.join(artifactDir, name)).catch(() => undefined);
 }
 
 async function main() {
