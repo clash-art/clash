@@ -6,7 +6,7 @@
 
 ## Decisions
 
-### Export path (not api-cf only)
+### Export path (browser Timeline + Host fallback)
 
 Browser Timeline export (`clash.timeline-render.v1`) hydrates live HTML MG
 items at render start:
