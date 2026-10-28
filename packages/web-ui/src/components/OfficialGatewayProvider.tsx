@@ -2,13 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import {
   AGENT_CREDENTIAL_PRIORITIES,
+  OFFICIAL_CLOUD_URL,
   type AgentCredentialPriority,
   type OfficialGatewayStatus,
 } from "@clash/shared-types";
 import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { isBillingPluginEnabled } from "../lib/consolePlugins";
+import { canOpenExternalUrl, openExternalUrl } from "../lib/openExternalUrl";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { InlineAlert } from "./ui/feedback";
 import { SettingsRow } from "./SettingsPrimitives";
+
+/** Hosted Polar billing UI — in-app when the plugin is registered; system browser on desktop. */
+const OFFICIAL_BILLING_URL = `${OFFICIAL_CLOUD_URL}/billing`;
 
 const STATUS_PATH = "/api/v1/local/official-gateway";
 
@@ -78,6 +84,36 @@ function tokenLabel(token: OfficialGatewayStatus["token"]): string {
  * sign-in and hands them to local agents, so this row shows status and the
  * user's BYOK/official priority only. Keys are never shown.
  */
+function budgetTopUpAction() {
+  // Hosted web (billing plugin overlaid): stay in-app on /billing.
+  if (isBillingPluginEnabled()) {
+    return (
+      <Link
+        to="/billing"
+        className="text-sm font-medium underline underline-offset-2"
+      >
+        Top up credits
+      </Link>
+    );
+  }
+  // Desktop client: OSS build has no billing plugin — jump to hosted checkout
+  // in the system browser (same openExternal path as CloudConnection login).
+  if (canOpenExternalUrl()) {
+    return (
+      <button
+        type="button"
+        className="text-sm font-medium underline underline-offset-2"
+        onClick={() => {
+          void openExternalUrl(OFFICIAL_BILLING_URL);
+        }}
+      >
+        Top up credits
+      </button>
+    );
+  }
+  return undefined;
+}
+
 export function OfficialGatewayProviderRow() {
   const [status, setStatus] = useState<OfficialGatewayStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -143,9 +179,23 @@ export function OfficialGatewayProviderRow() {
         </div>
         {status ? (
           status.signedIn ? (
-            <span role="status" className="text-sm text-muted-foreground">
-              Signed in as {status.user?.name || status.user?.email}
-            </span>
+            <div className="flex flex-col items-end gap-1 text-right">
+              <span role="status" className="text-sm text-muted-foreground">
+                Signed in as {status.user?.name || status.user?.email}
+              </span>
+              {/* Desktop has no billing plugin; offer hosted Polar checkout via system browser. */}
+              {!isBillingPluginEnabled() && canOpenExternalUrl() ? (
+                <button
+                  type="button"
+                  className="text-sm font-medium text-brand hover:underline"
+                  onClick={() => {
+                    void openExternalUrl(OFFICIAL_BILLING_URL);
+                  }}
+                >
+                  Top up credits
+                </button>
+              ) : null}
+            </div>
           ) : (
             <Link
               to="/settings?section=sync"
@@ -190,6 +240,11 @@ export function OfficialGatewayProviderRow() {
             <InlineAlert
               tone="error"
               title={`${status.lastError.code}: ${status.lastError.message}`}
+              action={
+                status.lastError.code === "GATEWAY_BUDGET_EXCEEDED"
+                  ? budgetTopUpAction()
+                  : undefined
+              }
             />
           ) : null}
         </>

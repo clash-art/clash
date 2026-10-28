@@ -317,7 +317,7 @@ test("shared-runtime gains no platform runtime dependencies", () => {
 const DESKTOP_SHELL_PROBES: Record<string, number> = {
   "packages/web-ui/src/components/BrowserSurface.tsx": 1,
   "packages/web-ui/src/components/ChatbotCopilot.tsx": 2,
-  "packages/web-ui/src/components/CloudConnection.tsx": 3,
+  "packages/web-ui/src/components/CloudConnection.tsx": 1,
   "packages/web-ui/src/components/LayoutContent.tsx": 1,
   "packages/web-ui/src/components/MarketplacePluginDetail.tsx": 1,
   "packages/web-ui/src/components/ProjectCard.tsx": 2,
@@ -327,6 +327,7 @@ const DESKTOP_SHELL_PROBES: Record<string, number> = {
   "packages/web-ui/src/components/TopNavigation.tsx": 2,
   "packages/web-ui/src/components/UserControls.tsx": 1,
   "packages/web-ui/src/lib/runtimeConfig.ts": 4,
+  "packages/web-ui/src/lib/openExternalUrl.ts": 2,
 };
 
 test("desktop-shell probes in UI packages only shrink (ratchet)", async () => {

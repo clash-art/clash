@@ -6,6 +6,7 @@ import {
   type ProjectCloudJourney,
 } from "@clash/shared-types";
 import { runtimeApiUrl, isDesktopRuntime } from "../lib/runtimeConfig";
+import { openExternalUrl } from "../lib/openExternalUrl";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -35,9 +36,7 @@ async function cloudApi<T>(path: string, init?: RequestInit): Promise<T> {
   return value as T;
 }
 async function openCloudUrl(url: string) {
-  if (globalThis.__CLASH_DESKTOP__?.openExternal)
-    await globalThis.__CLASH_DESKTOP__.openExternal(url);
-  else window.open(url, "_blank", "noopener,noreferrer");
+  await openExternalUrl(url);
 }
 const message = (error: unknown) =>
   error instanceof Error

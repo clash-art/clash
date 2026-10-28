@@ -1,9 +1,13 @@
 /**
- * Typed client for /api/v1/billing/* (mounted by the hosted billing plugin).
+ * Legacy typed client for the retired `/api/v1/billing/{plans,balance,ledger,checkout}`
+ * shapes used by the presentational `BillingClient` (visual-language tests).
  *
- * On self-hosted deployments without the billing plugin, all endpoints
- * return 404 — callers should treat that as "billing not enabled" and
- * render a graceful empty state.
+ * Hosted Polar billing (#420) lives in clash-hosted's console-plugins overlay:
+ * it reads gateway `…/tenants/:tenantId/billing` + `/billing/offers` and posts
+ * `POST /api/v1/billing/tenants/:tenantId/checkout`. Account chrome uses
+ * `useBillingBalance` → `teamApi.billing` instead of this module.
+ *
+ * OSS self-host registers no billing route/nav (empty `consolePlugins`).
  */
 import { runtimeApiUrl } from "./runtimeConfig";
 import type { ProviderUsageAuditEvent } from "@clash/shared-types";
