@@ -4715,7 +4715,7 @@ export function SessionConfigSelector({
           ? "relative flex justify-start"
           : "relative flex justify-start px-4 pb-2"
       }
-      triggerClassName="clash-session-config-trigger max-w-full text-left"
+      triggerClassName="clash-session-config-trigger clash-composer-footer-chip max-w-full text-left text-xs"
       triggerTestId="session-harness-config-trigger"
       open={open}
       onOpenChange={onOpenChange}
@@ -4765,11 +4765,14 @@ export function SessionConfigSelector({
       stopPropagation
       triggerPrefix={
         <>
-          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center text-slate-700 dark:text-slate-200">
+          <span
+            data-control-icon=""
+            className="flex size-3.5 flex-shrink-0 items-center justify-center text-slate-700 dark:text-slate-200"
+          >
             <AcpAgentLogo
               agentId={selectedHarnessId}
               title={agentDisplayName(selectedHarnessId)}
-              className="h-[18px] w-[18px]"
+              className="size-3.5"
             />
           </span>
           <span
@@ -4913,7 +4916,7 @@ export function HarnessPermissionSelector({
   return (
     <SelectMenu
       className="relative flex shrink-0 justify-start"
-      triggerClassName="clash-session-permission-trigger shrink-0 text-left text-status-down focus-visible:bg-warm-muted focus-visible:ring-0 focus-visible:ring-offset-0"
+      triggerClassName="clash-session-permission-trigger clash-composer-footer-chip shrink-0 text-left text-xs focus-visible:bg-warm-muted focus-visible:ring-0 focus-visible:ring-offset-0"
       triggerTestId="session-permission-mode-trigger"
       value={selectedMode.value}
       sections={sections}
@@ -4926,8 +4929,11 @@ export function HarnessPermissionSelector({
       maxMenuHeight={280}
       stopPropagation
       triggerPrefix={
-        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-status-down">
-          <SelectedModeIcon className="h-4 w-4" aria-hidden="true" />
+        <span
+          data-control-icon=""
+          className="flex size-3.5 flex-shrink-0 items-center justify-center"
+        >
+          <SelectedModeIcon className="size-3.5" aria-hidden="true" />
         </span>
       }
       triggerLabel={
@@ -4962,7 +4968,7 @@ export function SessionPlanTag({
   return (
     <span
       data-testid="session-plan-tag"
-      className="clash-session-state-tag inline-flex h-8 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-semibold text-content-primary"
+      className="clash-session-state-tag inline-flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-medium text-content-primary"
     >
       <Lightbulb
         className="h-4 w-4 shrink-0 text-stone-600 dark:text-stone-300"
@@ -4985,7 +4991,7 @@ function SessionGoalTag({ onClear }: { onClear: () => void }) {
   return (
     <span
       data-testid="session-goal-tag"
-      className="clash-session-state-tag inline-flex h-8 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-semibold text-content-primary"
+      className="clash-session-state-tag inline-flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-medium text-content-primary"
     >
       <Target
         className="h-4 w-4 shrink-0 text-stone-600 dark:text-stone-300"
@@ -5180,12 +5186,12 @@ export function InlineSessionConfigControls({
                 onSelectConfigOption(option.id, !option.currentValue)
               }
               size="sm"
-              className={`clash-inline-session-config-trigger h-9 min-h-9 shrink-0 gap-1 rounded-md border-transparent px-1.5 text-sm font-semibold shadow-none ${
+              className={`clash-inline-session-config-trigger clash-composer-footer-chip h-7 min-h-7 shrink-0 gap-1 rounded-md border-transparent px-1.5 text-xs font-normal shadow-none ${
                 option.currentValue
                   ? "bg-brand/[0.08] text-slate-900 dark:bg-brand/[0.12] dark:text-neutral-50"
                   : "bg-transparent text-stone-600 hover:bg-warm-muted/60 dark:text-stone-300"
               }`}
-              leftIcon={<SlidersHorizontal className="h-4 w-4" />}
+              leftIcon={<SlidersHorizontal className="size-3.5" />}
             >
               <span className="clash-inline-session-config-label">
                 {option.name}
@@ -5202,7 +5208,7 @@ export function InlineSessionConfigControls({
           <SelectMenu
             key={option.id}
             className="relative flex justify-start"
-            triggerClassName="clash-inline-session-config-trigger max-w-[180px] text-left"
+            triggerClassName="clash-inline-session-config-trigger clash-composer-footer-chip max-w-[180px] text-left text-xs"
             value={selected.value}
             sections={[
               {
@@ -5225,7 +5231,9 @@ export function InlineSessionConfigControls({
             maxMenuHeight={320}
             stopPropagation
             triggerPrefix={
-              <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+              <span data-control-icon="">
+                <SlidersHorizontal className="size-3.5" aria-hidden="true" />
+              </span>
             }
             triggerLabel={`${option.name} · ${selected.name}`}
           />

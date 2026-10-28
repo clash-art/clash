@@ -5359,12 +5359,72 @@ html.dark .clash-download-card {
   border-radius: var(--clash-workspace-control-radius);
 }
 
-/* Keep harness/config chips the same control height as mic/send squares. */
+/* Backchat homage: composer chips + run actions share compact 28px control height. */
+.clash-chat-input-surface {
+  --composer-control-height: var(--control-height-compact, 28px);
+  --composer-toolbar-start-gap: 2px;
+  --composer-toolbar-end-gap: 2px;
+  --composer-chip-height: var(--composer-control-height);
+  --composer-chip-radius: var(--clash-workspace-control-radius, 6px);
+  --composer-chip-padding-inline: 6px;
+}
+
 .openma-composer-toolbar .clash-session-config-trigger,
 .openma-composer-toolbar .clash-session-permission-trigger,
-.openma-composer-toolbar .clash-inline-session-config-trigger {
-  height: var(--composer-control-height, var(--clash-workspace-control-size));
-  min-height: var(--composer-control-height, var(--clash-workspace-control-size));
+.openma-composer-toolbar .clash-inline-session-config-trigger,
+.openma-composer-toolbar .clash-session-state-tag {
+  height: var(--composer-control-height);
+  min-height: var(--composer-control-height);
+  border-radius: var(--composer-chip-radius);
+  gap: 4px;
+  padding-inline: var(--composer-chip-padding-inline);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--clash-content-secondary, var(--muted-foreground));
+  background: transparent;
+  box-shadow: none;
+}
+
+.openma-composer-toolbar .clash-session-config-trigger:hover,
+.openma-composer-toolbar .clash-session-permission-trigger:hover,
+.openma-composer-toolbar .clash-inline-session-config-trigger:hover {
+  color: var(--clash-content-primary);
+  background: var(--clash-warm-hover, var(--control-bg-hover, rgba(0, 0, 0, 0.04)));
+}
+
+/* Model / harness chip truncates like Backchat SessionRunChip (max ~250px). */
+.openma-composer-toolbar .clash-session-config-trigger {
+  max-width: min(250px, 100%);
+}
+
+/* Ghost CornerDownLeft / stop — Backchat ComposerAction feel (Clash tokens). */
+.clash-composer-action {
+  color: var(--clash-content-secondary, var(--muted-foreground));
+  background: transparent !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.clash-composer-action:hover:not(:disabled) {
+  color: var(--clash-content-primary);
+  background: var(--clash-warm-hover, rgba(0, 0, 0, 0.04)) !important;
+}
+
+.clash-composer-action--ready {
+  color: var(--clash-content-primary);
+}
+
+.clash-composer-action--idle,
+.clash-composer-action:disabled {
+  color: var(--clash-content-tertiary, var(--muted-foreground));
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.clash-composer-action.clash-chat-input-primary,
+.clash-composer-action.clash-chat-input-primary:hover {
+  background: transparent !important;
+  color: inherit;
 }
 
 .clash-user-message-bubble {
@@ -5430,9 +5490,9 @@ html.dark .clash-download-card {
 .clash-session-config-trigger,
 .clash-session-permission-trigger,
 .clash-inline-session-config-trigger {
-  height: var(--clash-workspace-control-size);
-  min-height: var(--clash-workspace-control-size);
-  border-radius: var(--clash-workspace-control-radius);
+  height: var(--composer-control-height, var(--control-height-compact, 28px));
+  min-height: var(--composer-control-height, var(--control-height-compact, 28px));
+  border-radius: var(--composer-chip-radius, var(--clash-workspace-control-radius));
   box-shadow: none;
 }
 
@@ -5454,15 +5514,30 @@ html.dark .clash-download-card {
   }
 
   .clash-composer-session-controls {
-    gap: 0;
+    gap: 0.125rem;
   }
 
+  /* Effort subtitle can drop first; keep permission / config labels (Backchat homage). */
   .clash-session-config-effort {
     display: none;
   }
 
+  .clash-session-permission-trigger,
+  .clash-inline-session-config-trigger {
+    gap: 0.25rem;
+    padding-inline: 0.375rem;
+  }
+
+  .clash-session-state-tag {
+    gap: 0.125rem;
+    padding-inline: 0.375rem 0.125rem;
+  }
+}
+
+/* Icon-only collapse only when the composer is truly narrow. */
+@container clash-chat-composer (max-width: 22rem) {
   .clash-session-permission-label,
-  .clash-inline-session-config-trigger > span,
+  .clash-inline-session-config-trigger > span:not([data-control-icon]),
   .clash-inline-session-config-label,
   .clash-session-state-tag-label {
     display: none;
@@ -5472,11 +5547,6 @@ html.dark .clash-download-card {
   .clash-inline-session-config-trigger {
     gap: 0.125rem;
     padding-inline: 0.25rem;
-  }
-
-  .clash-session-state-tag {
-    gap: 0.125rem;
-    padding-inline: 0.375rem 0.125rem;
   }
 }
 

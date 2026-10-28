@@ -1336,6 +1336,31 @@ describe("ChatInput", () => {
     );
   });
 
+  it("homages Backchat run-action chrome (CornerDownLeft send, ghost action)", async () => {
+    render(
+      <Suspense fallback={<div>Loading</div>}>
+        <ChatInput
+          input="hello"
+          onInputChange={() => undefined}
+          onSubmit={() => undefined}
+        />
+      </Suspense>,
+    );
+
+    await screen.findByTestId("milkdown-editor");
+    const send = screen.getByRole("button", {
+      name: "copilot.chatInput.send",
+    });
+    expect(send.className).toContain("clash-composer-action");
+    expect(send.className).toContain("clash-composer-action--ready");
+    expect(send).toHaveAttribute("data-composer-submit", "true");
+    expect(send.querySelector("svg")).toBeTruthy();
+    expect(globalCss).toMatch(/\.clash-composer-action\s*\{/);
+    expect(globalCss).toMatch(
+      /--composer-control-height:\s*var\(--control-height-compact/,
+    );
+  });
+
   it("keeps runtime queued send available without hiding stop", async () => {
     const onSubmit = vi.fn();
     const onStop = vi.fn();
@@ -1363,7 +1388,11 @@ describe("ChatInput", () => {
 
     expect(sendButton.disabled).toBe(false);
     expect(stopButton.disabled).toBe(false);
+    expect(sendButton.className).toContain("clash-composer-action");
+    expect(sendButton).toHaveAttribute("data-composer-submit", "true");
     expect(stopButton.className).toContain("clash-chat-input-icon-control");
+    expect(stopButton.className).toContain("clash-composer-action");
+    expect(stopButton).toHaveAttribute("data-composer-stop", "true");
     expect(stopButton.className).not.toContain("clash-chat-input-stop");
     expect(document.querySelector(".clash-chat-input-editor")).toHaveAttribute(
       "data-chat-typography",

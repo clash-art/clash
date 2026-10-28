@@ -12,7 +12,7 @@ import {
 } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  ArrowUp,
+  ArrowElbowDownLeft,
   Plus,
   Microphone,
   CircleNotch,
@@ -879,10 +879,11 @@ function ChatInputInner(
                             label={t("copilot.chatInput.send")}
                             shape="rounded"
                             size="sm"
-                            className="clash-chat-input-icon-control clash-chat-input-primary"
+                            data-composer-submit="true"
+                            className="clash-chat-input-icon-control clash-composer-action"
                             icon={
-                              <ArrowUp
-                                className="w-3.5 h-3.5"
+                              <ArrowElbowDownLeft
+                                className="w-4 h-4"
                                 weight="bold"
                               />
                             }
@@ -894,9 +895,10 @@ function ChatInputInner(
                             label={t("copilot.chatInput.stop")}
                             shape="rounded"
                             size="sm"
-                            className="clash-chat-input-icon-control"
+                            data-composer-stop="true"
+                            className="clash-chat-input-icon-control clash-composer-action"
                             icon={
-                              <span className="h-2.5 w-2.5 rounded-[3px] bg-current" />
+                              <span className="h-3 w-3 rounded-[2px] bg-current" />
                             }
                           />
                         ) : (
@@ -907,19 +909,22 @@ function ChatInputInner(
                             aria-busy={isCreatingSession || uploading > 0}
                             shape="rounded"
                             size="sm"
-                            className={`clash-chat-input-icon-control ${
+                            data-composer-submit={
                               isCreatingSession || uploading > 0
-                                ? "clash-chat-input-primary focus-visible:ring-ring"
-                                : canSend
-                                  ? "clash-chat-input-primary focus-visible:ring-ring"
-                                  : "bg-warm-muted text-slate-500 dark:text-slate-500 cursor-not-allowed focus-visible:ring-ring"
+                                ? undefined
+                                : "true"
+                            }
+                            className={`clash-chat-input-icon-control clash-composer-action ${
+                              isCreatingSession || uploading > 0 || canSend
+                                ? "clash-composer-action--ready"
+                                : "clash-composer-action--idle"
                             }`}
                             icon={
                               isCreatingSession || uploading > 0 ? (
                                 <CircleNotch className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" />
                               ) : (
-                                <ArrowUp
-                                  className="w-3.5 h-3.5"
+                                <ArrowElbowDownLeft
+                                  className="w-4 h-4"
                                   weight="bold"
                                 />
                               )
