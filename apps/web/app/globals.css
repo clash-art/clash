@@ -4034,10 +4034,10 @@ html[data-dashboard-composer-transition="target"] .clash-chat-input-surface {
   box-shadow: var(--clash-shadow-raised);
 }
 
+.clash-home-hero .clash-chat-input-hero-layout.openma-composer-shell,
 .clash-home-hero .clash-chat-input-hero-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
+  /* Topology from ComposerShell; keep gap token aligned with --composer-section-gap. */
+  gap: var(--composer-section-gap, 0.375rem);
 }
 
 .clash-home-hero .clash-chat-input-editor--hero {
@@ -4134,7 +4134,11 @@ html[data-dashboard-composer-transition="target"] .clash-chat-input-surface {
   border-radius: 1rem;
 }
 
-.clash-home-hero[data-composer-mode="compact"] .clash-chat-input-surface > div {
+/* Compact pill: shell (direct child) lays out body | toolbar end in a row. */
+.clash-home-hero[data-composer-mode="compact"] .clash-chat-input-surface > div,
+.clash-home-hero[data-composer-mode="compact"]
+  .clash-chat-input-surface
+  > .openma-composer-shell {
   display: flex;
   min-height: 3rem;
   flex-direction: row;
@@ -5370,8 +5374,9 @@ html.dark .clash-download-card {
   box-shadow: none;
 }
 
-/* Prefer shared @openma/common ComposerToolbar flex topology when present.
- * Legacy grid only applies to host-owned rows that lack the openma class. */
+/* ComposerShell (@openma/common) owns body + toolbar start|end topology.
+ * Clash keeps class/token hooks for theming. Legacy grid only for host-owned
+ * rows that lack the openma toolbar class (should be rare after shell adopt). */
 .clash-chat-input-toolbar-row:not(.openma-composer-toolbar) {
   display: grid;
   grid-template-columns: minmax(2.25rem, 1fr) minmax(0, max-content);
@@ -5379,9 +5384,14 @@ html.dark .clash-download-card {
 }
 
 .clash-chat-input-toolbar-row.openma-composer-toolbar {
-  /* Shared start|end flex; keep Clash gap token for host polish. */
-  column-gap: 0.375rem;
+  /* Shared start|end flex; Clash gap token for host polish only. */
   gap: var(--composer-toolbar-gap, 0.375rem);
+}
+
+/* Shell is the sole layout child of the Clash surface card. */
+.clash-chat-input-surface > .openma-composer-shell {
+  min-width: 0;
+  width: 100%;
 }
 
 .clash-chat-input-toolbar-start,

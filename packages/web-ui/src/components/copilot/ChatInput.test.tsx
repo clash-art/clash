@@ -498,6 +498,13 @@ describe("ChatInput", () => {
     await screen.findByTestId("milkdown-editor");
 
     expect(container.querySelector(".clash-chat-input-surface")).toBeTruthy();
+    expect(
+      container.querySelector(
+        ".clash-chat-input-surface > .openma-composer-shell",
+      ),
+    ).toBeTruthy();
+    expect(container.querySelector("[data-openma-composer-shell]")).toBeTruthy();
+    expect(container.querySelector("[data-openma-composer-body]")).toBeTruthy();
     expect(container.querySelector(".clash-chat-input-actions")).toBeTruthy();
     expect(container.querySelector(".clash-chat-input-toolbar")).toBeNull();
     expect(container.querySelector(".clash-input-surface")).toBeNull();
@@ -518,6 +525,9 @@ describe("ChatInput", () => {
 
     await screen.findByTestId("milkdown-editor");
 
+    expect(
+      container.querySelector(".openma-composer-shell"),
+    ).toBeTruthy();
     expect(
       container.querySelector(".clash-chat-input-toolbar-row"),
     ).toBeTruthy();
@@ -743,14 +753,15 @@ describe("ChatInput", () => {
       "Describe your video idea...",
     );
     expect(container.querySelector(".clash-chat-input-placeholder")).toBeNull();
-    expect(editor.parentElement).toBe(shell);
+    expect(shell.classList.contains("openma-composer-shell")).toBe(true);
+    expect(editor.closest(".clash-chat-input-hero-layout")).toBe(shell);
     expect(actions.parentElement).toBe(shell);
     expect(shell.dataset.inputState).toBe("empty");
     expect(surface.dataset.inputState).toBe("empty");
     expect(surface.dataset.composerVisualState).toBe("expanded");
 
     fireEvent.focus(editor);
-    expect(editor.parentElement).toBe(shell);
+    expect(editor.closest(".clash-chat-input-hero-layout")).toBe(shell);
     expect(actions.parentElement).toBe(shell);
 
     rerender(
@@ -770,18 +781,20 @@ describe("ChatInput", () => {
     expect(surface.dataset.inputState).toBe("single-line");
     expect(surface.dataset.composerVisualState).toBe("compact");
     expect(screen.queryByText("Describe your video idea...")).toBeNull();
-    expect(editor.parentElement).toBe(shell);
+    expect(editor.closest(".clash-chat-input-hero-layout")).toBe(shell);
     expect(actions.parentElement).toBe(shell);
   });
 
   it("keeps the expanded hero body above an intact bottom action rail", () => {
     const expandedShellRule = globalCss.match(
-      /\.clash-home-hero \.clash-chat-input-hero-layout\s*\{[\s\S]{0,220}?\}/,
+      /\.clash-home-hero \.clash-chat-input-hero-layout[\s\S]{0,80}?\{[\s\S]{0,280}?\}/,
     )?.[0];
     expect(expandedShellRule).toBeTruthy();
-    expect(expandedShellRule).toMatch(/display:\s*flex;/);
-    expect(expandedShellRule).toMatch(/flex-direction:\s*column;/);
+    expect(expandedShellRule).toMatch(/--composer-section-gap|gap:\s*var\(--composer-section-gap/);
     expect(expandedShellRule).not.toMatch(/display:\s*grid;/);
+    expect(globalCss).toMatch(
+      /\.clash-chat-input-surface\s*>\s*\.openma-composer-shell\s*\{/,
+    );
 
     const expandedActionsRule = globalCss.match(
       /\.clash-home-hero \.clash-chat-input-actions\s*\{[\s\S]{0,120}?\}/,
@@ -1022,9 +1035,12 @@ describe("ChatInput", () => {
 
     await screen.findByTestId("milkdown-editor");
 
-    // The editor and semantic action rail stay direct children of one shell.
+    // ComposerShell owns topology: body slot + toolbar (actions) as siblings.
     const layout = container.querySelector<HTMLElement>(
-      ".clash-chat-input-hero-layout",
+      ".clash-chat-input-hero-layout.openma-composer-shell",
+    )!;
+    const body = container.querySelector<HTMLElement>(
+      "[data-openma-composer-body]",
     )!;
     const actions = container.querySelector<HTMLElement>(
       ".clash-chat-input-actions",
@@ -1033,7 +1049,8 @@ describe("ChatInput", () => {
       ".clash-chat-input-editor",
     )!;
     expect(actions.parentElement).toBe(layout);
-    expect(editor.parentElement).toBe(layout);
+    expect(body.parentElement).toBe(layout);
+    expect(editor.closest("[data-openma-composer-body]")).toBe(body);
     expect(
       container.querySelector(".clash-chat-input-toolbar-start")!.parentElement,
     ).toBe(actions);
@@ -1046,14 +1063,15 @@ describe("ChatInput", () => {
     ).toBeTruthy();
 
     const expandedStack = globalCss.match(
-      /\.clash-home-hero \.clash-chat-input-hero-layout\s*\{[\s\S]{0,220}?\}/,
+      /\.clash-home-hero \.clash-chat-input-hero-layout[\s\S]{0,80}?\{[\s\S]{0,280}?\}/,
     )?.[0];
     expect(expandedStack).toBeTruthy();
-
-    expect(sourceMatches(expandedStack!, /display:\s*flex;/)).toBe(true);
-    expect(sourceMatches(expandedStack!, /flex-direction:\s*column;/)).toBe(
-      true,
-    );
+    expect(
+      sourceMatches(
+        expandedStack!,
+        /gap:\s*var\(--composer-section-gap/,
+      ),
+    ).toBe(true);
     expect(sourceMatches(expandedStack!, /display:\s*grid;/)).toBe(false);
   });
 
@@ -1160,12 +1178,13 @@ describe("ChatInput", () => {
 
   it("lets the compact pill grow from content without a state-specific height branch", () => {
     const compactParent = globalCss.match(
-      /\.clash-home-hero\[data-composer-mode="compact"\] \.clash-chat-input-surface > div\s*\{[\s\S]*?\}/,
+      /\.clash-home-hero\[data-composer-mode="compact"\] \.clash-chat-input-surface > div,[\s\S]*?\.openma-composer-shell\s*\{[\s\S]*?\}/,
     )?.[0];
     expect(compactParent).toBeTruthy();
     expect(compactParent).toMatch(/min-height:\s*3rem;/);
     expect(compactParent).not.toMatch(/\n\s*height:\s*3rem;/);
     expect(compactParent).toMatch(/align-items:\s*center;/);
+    expect(compactParent).toMatch(/flex-direction:\s*row;/);
 
     expect(globalCss).not.toMatch(
       /\.clash-chat-input-surface\s*>\s*div:has\(\s*\.clash-chat-input-editor--hero\[data-input-state="multiline"\]/,
