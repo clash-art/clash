@@ -6,7 +6,7 @@ import {
   type AgentCredentialPriority,
   type OfficialGatewayStatus,
 } from "@clash/shared-types";
-import { runtimeApiUrl, isDesktopRuntime } from "../lib/runtimeConfig";
+import { runtimeApiUrl } from "../lib/runtimeConfig";
 import { isBillingPluginEnabled } from "../lib/consolePlugins";
 import { canOpenExternalUrl, openExternalUrl } from "../lib/openExternalUrl";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -98,7 +98,7 @@ function budgetTopUpAction() {
   }
   // Desktop client: OSS build has no billing plugin — jump to hosted checkout
   // in the system browser (same openExternal path as CloudConnection login).
-  if (isDesktopRuntime() && canOpenExternalUrl()) {
+  if (canOpenExternalUrl()) {
     return (
       <button
         type="button"
@@ -184,9 +184,7 @@ export function OfficialGatewayProviderRow() {
                 Signed in as {status.user?.name || status.user?.email}
               </span>
               {/* Desktop has no billing plugin; offer hosted Polar checkout via system browser. */}
-              {!isBillingPluginEnabled() &&
-              isDesktopRuntime() &&
-              canOpenExternalUrl() ? (
+              {!isBillingPluginEnabled() && canOpenExternalUrl() ? (
                 <button
                   type="button"
                   className="text-sm font-medium text-brand hover:underline"
