@@ -154,6 +154,10 @@ function buildAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
           "https://www.clash.art",
           "https://next.clash.art",
           "https://api.clash.art",
+          // Legacy video hosts during clash.video → clash.art cutover.
+          "https://clash.video",
+          "https://www.clash.video",
+          "https://api.clash.video",
           ...(env.ENVIRONMENT === "development"
             ? [
                 "http://localhost:3000",

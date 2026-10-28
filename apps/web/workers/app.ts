@@ -21,6 +21,7 @@ import * as workers from "cloudflare:workers";
 import { installWorkersTracing } from "@clash/shared-telemetry/cloudflare";
 import { createServerLogger } from "@clash/shared-telemetry/log";
 import { createAuth } from "../app/lib/auth/better-auth.server";
+import { resolveLegacyWebRedirect } from "../app/lib/auth/auth-origins";
 import { handleGetSession, isGetSessionRequest } from "../app/lib/auth/get-session.server";
 import { isMetadataServiceRequest } from "@clash/metadata-service/routes";
 
@@ -45,6 +46,8 @@ export interface Env {
   BETTER_AUTH_ORIGIN?: string;
   BETTER_AUTH_SECRET?: string;
   BETTER_AUTH_URL?: string;
+  /** Comma-separated hosts that 301 to BETTER_AUTH_URL origin (path+query kept). */
+  LEGACY_WEB_REDIRECT_HOSTS?: string;
   AUTH_GOOGLE_ID?: string;
   AUTH_GOOGLE_SECRET?: string;
   ACTION_SECRET_KEY?: string;
@@ -97,6 +100,13 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Cutover: clash.video → clash.art (preserve path/query so a stale Google
+    // callback URI can still land on the canonical host).
+    const legacyRedirect = resolveLegacyWebRedirect(url, env);
+    if (legacyRedirect) {
+      return Response.redirect(legacyRedirect, 301);
+    }
 
     if (path === "/health") return new Response("OK", { status: 200 });
 

@@ -8,18 +8,12 @@ import { drizzle } from "drizzle-orm/d1";
 
 import { gatewaySessionDatabaseHooks } from "@clash/shared-cloud-schema/gateway";
 import * as betterAuthSchema from "../db/better-auth.schema";
+import {
+  resolveAuthErrorURL,
+  resolveTrustedOrigins,
+} from "./auth-origins";
 
 const basePath = "/api/better-auth";
-const devTrustedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:3001",
-];
-
-function isLocalAuthBaseUrl(baseURL?: string) {
-  return /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(baseURL ?? "");
-}
 
 export type AuthBindings = {
   DB: D1Database;
@@ -179,12 +173,15 @@ function buildAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
         basePath,
         baseURL,
         trustedProxyHeaders: true,
-        trustedOrigins: [
-          "https://clash.art",
-          "https://www.clash.art",
-          "https://next.clash.art",
-          ...(isLocalAuthBaseUrl(baseURL) ? devTrustedOrigins : []),
-        ],
+        // Explicit art + video (cutover) + BETTER_AUTH_URL origin. Google
+        // redirect_uri is `${baseURL}/callback/google` with basePath folded
+        // into context.baseURL → https://clash.art/api/better-auth/callback/google
+        // once BETTER_AUTH_URL=https://clash.art.
+        trustedOrigins: resolveTrustedOrigins({ baseURL }),
+        // Brand Clash login instead of Better Auth's default /error (Ask AI).
+        onAPIError: {
+          errorURL: resolveAuthErrorURL(baseURL),
+        },
         secret,
         // Sign-out / session revocation revokes child gateway tokens (#346).
         // Writes go to the primary binding, never a read-replica scope.

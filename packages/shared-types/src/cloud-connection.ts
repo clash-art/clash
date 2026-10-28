@@ -22,6 +22,11 @@ z.object({
 ), (real) => { CloudAccountSchema = real; });
 export type CloudService = z.infer<typeof CloudServiceSchema>;
 
+/**
+ * Official hosted product origin (web app, billing, Better Auth).
+ * Canonical host is clash.art — clash.video is legacy and should 301 here.
+ * Desktop top-up opens `${OFFICIAL_CLOUD_URL}/billing`.
+ */
 export const OFFICIAL_CLOUD_URL = "https://clash.art";
 export let CloudConnectionStatusSchema = lazySchema(() => (
 z.object({
