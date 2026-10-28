@@ -138,12 +138,35 @@ describe("OfficialGatewayProviderRow", () => {
       lastError: { code: "GATEWAY_BUDGET_EXCEEDED", message: "Budget used up." },
     });
     renderRow();
+    const buttons = await screen.findAllByRole("button", { name: "Top up credits" });
+    expect(buttons.length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(buttons[0]!);
+    await waitFor(() =>
+      expect(openExternal).toHaveBeenCalledWith("https://clash.art/billing"),
+    );
+  });
+  it("offers a desktop Top up credits control when signed in (no billing plugin)", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    (globalThis as { __CLASH_DESKTOP__: unknown }).__CLASH_DESKTOP__ = {
+      isDesktop: true,
+      openExternal,
+    };
+    stubHost({
+      ...signedOut,
+      signedIn: true,
+      user: { email: "u1@example.test", name: "User One" },
+      token: { state: "active", expiresAt: "2026-10-27T10:15:00.000Z" },
+      handoffs: [],
+      lastError: null,
+    });
+    renderRow();
     const button = await screen.findByRole("button", { name: "Top up credits" });
     fireEvent.click(button);
     await waitFor(() =>
       expect(openExternal).toHaveBeenCalledWith("https://clash.art/billing"),
     );
   });
+
 
 });
 

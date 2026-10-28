@@ -179,9 +179,25 @@ export function OfficialGatewayProviderRow() {
         </div>
         {status ? (
           status.signedIn ? (
-            <span role="status" className="text-sm text-muted-foreground">
-              Signed in as {status.user?.name || status.user?.email}
-            </span>
+            <div className="flex flex-col items-end gap-1 text-right">
+              <span role="status" className="text-sm text-muted-foreground">
+                Signed in as {status.user?.name || status.user?.email}
+              </span>
+              {/* Desktop has no billing plugin; offer hosted Polar checkout via system browser. */}
+              {!isBillingPluginEnabled() &&
+              isDesktopRuntime() &&
+              canOpenExternalUrl() ? (
+                <button
+                  type="button"
+                  className="text-sm font-medium text-brand hover:underline"
+                  onClick={() => {
+                    void openExternalUrl(OFFICIAL_BILLING_URL);
+                  }}
+                >
+                  Top up credits
+                </button>
+              ) : null}
+            </div>
           ) : (
             <Link
               to="/settings?section=sync"
