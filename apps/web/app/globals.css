@@ -5173,6 +5173,29 @@ html.dark .clash-download-card {
   --font-chat:
     ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif,
     "Apple Color Emoji", "Segoe UI Emoji";
+  /* Transcript density (Backchat homage). openma defaults 14/28; Clash reads
+     14/21 prose with 13/24 activity rows so Han punctuation clears the next
+     line without the airy openma gap under process folds. */
+  --type-ui-size: 13px;
+  --type-ui-leading: 20px;
+  --type-body-size: 14px;
+  --type-body-leading: 24px;
+  --type-heading-size: 15px;
+  --type-heading-leading: 24px;
+  --type-code-leading: 22px;
+  --chat-prose-leading: 21px;
+  --chat-prose-letter-spacing: -0.02em;
+  --chat-transcript-row-font-size: 13px;
+  --chat-transcript-row-line-height: 24px;
+  --chat-transcript-row-font-weight: 400;
+  --chat-transcript-row-fg: var(--clash-content-muted);
+  --motion-disclosure-duration: 220ms;
+  --motion-disclosure-easing: cubic-bezier(0.25, 1, 0.5, 1);
+  --font-weight-regular: 400;
+  --fg: var(--clash-content-primary);
+  --fg-muted: var(--clash-content-muted);
+  --fg-subtle: var(--clash-content-disabled);
+  --font-mono: var(--font-jetbrains-mono);
 }
 
 .app-composer-surface {
@@ -5243,6 +5266,291 @@ html.dark .clash-download-card {
   font-family: var(--font-chat);
   font-kerning: normal;
 }
+
+/* ---------- Message list / transcript (Backchat 1:1 topology) ----------
+   Shared @openma/common chat-ui owns markup; Clash host owns density,
+   process disclosure stacking, markdown/table rhythm, and turn→composer gap.
+   Brand tokens stay Clash; do not import Backchat chrome or one-click follow. */
+
+button[data-chat-turn-disclosure-trigger]:disabled .activity-disclosure-chevron {
+  display: none;
+}
+
+.animated-collapse,
+[data-collapsible-event-count] > [id],
+[data-thought-block] > [data-thought-stream-body],
+[data-session-process-activity] {
+  interpolate-size: allow-keywords;
+  overflow: clip;
+  overflow-clip-margin: 2px;
+}
+
+[data-collapsible-event-count] > [id],
+[data-thought-block] > [data-thought-stream-body],
+[data-session-process-activity] {
+  height: auto;
+  opacity: 1;
+  transition:
+    height var(--motion-disclosure-duration) var(--motion-disclosure-easing),
+    opacity var(--motion-disclosure-duration) var(--motion-disclosure-easing),
+    margin-block-start var(--motion-disclosure-duration)
+      var(--motion-disclosure-easing),
+    display var(--motion-disclosure-duration) allow-discrete;
+}
+
+[data-collapsible-event-count] > [id][hidden],
+[data-thought-block] > [data-thought-stream-body][hidden],
+[data-session-process-activity][hidden] {
+  display: none;
+  height: 0;
+  opacity: 0;
+  margin-block-start: 0;
+}
+
+@starting-style {
+  [data-collapsible-event-count] > [id]:not([hidden]),
+  [data-thought-block] > [data-thought-stream-body]:not([hidden]),
+  [data-session-process-activity]:not([hidden]) {
+    height: 0;
+    opacity: 0;
+    margin-block-start: 0;
+  }
+}
+
+/* Process rail: "Worked for" is parent; thought/tool rows are children.
+   Hierarchy is type size, not chrome — rows flush with header text. */
+[data-session-turn-response] .activity-disclosure-row {
+  --chat-activity-row-leading-space: 0px;
+  border-radius: 0;
+  font-size: var(--chat-transcript-row-font-size, 13px);
+  line-height: var(--chat-transcript-row-line-height, 24px);
+  transition: color 120ms ease-out;
+}
+
+[data-session-turn-response] .activity-disclosure-row:hover {
+  background: transparent;
+  color: var(--clash-content-primary);
+}
+
+[data-session-turn-response] .activity-disclosure-chevron {
+  margin-left: 0;
+}
+
+[data-session-turn-response] [data-thought-stream-body] {
+  margin-left: calc(var(--chat-activity-icon-size) + 6px);
+}
+
+[data-chat-column="turns"]
+  [data-turn-id]:not([data-session-turn-status="running"]) {
+  animation: none;
+}
+
+/* Transcript markdown density — tighter than openma 14/28 defaults. */
+[data-chat-surface] :is(.chat-markdown, .streaming-md) {
+  font-size: var(--type-body-size, 14px);
+  letter-spacing: var(--chat-prose-letter-spacing, -0.02em);
+  line-height: var(--chat-prose-leading, 21px);
+  text-autospace: no-autospace;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :is(h1, h2, h3, h4, h5, h6) {
+  font-size: var(--type-heading-size, 15px);
+  font-weight: 600;
+  line-height: var(--type-heading-leading, 24px);
+  margin-top: 16px;
+  margin-bottom: 6px;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :is(h3, h4, h5, h6) {
+  font-size: var(--type-body-size, 14px);
+  line-height: var(--type-body-leading, 24px);
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :is(p, li, blockquote) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :is(pre, pre code) {
+  font-family: var(--font-mono);
+  font-size: var(--type-ui-size, 13px);
+  font-weight: 400;
+  line-height: var(--type-code-leading, 22px);
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :is(th, td) {
+  font-size: var(--type-ui-size, 13px);
+  line-height: var(--type-ui-leading, 20px);
+  padding: 0.35rem 0.65rem;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) table {
+  width: 100%;
+  margin-block: 0.5rem;
+  border-collapse: collapse;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :not(pre) > code {
+  font-size: var(--type-ui-size, 13px);
+  font-weight: 400;
+  padding: 0.08em 0.25em;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--clash-content-primary) 5%, transparent);
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) :is(p, ul, ol) {
+  margin-block: 3px;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) li {
+  margin-block: 0;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) > :first-child {
+  margin-top: 0;
+}
+
+[data-chat-surface] :is(.chat-markdown, .streaming-md) > :last-child {
+  margin-bottom: 0;
+}
+
+[data-chat-surface] .chat-markdown--thought {
+  font-size: var(--type-ui-size, 13px);
+  line-height: var(--type-ui-leading, 20px);
+}
+
+[data-session-turn-prompt] p {
+  line-height: var(--chat-prose-leading, 21px);
+}
+
+[data-session-turn-prompt] p.whitespace-pre-wrap {
+  font-size: var(--type-body-size, 14px);
+}
+
+/* Turn ↔ turn and prompt ↔ answer rhythm (Backchat utilities layer). */
+@layer utilities {
+  [data-chat-column="turns"] {
+    --chat-prompt-gap: 40px;
+  }
+  [data-chat-column="turns"] [data-turn-id] {
+    margin-bottom: var(--chat-prompt-gap) !important;
+  }
+  [data-chat-column="turns"] [data-turn-id] > :not(:last-child) {
+    margin-bottom: 12px !important;
+  }
+  [data-chat-column="turns"]
+    [data-turn-id]
+    > [data-session-turn-prompt]:not(:last-child) {
+    margin-bottom: var(--chat-prompt-gap) !important;
+  }
+  [data-chat-column="turns"] > :last-child [data-turn-id],
+  [data-chat-column="turns"] > [data-turn-id]:last-child {
+    margin-bottom: 0 !important;
+  }
+}
+
+/* Keep final response controls clear of the composer. */
+[data-chat-surface] .chat-scrollbar > div {
+  padding-bottom: 27px;
+}
+
+/* One block gap inside a turn: process header, activity rows, answer, footer. */
+[data-session-turn-response] {
+  --turn-block-gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--turn-block-gap);
+}
+
+[data-session-turn-response] > *,
+[data-session-process-activity] > * {
+  margin-block: 0;
+  padding-block: 0;
+}
+
+[data-session-process-activity]:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--turn-block-gap);
+  padding-top: var(--turn-block-gap);
+}
+
+:root {
+  --tool-group-max-h: min(320px, 40vh);
+}
+
+[data-tool-group-size] > [aria-controls] + [id] {
+  max-height: var(--tool-group-max-h);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+[data-tool-group-size] > [aria-controls] + [id]:hover {
+  scrollbar-color: color-mix(
+      in srgb,
+      var(--clash-content-primary) 30%,
+      transparent
+    )
+    transparent;
+}
+
+[data-session-process-activity]:empty {
+  padding-top: 0;
+}
+
+[data-session-turn-response] .reasoning-collapse-inner > div {
+  padding-top: 0;
+}
+
+[data-session-turn-response]
+  .reasoning-collapse-inner
+  > div
+  > div:has(> :not(:empty):not([hidden])) {
+  padding-top: var(--turn-block-gap);
+}
+
+[data-session-turn-response]
+  .reasoning-collapse-inner
+  > div
+  > div
+  > [data-session-process-activity]:first-child {
+  padding-top: 0;
+}
+
+/* "Worked for" header: body-size label + hairline closing process from answer. */
+[data-session-turn-response]
+  button.chat-reasoning-trigger.activity-disclosure-row.activity-disclosure-row {
+  min-height: 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--clash-warm-border) !important;
+}
+
+[data-session-turn-response]
+  button.chat-reasoning-trigger.activity-disclosure-row
+  .chat-transcript-disclosure-summary {
+  flex: 0 1 auto;
+}
+
+[data-session-turn-response] button.activity-disclosure-row {
+  font-size: var(--chat-transcript-row-font-size);
+  line-height: var(--chat-transcript-row-line-height);
+  font-weight: var(--chat-transcript-row-font-weight);
+}
+
+[data-session-process-activity]
+  .activity-disclosure-row[aria-expanded="false"]:not(:hover, :focus-visible)
+  .activity-disclosure-chevron {
+  opacity: 0;
+}
+
+[data-session-process-activity]
+  button.activity-disclosure-row
+  .chat-transcript-disclosure-summary {
+  flex: 0 1 auto;
+}
+
 
 .clash-chat-input-surface {
   position: relative;

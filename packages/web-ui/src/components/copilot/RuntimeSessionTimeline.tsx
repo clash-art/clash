@@ -180,13 +180,13 @@ function RuntimeTurn({
   const { t } = useTranslation();
   return (
     <AgentUITurnView
+      collapseProcessOnComplete
       sessionId={store.getState().sessionId}
       turn={turn}
       density={density}
       thoughts="history"
       activityTools="all"
       collapsiblePrimitives={CLASH_COLLAPSIBLE_PRIMITIVES}
-      className="!max-w-3xl"
       labels={{
         workingFor: (seconds) => `正在工作 ${seconds} 秒`,
         workedFor: (seconds) => `已工作 ${seconds} 秒`,

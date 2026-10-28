@@ -478,10 +478,9 @@ function sessionTitleForHeader(
   return title || fallback;
 }
 
+/** Prefer CSS truncate against available header width; keep full title in `title`. */
 function compactSessionTitleForHeader(title: string): string {
-  const characters = Array.from(title);
-  if (characters.length <= 28) return title;
-  return `${characters.slice(0, 27).join("")}…`;
+  return title;
 }
 
 function normalizedRuntimeSessionTitle(
