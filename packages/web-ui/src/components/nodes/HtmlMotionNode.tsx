@@ -35,12 +35,25 @@ export const DEFAULT_HTML_MOTION_SOURCE = `<!doctype html>
         font-family: Inter, system-ui, sans-serif;
         display: grid;
         place-items: center;
+        overflow: hidden;
       }
-      h1 { font-size: 48px; font-weight: 600; margin: 0; }
+      h1 {
+        margin: 0;
+        font-size: 48px;
+        font-weight: 600;
+        transform: translate(0px, 0px);
+        cursor: grab;
+        user-select: none;
+      }
     </style>
   </head>
   <body>
-    <h1>Edit this HTML Motion document</h1>
+    <h1
+      data-mg-id="title"
+      data-mg-editable="text,position"
+      data-mg-x="0"
+      data-mg-y="0"
+    >Edit this HTML Motion document</h1>
   </body>
 </html>
 `;
