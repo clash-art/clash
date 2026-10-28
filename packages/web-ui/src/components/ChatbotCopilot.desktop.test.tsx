@@ -2370,10 +2370,9 @@ describe("ChatbotCopilot desktop local mode", () => {
     const headerTitle = container.querySelector(
       ".clash-copilot-panel-header [data-copilot-session-title]",
     );
-    expect(headerTitle).toHaveTextContent(
-      "请认真思考一下，然后只回答 PRECISE_FIRST…",
-    );
+    expect(headerTitle).toHaveTextContent(visibleTitle);
     expect(headerTitle).toHaveAttribute("title", visibleTitle);
+    expect(headerTitle?.className).toMatch(/\btruncate\b/);
   });
 
   it("labels an empty desktop draft as a new chat", () => {
