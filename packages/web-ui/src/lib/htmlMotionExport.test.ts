@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import {
   hydrateHtmlMotionSourcesForExport,
@@ -47,6 +48,23 @@ describe("htmlMotionExport", () => {
     expect(item.htmlSource).toContain("Hello MG");
     const rem = (hydrated[0] as { items: Array<{ htmlSource?: string }> }).items[1];
     expect(rem.htmlSource).toBeUndefined();
+  });
+
+  it("hydrates htmlSource with elementOverrides applied onto content", () => {
+    const overrideNodes = {
+      "node-html": {
+        type: "html-motion",
+        data: {
+          content:
+            '<!doctype html><html><body><h1 data-mg-id="title" data-mg-editable="text,position" data-mg-x="0" data-mg-y="0">Hello MG</h1></body></html>',
+          elementOverrides: { title: { text: "From overrides", x: 15 } },
+        },
+      },
+    };
+    const hydrated = hydrateHtmlMotionSourcesForExport(tracks, overrideNodes);
+    const item = (hydrated[0] as { items: Array<{ htmlSource?: string }> }).items[0];
+    expect(item.htmlSource).toContain("From overrides");
+    expect(item.htmlSource).toContain('data-mg-x="15"');
   });
 
   it("reports readiness failures for missing sources", () => {

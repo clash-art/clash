@@ -189,6 +189,7 @@ describe("MgOpenSurface", () => {
     const last = mocks.updateNode.mock.calls.at(-1);
     expect(last?.[0]).toBe("h1");
     expect(String(last?.[1]?.data?.content ?? "")).toContain("Edited title");
+    expect(last?.[1]?.data?.elementOverrides?.title?.text).toBe("Edited title");
 
     mocks.updateNode.mockClear();
     fireEvent.change(screen.getByTestId("mg-open-element-x"), {
@@ -202,6 +203,7 @@ describe("MgOpenSurface", () => {
     expect(String(afterPos?.[1]?.data?.content ?? "")).toMatch(
       /data-mg-x="42"/,
     );
+    expect(afterPos?.[1]?.data?.elementOverrides?.title?.x).toBe(42);
 
     fireEvent.change(screen.getByTestId("mg-open-progress-range"), {
       target: { value: "12" },
@@ -239,6 +241,9 @@ describe("MgOpenSurface", () => {
     expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toContain(
       "ABC",
     );
+    expect(
+      mocks.updateNode.mock.calls[0]?.[1]?.data?.elementOverrides?.title?.text,
+    ).toBe("ABC");
   });
 
   it("flushes pending inspector draft on unmount", () => {
@@ -257,6 +262,9 @@ describe("MgOpenSurface", () => {
     expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toContain(
       "Persist on close",
     );
+    expect(
+      mocks.updateNode.mock.calls[0]?.[1]?.data?.elementOverrides?.title?.text,
+    ).toBe("Persist on close");
   });
 
   it("flushes pending inspector draft when closing the surface", () => {
@@ -276,10 +284,13 @@ describe("MgOpenSurface", () => {
     expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toContain(
       "Flush on X",
     );
+    expect(
+      mocks.updateNode.mock.calls[0]?.[1]?.data?.elementOverrides?.title?.text,
+    ).toBe("Flush on X");
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("skips persist when draft matches last written content", () => {
+  it("skips persist when draft matches last written overrides", () => {
     vi.useFakeTimers();
     const { unmount } = render(
       <MgOpenSurface session={htmlSession} onClose={() => {}} />,
@@ -310,6 +321,25 @@ describe("MgOpenSurface", () => {
     expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toMatch(
       /data-mg-x="99"/,
     );
+    expect(mocks.updateNode.mock.calls[0]?.[1]?.data?.elementOverrides?.title).toMatchObject(
+      { x: 99, y: 12 },
+    );
+  });
+
+  it("loads session elementOverrides into draft without rewriting Canvas until edit", () => {
+    vi.useFakeTimers();
+    const sessionWithOverrides = {
+      ...htmlSession,
+      elementOverrides: { title: { text: "From map", x: 7, y: 8 } },
+    };
+    render(<MgOpenSurface session={sessionWithOverrides} onClose={() => {}} />);
+    expect(
+      (screen.getByTestId("mg-open-element-text") as HTMLInputElement).value,
+    ).toBe("From map");
+    expect(
+      (screen.getByTestId("mg-open-element-x") as HTMLInputElement).value,
+    ).toBe("7");
+    expect(mocks.updateNode).not.toHaveBeenCalled();
   });
 
   it("keeps MG element autosave delay aligned with text document autosave", () => {

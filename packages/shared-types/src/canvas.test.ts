@@ -181,6 +181,21 @@ describe("Remotion component canvas node contract", () => {
     expect(parsed.fps).toBe(30);
     expect(parsed.durationInFrames).toBe(90);
   });
+
+  it("stores html-motion elementOverrides as the element-edit SoT map", () => {
+    const parsed = NodeDataSchema.parse({
+      content: "<!doctype html><html><body><h1 data-mg-id=\"title\">Hi</h1></body></html>",
+      documentId: "lower-third",
+      elementOverrides: {
+        title: { text: "Hello", x: 12, y: -4 },
+      },
+    });
+    expect(parsed.elementOverrides?.title).toEqual({
+      text: "Hello",
+      x: 12,
+      y: -4,
+    });
+  });
 });
 
 describe("Canvas Project persistence", () => {

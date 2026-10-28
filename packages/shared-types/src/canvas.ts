@@ -176,6 +176,23 @@ z.object({
    * Timeline live reference). Defaults to the Canvas node id when omitted.
    */
   documentId: z.string().min(1).optional(),
+  /**
+   * HTML MG element edit SoT: map of `data-mg-id` -> `{ text?, x?, y? }`.
+   * Absolute overrides applied onto base `content` HTML. Checkpoints may also
+   * write derived HTML back to `content` for non-open consumers.
+   */
+  elementOverrides: z
+    .record(
+      z.string().min(1),
+      z
+        .object({
+          text: z.string().max(8192).optional(),
+          x: z.number().finite().optional(),
+          y: z.number().finite().optional(),
+        })
+        .strict(),
+    )
+    .optional(),
   /** Product-scaffold preview/render width for remotion-component / html-motion. */
   compositionWidth: z.number().int().positive().optional(),
   /** Product-scaffold preview/render height for remotion-component / html-motion. */

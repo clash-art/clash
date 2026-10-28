@@ -12,6 +12,11 @@ import {
   useMgPreviewOpenRequest,
   useOptionalMgPreview,
 } from "../MgPreviewContext";
+import {
+  normalizeElementOverrides,
+  resolveHtmlMotionNodeContent,
+  type MgElementOverrides,
+} from "../../lib/htmlMotionElementEdit";
 import { calculateScaledDimensions } from "./assetNodeSizing";
 
 /**
@@ -82,16 +87,24 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 function documentValue(data: Record<string, unknown>, id: string) {
+  const elementOverrides: MgElementOverrides = normalizeElementOverrides(
+    data.elementOverrides,
+  );
+  const baseContent =
+    typeof data.content === "string" && data.content.trim()
+      ? data.content
+      : DEFAULT_HTML_MOTION_SOURCE;
   return {
     label: typeof data.label === "string" ? data.label : "HTML Motion",
     documentId:
       typeof data.documentId === "string" && data.documentId.trim()
         ? data.documentId.trim()
         : id,
-    source:
-      typeof data.content === "string" && data.content.trim()
-        ? data.content
-        : DEFAULT_HTML_MOTION_SOURCE,
+    /** Raw base/template HTML (node `content`). */
+    baseContent,
+    /** Derived HTML for in-node preview / open stage (content + overrides). */
+    source: resolveHtmlMotionNodeContent(data, DEFAULT_HTML_MOTION_SOURCE),
+    elementOverrides,
     width: positiveInteger(data.compositionWidth, 1920),
     height: positiveInteger(data.compositionHeight, 1080),
     fps: positiveInteger(data.fps, 30),
@@ -175,7 +188,9 @@ const HtmlMotionNode = ({
       nodeId: id,
       kind: "html-motion",
       label: persisted.label,
-      source: persisted.source,
+      // Open surface treats source as base HTML and applies elementOverrides.
+      source: persisted.baseContent,
+      elementOverrides: persisted.elementOverrides,
       width: persisted.width,
       height: persisted.height,
       fps: persisted.fps,
@@ -185,12 +200,13 @@ const HtmlMotionNode = ({
   }, [
     id,
     mg,
+    persisted.baseContent,
     persisted.documentId,
     persisted.durationInFrames,
+    persisted.elementOverrides,
     persisted.fps,
     persisted.height,
     persisted.label,
-    persisted.source,
     persisted.width,
   ]);
   useMgPreviewOpenRequest(id, openPreview);

@@ -5,8 +5,10 @@
  * MotionGraphicInspector lite + MotionElementInspector (text/x/y) +
  * HtmlMotionPreviewControls (trusted transport) + bottom scrub bar.
  *
- * Preview + HTML element edit lite — no SessionDraft / Edit code / Edit HTML
- * (#469). Local playhead only — no audio-master-clock.
+ * Preview + HTML element edit lite — open-state SessionDraft for
+ * elementOverrides; no Edit code / Edit HTML (#469). Local playhead only —
+ * no audio-master-clock. Canvas SoT is elementOverrides (+ derived content
+ * on checkpoint), not per-keystroke full HTML rewrite.
  */
 import {
   useCallback,
@@ -24,9 +26,14 @@ import { HtmlSceneSurface, RemotionSourceComposition } from "@clash/remotion-com
 
 import { useOptionalLoroSyncContext } from "./LoroSyncContext";
 import {
-  applyHtmlMotionElementPatch,
-  listHtmlMotionEditableElements,
+  deriveHtmlMotionContent,
+  listHtmlMotionEditableElementsWithOverrides,
+  mergeElementOverride,
+  normalizeElementOverrides,
+  seedElementOverridesFromHtml,
+  serializeElementOverrides,
   type MgEditableElement,
+  type MgElementOverrides,
   type MgElementPatch,
 } from "../lib/htmlMotionElementEdit";
 import { Dialog } from "./ui/dialog";
@@ -41,7 +48,13 @@ export type MgOpenSession = {
   nodeId: string;
   kind: "remotion-component" | "html-motion";
   label: string;
+  /** Base/template HTML from node `data.content` (may already be derived). */
   source: string;
+  /**
+   * Authoritative element override map from node `data.elementOverrides`
+   * (`data-mg-id` -> `{ text?, x?, y? }`). Absent/empty = parse from HTML.
+   */
+  elementOverrides?: MgElementOverrides;
   width: number;
   height: number;
   fps: number;
@@ -303,7 +316,7 @@ function MgElementInspector({
           ) : null}
           <p className="text-[11px] leading-relaxed text-content-muted">
             Drag on stage to move position; double-click text on stage to edit.
-            Changes write back to the Canvas HTML document.
+            Draft overrides flush to Canvas on pause / drag end / close.
           </p>
         </div>
       ) : null}
@@ -477,36 +490,55 @@ export function MgOpenSurface({
   const playerRef = useRef<PlayerRef>(null);
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(true);
-  const [source, setSource] = useState(session.source);
+  const initialOverrides = normalizeElementOverrides(session.elementOverrides);
+  const [draftOverrides, setDraftOverrides] =
+    useState<MgElementOverrides>(initialOverrides);
+  const [source, setSource] = useState(() =>
+    deriveHtmlMotionContent(session.source, initialOverrides),
+  );
   const [selectedElementId, setSelectedElementId] = useState<string | null>(
     null,
   );
   const loroSync = useOptionalLoroSyncContext();
   const reactFlow = useReactFlow();
 
-  const latestSourceRef = useRef(session.source);
-  const persistedSourceRef = useRef(session.source);
+  const baseHtmlRef = useRef(session.source);
+  const latestOverridesRef = useRef<MgElementOverrides>(initialOverrides);
+  const persistedOverridesRef = useRef<string>(
+    serializeElementOverrides(initialOverrides),
+  );
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const sessionOverridesKey = serializeElementOverrides(
+    normalizeElementOverrides(session.elementOverrides),
+  );
 
   useEffect(() => {
     if (autosaveTimerRef.current) {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
-    latestSourceRef.current = session.source;
-    persistedSourceRef.current = session.source;
-    setSource(session.source);
+    const nextOverrides = normalizeElementOverrides(session.elementOverrides);
+    baseHtmlRef.current = session.source;
+    latestOverridesRef.current = nextOverrides;
+    persistedOverridesRef.current = serializeElementOverrides(nextOverrides);
+    setDraftOverrides(nextOverrides);
+    setSource(deriveHtmlMotionContent(session.source, nextOverrides));
     setSelectedElementId(null);
     setFrame(0);
     setPlaying(true);
-  }, [session.nodeId, session.source, session.kind]);
+    // sessionOverridesKey fingerprints elementOverrides (avoid object-identity churn).
+  }, [session.nodeId, session.source, session.kind, sessionOverridesKey]);
 
   const elements = useMemo(
     () =>
       session.kind === "html-motion"
-        ? listHtmlMotionEditableElements(source)
+        ? listHtmlMotionEditableElementsWithOverrides(
+            baseHtmlRef.current,
+            draftOverrides,
+          )
         : [],
-    [session.kind, source],
+    [session.kind, draftOverrides, source],
   );
 
   useEffect(() => {
@@ -523,7 +555,7 @@ export function MgOpenSurface({
     setSelectedElementId(elements[0]!.id);
   }, [elements, selectedElementId]);
 
-  // Keep canvas writers in refs so persistLatestSource stays identity-stable
+  // Keep canvas writers in refs so persistDraft stays identity-stable
   // (mirror TextDocumentEditorSurface onSaveRef) — otherwise the unmount-flush
   // effect re-runs cleanup on every render and defeats debounce.
   const nodeIdRef = useRef(session.nodeId);
@@ -533,16 +565,22 @@ export function MgOpenSurface({
   reactFlowRef.current = reactFlow;
   loroSyncRef.current = loroSync;
 
-  const persistLatestSource = useCallback(() => {
+  const persistDraft = useCallback(() => {
     if (autosaveTimerRef.current) {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
-    const draft = latestSourceRef.current;
-    if (draft === persistedSourceRef.current) {
+    const overrides = latestOverridesRef.current;
+    const fingerprint = serializeElementOverrides(overrides);
+    if (fingerprint === persistedOverridesRef.current) {
       return;
     }
+    const derived = deriveHtmlMotionContent(baseHtmlRef.current, overrides);
     const nodeId = nodeIdRef.current;
+    const dataPatch = {
+      content: derived,
+      elementOverrides: overrides,
+    };
     try {
       reactFlowRef.current.setNodes((nodes) =>
         nodes.map((node) =>
@@ -551,7 +589,7 @@ export function MgOpenSurface({
                 ...node,
                 data: {
                   ...node.data,
-                  content: draft,
+                  ...dataPatch,
                 },
               }
             : node,
@@ -561,9 +599,10 @@ export function MgOpenSurface({
       // Outside ReactFlow in unit tests — persistence via loro still attempted.
     }
     loroSyncRef.current?.updateNode?.(nodeId, {
-      data: { content: draft },
+      data: dataPatch,
     });
-    persistedSourceRef.current = draft;
+    persistedOverridesRef.current = fingerprint;
+    setSource(derived);
   }, []);
 
   const schedulePersist = useCallback(() => {
@@ -572,27 +611,40 @@ export function MgOpenSurface({
     }
     autosaveTimerRef.current = setTimeout(() => {
       autosaveTimerRef.current = null;
-      persistLatestSource();
+      persistDraft();
     }, MG_ELEMENT_AUTOSAVE_DELAY_MS);
-  }, [persistLatestSource]);
+  }, [persistDraft]);
 
-  /** Inspector Text/X/Y: local UI immediate; Canvas/loro debounced (text-autosave cadence). */
-  const applyElementPatch = useCallback(
-    (elementId: string, patch: MgElementPatch) => {
+  const commitOverridePatch = useCallback(
+    (elementId: string, patch: MgElementPatch, mode: "debounce" | "immediate") => {
       try {
-        const next = applyHtmlMotionElementPatch(
-          latestSourceRef.current,
+        let next = latestOverridesRef.current;
+        // Migrate: first edit seeds absolute values from current HTML.
+        next = seedElementOverridesFromHtml(baseHtmlRef.current, next, [
           elementId,
-          patch,
-        );
-        latestSourceRef.current = next;
-        setSource(next);
-        schedulePersist();
+        ]);
+        next = mergeElementOverride(next, elementId, patch);
+        latestOverridesRef.current = next;
+        setDraftOverrides(next);
+        setSource(deriveHtmlMotionContent(baseHtmlRef.current, next));
+        if (mode === "immediate") {
+          persistDraft();
+        } else {
+          schedulePersist();
+        }
       } catch {
-        // Invalid patch — keep previous source.
+        // Invalid patch — keep previous draft.
       }
     },
-    [schedulePersist],
+    [persistDraft, schedulePersist],
+  );
+
+  /** Inspector Text/X/Y: local draft immediate; Canvas/loro debounced. */
+  const applyElementPatch = useCallback(
+    (elementId: string, patch: MgElementPatch) => {
+      commitOverridePatch(elementId, patch, "debounce");
+    },
+    [commitOverridePatch],
   );
 
   /**
@@ -601,33 +653,22 @@ export function MgOpenSurface({
    */
   const applyElementPatchImmediate = useCallback(
     (elementId: string, patch: MgElementPatch) => {
-      try {
-        const next = applyHtmlMotionElementPatch(
-          latestSourceRef.current,
-          elementId,
-          patch,
-        );
-        latestSourceRef.current = next;
-        setSource(next);
-        persistLatestSource();
-      } catch {
-        // Invalid patch — keep previous source.
-      }
+      commitOverridePatch(elementId, patch, "immediate");
     },
-    [persistLatestSource],
+    [commitOverridePatch],
   );
 
   useEffect(
     () => () => {
-      persistLatestSource();
+      persistDraft();
     },
-    [persistLatestSource],
+    [persistDraft],
   );
 
   const handleClose = useCallback(() => {
-    persistLatestSource();
+    persistDraft();
     onClose();
-  }, [onClose, persistLatestSource]);
+  }, [onClose, persistDraft]);
 
   // HTML: local interval playhead (not audio-master-clock).
   useEffect(() => {
