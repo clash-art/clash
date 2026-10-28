@@ -34,6 +34,9 @@ import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
+/** Match text document autosave cadence — avoid loro version explosion on inspector keystrokes. */
+const MG_ELEMENT_AUTOSAVE_DELAY_MS = 500;
+
 export type MgOpenSession = {
   nodeId: string;
   kind: "remotion-component" | "html-motion";
@@ -481,7 +484,17 @@ export function MgOpenSurface({
   const loroSync = useOptionalLoroSyncContext();
   const reactFlow = useReactFlow();
 
+  const latestSourceRef = useRef(session.source);
+  const persistedSourceRef = useRef(session.source);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    latestSourceRef.current = session.source;
+    persistedSourceRef.current = session.source;
     setSource(session.source);
     setSelectedElementId(null);
     setFrame(0);
@@ -510,45 +523,111 @@ export function MgOpenSurface({
     setSelectedElementId(elements[0]!.id);
   }, [elements, selectedElementId]);
 
-  const persistSource = useCallback(
-    (nextSource: string) => {
-      setSource(nextSource);
-      const nodeId = session.nodeId;
-      try {
-        reactFlow.setNodes((nodes) =>
-          nodes.map((node) =>
-            node.id === nodeId
-              ? {
-                  ...node,
-                  data: {
-                    ...node.data,
-                    content: nextSource,
-                  },
-                }
-              : node,
-          ),
-        );
-      } catch {
-        // Outside ReactFlow in unit tests — persistence via loro still attempted.
-      }
-      loroSync?.updateNode?.(nodeId, {
-        data: { content: nextSource },
-      });
-    },
-    [loroSync, reactFlow, session.nodeId],
-  );
+  // Keep canvas writers in refs so persistLatestSource stays identity-stable
+  // (mirror TextDocumentEditorSurface onSaveRef) — otherwise the unmount-flush
+  // effect re-runs cleanup on every render and defeats debounce.
+  const nodeIdRef = useRef(session.nodeId);
+  const reactFlowRef = useRef(reactFlow);
+  const loroSyncRef = useRef(loroSync);
+  nodeIdRef.current = session.nodeId;
+  reactFlowRef.current = reactFlow;
+  loroSyncRef.current = loroSync;
 
+  const persistLatestSource = useCallback(() => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const draft = latestSourceRef.current;
+    if (draft === persistedSourceRef.current) {
+      return;
+    }
+    const nodeId = nodeIdRef.current;
+    try {
+      reactFlowRef.current.setNodes((nodes) =>
+        nodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  content: draft,
+                },
+              }
+            : node,
+        ),
+      );
+    } catch {
+      // Outside ReactFlow in unit tests — persistence via loro still attempted.
+    }
+    loroSyncRef.current?.updateNode?.(nodeId, {
+      data: { content: draft },
+    });
+    persistedSourceRef.current = draft;
+  }, []);
+
+  const schedulePersist = useCallback(() => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = setTimeout(() => {
+      autosaveTimerRef.current = null;
+      persistLatestSource();
+    }, MG_ELEMENT_AUTOSAVE_DELAY_MS);
+  }, [persistLatestSource]);
+
+  /** Inspector Text/X/Y: local UI immediate; Canvas/loro debounced (text-autosave cadence). */
   const applyElementPatch = useCallback(
     (elementId: string, patch: MgElementPatch) => {
       try {
-        const next = applyHtmlMotionElementPatch(source, elementId, patch);
-        persistSource(next);
+        const next = applyHtmlMotionElementPatch(
+          latestSourceRef.current,
+          elementId,
+          patch,
+        );
+        latestSourceRef.current = next;
+        setSource(next);
+        schedulePersist();
       } catch {
         // Invalid patch — keep previous source.
       }
     },
-    [persistSource, source],
+    [schedulePersist],
   );
+
+  /**
+   * Stage pointerup / in-iframe text commit: already one-shot — persist immediately
+   * (live translate stays in-iframe until pointerup; see htmlSandbox).
+   */
+  const applyElementPatchImmediate = useCallback(
+    (elementId: string, patch: MgElementPatch) => {
+      try {
+        const next = applyHtmlMotionElementPatch(
+          latestSourceRef.current,
+          elementId,
+          patch,
+        );
+        latestSourceRef.current = next;
+        setSource(next);
+        persistLatestSource();
+      } catch {
+        // Invalid patch — keep previous source.
+      }
+    },
+    [persistLatestSource],
+  );
+
+  useEffect(
+    () => () => {
+      persistLatestSource();
+    },
+    [persistLatestSource],
+  );
+
+  const handleClose = useCallback(() => {
+    persistLatestSource();
+    onClose();
+  }, [onClose, persistLatestSource]);
 
   // HTML: local interval playhead (not audio-master-clock).
   useEffect(() => {
@@ -610,7 +689,7 @@ export function MgOpenSurface({
   return (
     <Dialog
       open
-      onClose={onClose}
+      onClose={handleClose}
       ariaLabel={`Motion graphic: ${session.label}`}
       size="auto"
       hideCloseButton
@@ -638,7 +717,7 @@ export function MgOpenSurface({
               session={session}
               source={source}
               frame={frame}
-              onElementEdit={applyElementPatch}
+              onElementEdit={applyElementPatchImmediate}
               onElementSelect={setSelectedElementId}
             />
           ) : (
@@ -665,7 +744,7 @@ export function MgOpenSurface({
           onElementPatch={applyElementPatch}
           onTogglePlay={togglePlay}
           onSeek={seek}
-          onClose={onClose}
+          onClose={handleClose}
         />
       </div>
     </Dialog>

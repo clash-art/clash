@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -61,21 +61,39 @@ vi.mock("@clash/remotion-components", () => ({
     frame,
     source,
     elementEdit,
+    onElementEdit,
   }: {
     frame: number;
     source: string;
     elementEdit?: boolean;
+    onElementEdit?: (event: {
+      elementId: string;
+      patch: { x?: number; y?: number; text?: string };
+    }) => void;
   }) => (
     <div
       data-testid="html-scene-surface"
       data-frame={String(frame)}
       data-source-length={String(source.length)}
       data-element-edit={String(Boolean(elementEdit))}
-    />
+    >
+      <button
+        type="button"
+        data-testid="html-scene-stage-commit"
+        onClick={() =>
+          onElementEdit?.({ elementId: "title", patch: { x: 99, y: 12 } })
+        }
+      >
+        stage commit
+      </button>
+    </div>
   ),
 }));
 
 import { MgOpenSurface, type MgOpenSession } from "./MgOpenSurface";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const remotionSession: MgOpenSession = {
   nodeId: "r1",
@@ -104,7 +122,10 @@ const htmlSession: MgOpenSession = {
 };
 
 describe("MgOpenSurface", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
   beforeEach(() => {
     mocks.setNodes.mockClear();
@@ -136,6 +157,7 @@ describe("MgOpenSurface", () => {
   });
 
   it("renders HTML stage with progress bar and element text/position inspector", () => {
+    vi.useFakeTimers();
     render(<MgOpenSurface session={htmlSession} onClose={() => {}} />);
 
     expect(screen.getByTestId("mg-open-surface").getAttribute("data-mg-kind")).toBe(
@@ -154,13 +176,27 @@ describe("MgOpenSurface", () => {
     fireEvent.change(screen.getByTestId("mg-open-element-text"), {
       target: { value: "Edited title" },
     });
+    // Local UI updates immediately (input value) without Canvas/loro persist yet.
+    expect(
+      (screen.getByTestId("mg-open-element-text") as HTMLInputElement).value,
+    ).toBe("Edited title");
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
     expect(mocks.updateNode).toHaveBeenCalled();
     const last = mocks.updateNode.mock.calls.at(-1);
     expect(last?.[0]).toBe("h1");
     expect(String(last?.[1]?.data?.content ?? "")).toContain("Edited title");
 
+    mocks.updateNode.mockClear();
     fireEvent.change(screen.getByTestId("mg-open-element-x"), {
       target: { value: "42" },
+    });
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(500);
     });
     const afterPos = mocks.updateNode.mock.calls.at(-1);
     expect(String(afterPos?.[1]?.data?.content ?? "")).toMatch(
@@ -171,5 +207,114 @@ describe("MgOpenSurface", () => {
       target: { value: "12" },
     });
     expect(screen.getByTestId("html-scene-surface").dataset.frame).toBe("12");
+  });
+
+  it("debounces rapid inspector patches into a single Canvas/loro persist", () => {
+    vi.useFakeTimers();
+    render(<MgOpenSurface session={htmlSession} onClose={() => {}} />);
+
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "A" },
+    });
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "AB" },
+    });
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "ABC" },
+    });
+
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+    expect(mocks.setNodes).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(499);
+    });
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(mocks.updateNode).toHaveBeenCalledTimes(1);
+    expect(mocks.setNodes).toHaveBeenCalledTimes(1);
+    expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toContain(
+      "ABC",
+    );
+  });
+
+  it("flushes pending inspector draft on unmount", () => {
+    vi.useFakeTimers();
+    const { unmount } = render(
+      <MgOpenSurface session={htmlSession} onClose={() => {}} />,
+    );
+
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "Persist on close" },
+    });
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+
+    unmount();
+    expect(mocks.updateNode).toHaveBeenCalledTimes(1);
+    expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toContain(
+      "Persist on close",
+    );
+  });
+
+  it("flushes pending inspector draft when closing the surface", () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    render(<MgOpenSurface session={htmlSession} onClose={onClose} />);
+
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "Flush on X" },
+    });
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close HTML Motion preview" }),
+    );
+    expect(mocks.updateNode).toHaveBeenCalledTimes(1);
+    expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toContain(
+      "Flush on X",
+    );
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("skips persist when draft matches last written content", () => {
+    vi.useFakeTimers();
+    const { unmount } = render(
+      <MgOpenSurface session={htmlSession} onClose={() => {}} />,
+    );
+
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "Same" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(mocks.updateNode).toHaveBeenCalledTimes(1);
+    mocks.updateNode.mockClear();
+    mocks.setNodes.mockClear();
+
+    // No further edits — unmount should not rewrite identical content.
+    unmount();
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+    expect(mocks.setNodes).not.toHaveBeenCalled();
+  });
+
+  it("persists stage pointerup commits immediately (one-shot)", () => {
+    vi.useFakeTimers();
+    render(<MgOpenSurface session={htmlSession} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId("html-scene-stage-commit"));
+    expect(mocks.updateNode).toHaveBeenCalledTimes(1);
+    expect(String(mocks.updateNode.mock.calls[0]?.[1]?.data?.content ?? "")).toMatch(
+      /data-mg-x="99"/,
+    );
+  });
+
+  it("keeps MG element autosave delay aligned with text document autosave", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(join(here, "MgOpenSurface.tsx"), "utf8");
+    expect(source).toContain("MG_ELEMENT_AUTOSAVE_DELAY_MS = 500");
   });
 });
