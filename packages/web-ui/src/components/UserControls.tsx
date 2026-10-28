@@ -12,6 +12,7 @@ import {
 import { Link } from "react-router";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
 import { useBillingBalance } from "@clash/web-ui/hooks/useBillingBalance";
+import { isBillingPluginEnabled } from "@clash/web-ui/lib/consolePlugins";
 import { isDesktopRuntime } from "@clash/web-ui/lib/runtimeConfig";
 import { Button } from "./ui/button";
 import {
@@ -76,7 +77,8 @@ function AccountUserControls({
   const user = session?.user;
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const balance = useBillingBalance(!!user);
+  const billingEnabled = isBillingPluginEnabled();
+  const balance = useBillingBalance(!!user && billingEnabled);
 
   const handleSignOut = async () => {
     try {
@@ -128,7 +130,7 @@ function AccountUserControls({
       ) : null}
       {user ? (
         <div className="relative flex items-center gap-2">
-          {(balance.status === "ready" || balance.status === "loading") && (
+          {billingEnabled && (balance.status === "ready" || balance.status === "loading") && (
             <Tooltip
               label={
                 balance.status === "ready"
@@ -210,7 +212,7 @@ function AccountUserControls({
                   Settings
                 </span>
               </DropdownMenuItem>
-              {balance.status !== "unavailable" && (
+              {billingEnabled && balance.status !== "unavailable" && (
                 <DropdownMenuItem asChild>
                   <Link to="/billing">
                     <CreditCard

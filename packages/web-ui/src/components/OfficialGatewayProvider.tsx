@@ -6,6 +6,7 @@ import {
   type OfficialGatewayStatus,
 } from "@clash/shared-types";
 import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { isBillingPluginEnabled } from "../lib/consolePlugins";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { InlineAlert } from "./ui/feedback";
 import { SettingsRow } from "./SettingsPrimitives";
@@ -190,6 +191,17 @@ export function OfficialGatewayProviderRow() {
             <InlineAlert
               tone="error"
               title={`${status.lastError.code}: ${status.lastError.message}`}
+              action={
+                status.lastError.code === "GATEWAY_BUDGET_EXCEEDED" &&
+                isBillingPluginEnabled() ? (
+                  <Link
+                    to="/billing"
+                    className="text-sm font-medium underline underline-offset-2"
+                  >
+                    Top up credits
+                  </Link>
+                ) : undefined
+              }
             />
           ) : null}
         </>

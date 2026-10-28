@@ -8,6 +8,7 @@
  * for a member.
  */
 import { useState } from "react";
+import { Link } from "react-router";
 
 import {
   BUDGET_ENFORCEMENTS,
@@ -18,6 +19,7 @@ import {
   type GatewayKey,
   type Subscription,
 } from "../../lib/adminClient";
+import { isBillingPluginEnabled } from "../../lib/consolePlugins";
 import {
   formatPrice,
   teamApi,
@@ -401,6 +403,14 @@ function TeamWalletSection({
   const live = subscription && (subscription.status === "active" || subscription.status === "trialing");
   return (
     <AdminSection title="Team wallet" description="Packages and top-ups fund the whole team; every member's requests draw on it.">
+      {isBillingPluginEnabled() ? (
+        <p className="text-sm text-stone-600">
+          Purchases go through the hosted billing page (payment provider checkout).{" "}
+          <Link to="/billing" className="font-medium underline underline-offset-2">
+            Open billing
+          </Link>
+        </p>
+      ) : null}
       <AdminCard className="grid gap-3 sm:grid-cols-4">
         {wallet ? (
           <>
@@ -442,11 +452,20 @@ function TeamWalletSection({
           { header: "Price", cell: (row) => formatPrice(row.priceMinor, row.priceCurrency), align: "right" },
           {
             header: "",
-            cell: (row) => (
-              <Button type="button" size="sm" aria-label={`Subscribe to ${row.name}`} disabled={action.pending || Boolean(live)} onClick={() => void action.run(() => teamApi.subscribe(tenantId, row.id, idempotencyKey()))}>
-                Subscribe
-              </Button>
-            ),
+            cell: (row) =>
+              isBillingPluginEnabled() ? (
+                <Link
+                  to="/billing"
+                  aria-label={`Subscribe to ${row.name} on Billing`}
+                  className="inline-flex h-8 items-center rounded-md border border-warm-border bg-warm-surface px-3 text-xs font-medium hover:bg-warm-hover"
+                >
+                  Billing
+                </Link>
+              ) : (
+                <Button type="button" size="sm" aria-label={`Subscribe to ${row.name}`} disabled={action.pending || Boolean(live)} onClick={() => void action.run(() => teamApi.subscribe(tenantId, row.id, idempotencyKey()))}>
+                  Subscribe
+                </Button>
+              ),
           },
         ]}
       />
@@ -461,11 +480,20 @@ function TeamWalletSection({
           { header: "Price", cell: (row) => formatPrice(row.priceMinor, row.priceCurrency), align: "right" },
           {
             header: "",
-            cell: (row) => (
-              <Button type="button" size="sm" aria-label={`Buy ${row.name}`} disabled={action.pending} onClick={() => void action.run(() => teamApi.topup(tenantId, row.id, idempotencyKey()))}>
-                Buy
-              </Button>
-            ),
+            cell: (row) =>
+              isBillingPluginEnabled() ? (
+                <Link
+                  to="/billing"
+                  aria-label={`Buy ${row.name} on Billing`}
+                  className="inline-flex h-8 items-center rounded-md border border-warm-border bg-warm-surface px-3 text-xs font-medium hover:bg-warm-hover"
+                >
+                  Billing
+                </Link>
+              ) : (
+                <Button type="button" size="sm" aria-label={`Buy ${row.name}`} disabled={action.pending} onClick={() => void action.run(() => teamApi.topup(tenantId, row.id, idempotencyKey()))}>
+                  Buy
+                </Button>
+              ),
           },
         ]}
       />

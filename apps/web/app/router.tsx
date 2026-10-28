@@ -1,8 +1,23 @@
 import { createBrowserRouter } from "react-router";
+import { configureConsolePlugins } from "@clash/web-ui/lib/consolePlugins";
 import AppLayout from "./layouts/AppLayout";
 import { loader as appLayoutLoader } from "./layouts/appLayoutLoader";
 import { ErrorBoundary, HydrateFallback } from "./root";
 import { clearRouteModuleRecovery } from "./lib/routeModuleRecovery";
+import { consolePlugins } from "./plugins/registry";
+
+// Hosted overlay may replace consolePlugins with a billing (etc.) plugin.
+// Configure shared UI (UserControls, 402 top-up) from the same registry.
+configureConsolePlugins(consolePlugins);
+
+function pluginChildRoutes() {
+  return consolePlugins.flatMap((plugin) =>
+    (plugin.routes ?? []).map((route) => ({
+      path: route.path,
+      element: route.element,
+    })),
+  );
+}
 
 // Object Route Module shim: route files export the page component as
 // `default` and (optionally) a `loader`. createBrowserRouter's `lazy`
@@ -49,7 +64,9 @@ export const router = createBrowserRouter([
         path: "projects/:id",
         lazy: lazyRoute(() => import("./routes/project.$id")),
       },
-      { path: "billing", lazy: lazyRoute(() => import("./routes/billing")) },
+      // Billing (and other hosted-only pages) come from consolePlugins —
+      // OSS registry is empty so self-host has no /billing route or nav.
+      ...pluginChildRoutes(),
       // Team settings (#354): the team owner manages members, budgets and limits.
       { path: "team", lazy: lazyRoute(() => import("./routes/team")) },
       { path: "team/invite", lazy: lazyRoute(() => import("./routes/team.invite")) },
