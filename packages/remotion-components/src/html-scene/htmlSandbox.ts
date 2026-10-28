@@ -163,8 +163,8 @@ export function htmlSceneElementEditBridgeScript(sceneWidth = 1920): string {
     el.setAttribute("data-mg-y",String(y));
     var style=el.getAttribute("style")||"";
     var t="translate("+x+"px, "+y+"px)";
-    if(/translate\([^)]*\)/.test(style)) style=style.replace(/translate\([^)]*\)/,t);
-    else style=style.trim()?(style.replace(/;?\s*$/,"")+"; transform: "+t+";"):("transform: "+t+";");
+    if(/translate\\([^)]*\\)/.test(style)) style=style.replace(/translate\\([^)]*\\)/,t);
+    else style=style.trim()?(style.replace(/;?\\s*$/,"")+"; transform: "+t+";"):("transform: "+t+";");
     el.setAttribute("style",style);
   }
   var drag=null;
