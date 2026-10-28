@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import RemotionComponentNode from "./RemotionComponentNode";
@@ -57,16 +57,6 @@ vi.mock("../LoroSyncContext", () => ({
   }),
 }));
 
-vi.mock("./NodeModalDialog", () => ({
-  NodeModalDialog: ({
-    open,
-    children,
-  }: {
-    open: boolean;
-    children: React.ReactNode;
-  }) => (open ? <div role="dialog">{children}</div> : null),
-}));
-
 vi.mock("../ui/select", () => ({
   SelectMenu: ({ value }: { value: string }) => (
     <div data-testid="timeline-select">{value}</div>
@@ -106,13 +96,14 @@ describe("RemotionComponentNode", () => {
     mocks.getNode.mockReset();
   });
 
-  it("is a distinct code-editable node with a real Remotion Player preview", () => {
+  it("is a distinct Remotion node with a real Player preview and no code-edit chrome", () => {
     render(<RemotionComponentNode {...baseProps} />);
 
     expect(
       screen.getByTestId("remotion-player").getAttribute("data-source"),
     ).toContain("Before");
-    expect(screen.getByRole("button", { name: "Edit code" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit code" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /render|export/i })).toBeNull();
   });
 
@@ -186,36 +177,6 @@ describe("RemotionComponentNode", () => {
       width: 281,
       height: 544,
       style: { width: 281, height: 544, zIndex: 1000 },
-    });
-  });
-
-  it("uses the component composition shape in the code editor preview", () => {
-    render(<RemotionComponentNode {...baseProps} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit code" }));
-    const preview = screen.getByTestId("remotion-component-editor-preview");
-    const width = Number.parseFloat(preview.style.width);
-    const height = Number.parseFloat(preview.style.height);
-
-    expect(width / height).toBeCloseTo(720 / 1280, 2);
-  });
-
-  it("modifies source on the same Canvas node id", () => {
-    render(<RemotionComponentNode {...baseProps} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit code" }));
-    const editor = screen.getByRole("textbox", { name: "Remotion TSX source" });
-    fireEvent.change(editor, {
-      target: {
-        value: "export default function Greeting(){ return <div>After</div>; }",
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save component" }));
-
-    expect(mocks.updateNode).toHaveBeenCalledWith("remotion-greeting", {
-      data: expect.objectContaining({
-        content: expect.stringContaining("After"),
-      }),
     });
   });
 

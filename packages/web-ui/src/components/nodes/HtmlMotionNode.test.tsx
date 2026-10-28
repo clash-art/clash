@@ -28,16 +28,6 @@ vi.mock("../LoroSyncContext", () => ({
   }),
 }));
 
-vi.mock("./NodeModalDialog", () => ({
-  NodeModalDialog: ({
-    open,
-    children,
-  }: {
-    open: boolean;
-    children: React.ReactNode;
-  }) => (open ? <div data-testid="html-motion-editor">{children}</div> : null),
-}));
-
 import HtmlMotionNode, {
   calculateHtmlMotionNodeDimensions,
   DEFAULT_HTML_MOTION_SOURCE,
@@ -81,14 +71,15 @@ describe("HtmlMotionNode", () => {
     expect(dimensions.height).toBeGreaterThan(dimensions.preview.height);
   });
 
-  it("renders a distinct html-motion node with a placeholder preview", () => {
+  it("renders a distinct html-motion node with a placeholder preview and no HTML-edit chrome", () => {
     render(<HtmlMotionNode {...baseProps} />);
 
     expect(screen.getByTestId("html-motion-node")).toBeTruthy();
     expect(screen.getByTestId("html-motion-preview").textContent).toMatch(
       /HTML Motion source/,
     );
-    expect(screen.getByRole("button", { name: "Edit HTML" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit HTML" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit$/i })).toBeNull();
     expect(screen.getByText("Lower third")).toBeTruthy();
   });
 });

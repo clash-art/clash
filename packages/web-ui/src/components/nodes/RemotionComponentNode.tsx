@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useEffect } from "react";
 import {
   Handle,
   Position,
@@ -6,17 +6,12 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { Code, FilmStrip, FloppyDisk, X } from "@phosphor-icons/react";
+import { FilmStrip } from "@phosphor-icons/react";
 import { Player } from "@remotion/player";
 import { RemotionSourceComposition } from "@clash/remotion-components";
 
 import { useOptionalLoroSyncContext } from "../LoroSyncContext";
-import { NodeModalDialog } from "./NodeModalDialog";
 import { calculateScaledDimensions } from "./assetNodeSizing";
-import { Button } from "../ui/button";
-import { IconButton } from "../ui/icon-button";
-import { Input } from "../ui/input";
-import { Textarea } from "../ui/textarea";
 
 export const DEFAULT_REMOTION_COMPONENT_SOURCE = `import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
@@ -95,10 +90,6 @@ const RemotionComponentNode = ({
   const loroSync = useOptionalLoroSyncContext();
   const { getNode, setNodes } = useReactFlow();
   const persisted = componentValue(data, id);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [draftLabel, setDraftLabel] = useState(persisted.label);
-  const [draftSource, setDraftSource] = useState(persisted.source);
-  const [message, setMessage] = useState<string | null>(null);
   const nodeDimensions = calculateRemotionComponentNodeDimensions(
     persisted.width,
     persisted.height,
@@ -146,37 +137,6 @@ const RemotionComponentNode = ({
     width,
   ]);
 
-  useEffect(() => {
-    setDraftLabel(persisted.label);
-    setDraftSource(persisted.source);
-  }, [persisted.label, persisted.source]);
-
-  const saveComponent = useCallback(() => {
-    const nextLabel = draftLabel.trim() || "Remotion Component";
-    const nextSource = draftSource.trim()
-      ? draftSource
-      : DEFAULT_REMOTION_COMPONENT_SOURCE;
-    const ok = loroSync?.updateNode(id, {
-      data: {
-        label: nextLabel,
-        componentId: persisted.componentId,
-        content: nextSource,
-        compositionWidth: persisted.width,
-        compositionHeight: persisted.height,
-        fps: persisted.fps,
-        durationInFrames: persisted.durationInFrames,
-      },
-    });
-    if (ok === false) {
-      setMessage(
-        "The component changed concurrently. Reload it and try again.",
-      );
-      return;
-    }
-    setMessage(null);
-    setEditorOpen(false);
-  }, [draftLabel, draftSource, id, loroSync, persisted]);
-
   const player = (
     <Player
       key={`${persisted.componentId}:${persisted.source}`}
@@ -196,122 +156,37 @@ const RemotionComponentNode = ({
   );
 
   return (
-    <>
-      <div
-        data-testid="remotion-component-node"
-        className="group relative"
-        style={{ width: previewSize.width }}
+    <div
+      data-testid="remotion-component-node"
+      className="group relative"
+      style={{ width: previewSize.width }}
+    >
+      <article
+        className={`flex flex-col overflow-hidden rounded-matrix bg-warm-surface shadow-lg ring-1 ring-warm-border ${
+          selected ? "ring-4 ring-brand ring-offset-2" : ""
+        }`}
       >
-        <article
-          className={`flex flex-col overflow-hidden rounded-matrix bg-warm-surface shadow-lg ring-1 ring-warm-border ${
-            selected ? "ring-4 ring-brand ring-offset-2" : ""
-          }`}
-        >
-          <header className="flex h-11 shrink-0 items-center gap-2 border-b border-warm-border px-3">
-            <FilmStrip className="h-4 w-4 text-brand" weight="duotone" />
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-content-primary">
-              {persisted.label}
-            </span>
-            <Button
-              size="sm"
-              shape="rounded"
-              aria-label="Edit code"
-              leftIcon={<Code className="h-3.5 w-3.5" />}
-              onClick={() => setEditorOpen(true)}
-              className="nodrag h-7 min-h-7 px-2 text-xs"
-            >
-              Edit code
-            </Button>
-          </header>
-          <div
-            data-testid="remotion-component-preview"
-            className="pointer-events-none shrink-0 select-none bg-black"
-            style={{ width: previewSize.width, height: previewSize.height }}
-          >
-            {player}
-          </div>
-          {message ? (
-            <p
-              role="status"
-              className="border-t border-warm-border px-3 py-1.5 text-[11px] text-content-secondary"
-            >
-              {message}
-            </p>
-          ) : null}
-        </article>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="output"
-          className="!h-4 !w-4 !translate-x-2 !border-4 !border-warm-surface !bg-content-muted shadow-sm transition-all hover:scale-125 hover:!bg-brand"
-        />
-      </div>
-
-      <NodeModalDialog
-        open={editorOpen}
-        onClose={() => setEditorOpen(false)}
-        ariaLabel={`Edit ${persisted.label}`}
-        contentClassName="max-w-[min(1400px,calc(100vw-4rem))]"
-      >
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-warm-border px-4">
-          <Code className="h-5 w-5 text-brand" weight="duotone" />
-          <Input
-            aria-label="Component label"
-            value={draftLabel}
-            onChange={(event) => setDraftLabel(event.target.value)}
-            className="min-w-0 flex-1 border-none bg-transparent text-base font-semibold"
-          />
-          <Button
-            size="sm"
-            shape="rounded"
-            aria-label="Save component"
-            leftIcon={<FloppyDisk className="h-4 w-4" />}
-            onClick={saveComponent}
-          >
-            Save
-          </Button>
-          <IconButton
-            label="Close component editor"
-            icon={<X className="h-4 w-4" />}
-            onClick={() => setEditorOpen(false)}
-          />
+        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-warm-border px-3">
+          <FilmStrip className="h-4 w-4 text-brand" weight="duotone" />
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-content-primary">
+            {persisted.label}
+          </span>
         </header>
-        <div className="grid min-h-0 flex-1 grid-cols-2 bg-warm-page">
-          <div className="min-h-0 border-r border-warm-border p-3">
-            <Textarea
-              aria-label="Remotion TSX source"
-              spellCheck={false}
-              value={draftSource}
-              onChange={(event) => setDraftSource(event.target.value)}
-              className="h-full w-full resize-none rounded-matrix border border-warm-border bg-stone-950 p-4 font-mono text-xs leading-5 text-stone-100"
-            />
-          </div>
-          <div className="flex min-h-0 items-center justify-center overflow-hidden bg-stone-950 p-4">
-            <div
-              data-testid="remotion-component-editor-preview"
-              className="max-h-full max-w-full overflow-hidden rounded-matrix bg-black shadow-2xl"
-              style={{ width: previewSize.width, height: previewSize.height }}
-            >
-              <Player
-                key={`draft:${draftSource}`}
-                component={RemotionSourceComposition}
-                compositionWidth={persisted.width}
-                compositionHeight={persisted.height}
-                durationInFrames={persisted.durationInFrames}
-                fps={persisted.fps}
-                inputProps={{
-                  source: draftSource,
-                  componentId: persisted.componentId,
-                }}
-                controls
-                loop
-                style={{ width: "100%", height: "100%" }}
-              />
-            </div>
-          </div>
+        <div
+          data-testid="remotion-component-preview"
+          className="pointer-events-none shrink-0 select-none bg-black"
+          style={{ width: previewSize.width, height: previewSize.height }}
+        >
+          {player}
         </div>
-      </NodeModalDialog>
-    </>
+      </article>
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="output"
+        className="!h-4 !w-4 !translate-x-2 !border-4 !border-warm-surface !bg-content-muted shadow-sm transition-all hover:scale-125 hover:!bg-brand"
+      />
+    </div>
   );
 };
 
