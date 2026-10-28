@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import RemotionComponentNode from "./RemotionComponentNode";
@@ -40,13 +40,31 @@ vi.mock("@remotion/player", () => ({
     <div
       data-testid="remotion-player"
       data-source={inputProps.source}
-      data-controls={String(controls)}
+      data-controls={String(Boolean(controls))}
     />
   ),
 }));
 
 vi.mock("@clash/remotion-components", () => ({
   RemotionSourceComposition: () => null,
+}));
+
+
+vi.mock("./NodeModalDialog", () => ({
+  NodeModalDialog: ({
+    open,
+    children,
+    ariaLabel,
+  }: {
+    open: boolean;
+    children: any;
+    ariaLabel: string;
+  }) =>
+    open ? (
+      <div role="dialog" aria-label={ariaLabel}>
+        {children}
+      </div>
+    ) : null,
 }));
 
 vi.mock("../LoroSyncContext", () => ({
@@ -188,5 +206,24 @@ describe("RemotionComponentNode", () => {
       screen.queryByRole("button", { name: "Add to Timeline" }),
     ).toBeNull();
     expect(screen.queryByTestId("timeline-select")).toBeNull();
+  });
+
+  it("opens a preview-only fullscreen session on double-click", () => {
+    render(<RemotionComponentNode {...baseProps} />);
+
+    fireEvent.doubleClick(screen.getByTestId("remotion-component-node"));
+
+    expect(
+      screen.getByTestId("remotion-component-fullscreen-preview"),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Close Remotion preview" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit code" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit$/i })).toBeNull();
+    const players = screen.getAllByTestId("remotion-player");
+    expect(
+      players.some((player) => player.dataset.controls === "true"),
+    ).toBe(true);
   });
 });

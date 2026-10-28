@@ -130,6 +130,18 @@ function storedWorkspaceSurface(
             canvasId: value.canvasId,
           }
         : null;
+    case "motion-asset":
+      return isNonEmptyString(value.nodeId) &&
+        isNonEmptyString(value.canvasId) &&
+        (value.nodeType === "remotion-component" ||
+          value.nodeType === "html-motion")
+        ? {
+            kind: "motion-asset",
+            nodeId: value.nodeId,
+            canvasId: value.canvasId,
+            nodeType: value.nodeType,
+          }
+        : null;
     case "asset":
       return isNonEmptyString(value.assetId)
         ? { kind: "asset", assetId: value.assetId }
