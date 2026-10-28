@@ -50,6 +50,7 @@ function renderRow() {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  delete (globalThis as { __CLASH_DESKTOP__?: unknown }).__CLASH_DESKTOP__;
   resetConsolePlugins();
 });
 
@@ -122,6 +123,28 @@ describe("OfficialGatewayProviderRow", () => {
     const link = await screen.findByRole("link", { name: "Top up credits" });
     expect(link.getAttribute("href")).toBe("/billing");
   });
+  it("opens hosted billing in the system browser on desktop when budget is exceeded", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    (globalThis as { __CLASH_DESKTOP__: unknown }).__CLASH_DESKTOP__ = {
+      isDesktop: true,
+      openExternal,
+    };
+    stubHost({
+      ...signedOut,
+      signedIn: true,
+      user: { email: "u1@example.test", name: "User One" },
+      token: { state: "active", expiresAt: "2026-10-27T10:15:00.000Z" },
+      handoffs: [],
+      lastError: { code: "GATEWAY_BUDGET_EXCEEDED", message: "Budget used up." },
+    });
+    renderRow();
+    const button = await screen.findByRole("button", { name: "Top up credits" });
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(openExternal).toHaveBeenCalledWith("https://clash.art/billing"),
+    );
+  });
+
 });
 
 describe("officialGatewayResponseError", () => {
