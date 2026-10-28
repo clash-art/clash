@@ -11,6 +11,7 @@ import { InlineAlert } from "@clash/gui/components/ui/feedback";
 import { BrandAsset } from "@clash/web-ui/components/BrandAsset";
 import { continueWithEmail } from "../lib/auth/continue-with-email";
 import { loginReturnPath } from "../lib/auth/login-return";
+import { oauthErrorMessage } from "../lib/auth/oauth-error-message";
 
 type Methods = { password: boolean; emailOtp: boolean; google: boolean };
 type Stage = "name" | "quick" | "signin" | "email" | "code";
@@ -48,10 +49,14 @@ export default function LoginRoute() {
     if (session.data?.user && !inFlight.current && !needsName.current)
       navigate(returnTo, { replace: true });
   }, [session.data, navigate, returnTo]);
+  // Better Auth onAPIError.errorURL → /login?error=… (replaces default Ask AI page).
+  useEffect(() => {
+    const message = oauthErrorMessage(params.get("error"));
+    if (message) setError(message);
+  }, [params]);
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
-    setError(null);
     void fetch(runtimeApiUrl("/api/better-auth/options"), {
       signal: controller.signal,
       credentials: "include",

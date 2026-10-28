@@ -70,6 +70,9 @@ function buildAdminAuth(env: AdminAuthBindings) {
       "https://www.clash.art",
       "https://next.clash.art",
       "https://api.clash.art",
+      "https://clash.video",
+      "https://www.clash.video",
+      "https://api.clash.video",
       ...(env.ENVIRONMENT === "development"
         ? ["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"]
         : []),

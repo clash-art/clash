@@ -24,4 +24,11 @@ describe("login route primitives", () => {
       sourceMatches(source, /placeholder:text-(?:stone|neutral)-/),
     ).toBe(false);
   });
+
+  it("wires Better Auth error query codes through oauthErrorMessage", () => {
+    const source = readFileSync(new URL("./login.tsx", import.meta.url), "utf8");
+    expect(source).toContain('from "../lib/auth/oauth-error-message"');
+    expect(source).toContain("oauthErrorMessage");
+    expect(source).toContain('params.get("error")');
+  });
 });
