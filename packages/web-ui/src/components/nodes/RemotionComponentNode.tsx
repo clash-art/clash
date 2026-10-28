@@ -12,6 +12,11 @@ import { RemotionSourceComposition } from "@clash/remotion-components";
 
 import { useOptionalLoroSyncContext } from "../LoroSyncContext";
 import {
+  normalizeElementOverrides,
+  resolveRemotionMgComponentProps,
+  type MgElementOverrides,
+} from "../../lib/remotionElementEdit";
+import {
   useMgPreviewOpenRequest,
   useOptionalMgPreview,
 } from "../MgPreviewContext";
@@ -20,11 +25,17 @@ import { calculateScaledDimensions } from "./assetNodeSizing";
 export const DEFAULT_REMOTION_COMPONENT_SOURCE = `import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
 
-export default function Component() {
+type MgOverrides = Record<string, { text?: string; x?: number; y?: number }>;
+
+export default function Component(props: { mgElementOverrides?: MgOverrides }) {
   const frame = useCurrentFrame();
   const opacity = interpolate(frame, [0, 20], [0, 1], {
     extrapolateRight: "clamp",
   });
+  const title = props.mgElementOverrides?.title;
+  const text = title?.text ?? "Edit this Remotion component";
+  const x = title?.x ?? 0;
+  const y = title?.y ?? 0;
   return (
     <AbsoluteFill
       style={{
@@ -37,7 +48,22 @@ export default function Component() {
         opacity,
       }}
     >
-      Edit this Remotion component
+      <div
+        data-mg-id="title"
+        data-mg-editable="text,position"
+        data-mg-default-text="Edit this Remotion component"
+        data-mg-default-x={0}
+        data-mg-default-y={0}
+        data-mg-x={x}
+        data-mg-y={y}
+        style={{
+          transform: \`translate(\${x}px, \${y}px)\`,
+          cursor: "grab",
+          userSelect: "none",
+        }}
+      >
+        {text}
+      </div>
     </AbsoluteFill>
   );
 }
@@ -67,6 +93,9 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 function componentValue(data: Record<string, unknown>, id: string) {
+  const elementOverrides: MgElementOverrides = normalizeElementOverrides(
+    data.elementOverrides,
+  );
   return {
     label: typeof data.label === "string" ? data.label : "Remotion Component",
     componentId:
@@ -77,6 +106,8 @@ function componentValue(data: Record<string, unknown>, id: string) {
       typeof data.content === "string" && data.content.trim()
         ? data.content
         : DEFAULT_REMOTION_COMPONENT_SOURCE,
+    elementOverrides,
+    componentProps: resolveRemotionMgComponentProps(data),
     width: positiveInteger(data.compositionWidth, 720),
     height: positiveInteger(data.compositionHeight, 1280),
     fps: positiveInteger(data.fps, 30),
@@ -107,6 +138,7 @@ const RemotionComponentNode = ({
       kind: "remotion-component",
       label: persisted.label,
       source: persisted.source,
+      elementOverrides: persisted.elementOverrides,
       width: persisted.width,
       height: persisted.height,
       fps: persisted.fps,
@@ -118,6 +150,7 @@ const RemotionComponentNode = ({
     mg,
     persisted.componentId,
     persisted.durationInFrames,
+    persisted.elementOverrides,
     persisted.fps,
     persisted.height,
     persisted.label,
@@ -178,6 +211,7 @@ const RemotionComponentNode = ({
       inputProps={{
         source: persisted.source,
         componentId: persisted.componentId,
+        componentProps: persisted.componentProps,
       }}
       controls={false}
       loop

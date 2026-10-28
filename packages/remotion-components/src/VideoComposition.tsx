@@ -463,6 +463,15 @@ const resolveTimelineItem = (
         isLiveRemotionComponent && typeof assetData.content === "string"
           ? assetData.content
           : undefined,
+      componentProps:
+        isLiveRemotionComponent &&
+        assetData.elementOverrides &&
+        typeof assetData.elementOverrides === "object" &&
+        !Array.isArray(assetData.elementOverrides)
+          ? { mgElementOverrides: assetData.elementOverrides }
+          : isLiveRemotionComponent
+            ? { mgElementOverrides: {} }
+            : undefined,
       htmlSource:
         isLiveHtmlMotion && typeof assetData.content === "string"
           ? assetData.content
@@ -1052,6 +1061,7 @@ const ItemComponent: React.FC<{
       compositionId?: string;
       sourceNodeId?: string;
       componentSource?: string;
+      componentProps?: Record<string, unknown>;
       renderedAssetPath?: string;
     };
 
@@ -1076,6 +1086,7 @@ const ItemComponent: React.FC<{
             <RemotionSourceComposition
               source={compositionItem.componentSource}
               componentId={compositionItem.compositionId}
+              componentProps={compositionItem.componentProps}
             />
           ) : (
             <div

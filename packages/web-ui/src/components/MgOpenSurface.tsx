@@ -5,10 +5,11 @@
  * MotionGraphicInspector lite + MotionElementInspector (text/x/y) +
  * HtmlMotionPreviewControls (trusted transport) + bottom scrub bar.
  *
- * Preview + HTML element edit lite — open-state SessionDraft for
+ * Preview + element edit lite (HTML + Remotion) — open-state SessionDraft for
  * elementOverrides; no Edit code / Edit HTML (#469). Local playhead only —
- * no audio-master-clock. Canvas SoT is elementOverrides (+ derived content
- * on checkpoint), not per-keystroke full HTML rewrite.
+ * no audio-master-clock. Canvas SoT is elementOverrides (+ derived HTML content
+ * on HTML checkpoint; Remotion keeps TSX content and applies overrides via
+ * componentProps), not per-keystroke full source rewrite.
  */
 import {
   useCallback,
@@ -36,6 +37,11 @@ import {
   type MgElementOverrides,
   type MgElementPatch,
 } from "../lib/htmlMotionElementEdit";
+import {
+  buildRemotionMgComponentProps,
+  listRemotionEditableElementsWithOverrides,
+  seedElementOverridesFromRemotionSource,
+} from "../lib/remotionElementEdit";
 import { Dialog } from "./ui/dialog";
 import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
@@ -52,7 +58,8 @@ export type MgOpenSession = {
   source: string;
   /**
    * Authoritative element override map from node `data.elementOverrides`
-   * (`data-mg-id` -> `{ text?, x?, y? }`). Absent/empty = parse from HTML.
+   * (`data-mg-id` -> `{ text?, x?, y? }`). Absent/empty = parse from HTML
+   * or Remotion TSX markers.
    */
   elementOverrides?: MgElementOverrides;
   width: number;
@@ -164,19 +171,169 @@ function HtmlStage({
   );
 }
 
+function applyLiveTranslate(el: HTMLElement, x: number, y: number): void {
+  el.setAttribute("data-mg-x", String(x));
+  el.setAttribute("data-mg-y", String(y));
+  const style = el.getAttribute("style") ?? "";
+  const nextTranslate = `translate(${x}px, ${y}px)`;
+  let nextStyle: string;
+  if (/translate\([^)]*\)/.test(style)) {
+    nextStyle = style.replace(/translate\([^)]*\)/, nextTranslate);
+  } else if (style.trim()) {
+    const trimmed = style.trim().replace(/;?\s*$/, "");
+    nextStyle = `${trimmed}; transform: ${nextTranslate};`;
+  } else {
+    nextStyle = `transform: ${nextTranslate};`;
+  }
+  el.setAttribute("style", nextStyle);
+}
+
 function RemotionStage({
   session,
+  source,
+  componentProps,
   playerRef,
   autoPlay,
+  onElementEdit,
+  onElementSelect,
 }: {
   session: MgOpenSession;
+  source: string;
+  componentProps: Record<string, unknown>;
   playerRef: RefObject<PlayerRef | null>;
   autoPlay: boolean;
+  onElementEdit: (elementId: string, patch: MgElementPatch) => void;
+  onElementSelect: (elementId: string | null) => void;
 }) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const onEditRef = useRef(onElementEdit);
+  const onSelectRef = useRef(onElementSelect);
+  onEditRef.current = onElementEdit;
+  onSelectRef.current = onElementSelect;
+
+  // Stage drag / dblclick on [data-mg-id] inside the Player DOM (HTML parity).
+  useEffect(() => {
+    const root = stageRef.current;
+    if (!root) return;
+
+    type DragState = {
+      el: HTMLElement;
+      id: string;
+      startX: number;
+      startY: number;
+      baseX: number;
+      baseY: number;
+    };
+    let drag: DragState | null = null;
+
+    const scale = () => {
+      const rect = root.getBoundingClientRect();
+      return rect.width > 0 ? session.width / rect.width : 1;
+    };
+
+    const editableOf = (el: Element) => {
+      const raw = (el.getAttribute("data-mg-editable") || "")
+        .split(",")
+        .map((v) => v.trim());
+      return {
+        text: raw.includes("text"),
+        position: raw.includes("position"),
+      };
+    };
+
+    const readXY = (el: Element) => {
+      const x = Number(el.getAttribute("data-mg-x") || "0");
+      const y = Number(el.getAttribute("data-mg-y") || "0");
+      return {
+        x: Number.isFinite(x) ? x : 0,
+        y: Number.isFinite(y) ? y : 0,
+      };
+    };
+
+    const onPointerDown = (ev: PointerEvent) => {
+      const t = ev.target;
+      if (!(t instanceof Element)) return;
+      const el = t.closest("[data-mg-id]");
+      if (!(el instanceof HTMLElement) || !root.contains(el)) return;
+      const id = el.getAttribute("data-mg-id");
+      if (!id) return;
+      const caps = editableOf(el);
+      onSelectRef.current(id);
+      if (!caps.position) return;
+      const xy = readXY(el);
+      drag = {
+        el,
+        id,
+        startX: ev.clientX,
+        startY: ev.clientY,
+        baseX: xy.x,
+        baseY: xy.y,
+      };
+      try {
+        el.setPointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      ev.preventDefault();
+    };
+
+    const onPointerMove = (ev: PointerEvent) => {
+      if (!drag) return;
+      const s = scale();
+      const dx = (ev.clientX - drag.startX) * s;
+      const dy = (ev.clientY - drag.startY) * s;
+      applyLiveTranslate(
+        drag.el,
+        Math.round(drag.baseX + dx),
+        Math.round(drag.baseY + dy),
+      );
+    };
+
+    const endDrag = () => {
+      if (!drag) return;
+      const xy = readXY(drag.el);
+      onEditRef.current(drag.id, { x: xy.x, y: xy.y });
+      drag = null;
+    };
+
+    const onDblClick = (ev: MouseEvent) => {
+      const t = ev.target;
+      if (!(t instanceof Element)) return;
+      const el = t.closest("[data-mg-id]");
+      if (!(el instanceof HTMLElement) || !root.contains(el)) return;
+      if (!editableOf(el).text) return;
+      const id = el.getAttribute("data-mg-id");
+      if (!id) return;
+      el.contentEditable = "true";
+      el.focus();
+      const commit = () => {
+        el.contentEditable = "false";
+        el.removeEventListener("blur", commit);
+        onEditRef.current(id, { text: (el.textContent || "").trim() });
+      };
+      el.addEventListener("blur", commit);
+      ev.preventDefault();
+    };
+
+    root.addEventListener("pointerdown", onPointerDown, true);
+    root.addEventListener("pointermove", onPointerMove, true);
+    root.addEventListener("pointerup", endDrag, true);
+    root.addEventListener("pointercancel", endDrag, true);
+    root.addEventListener("dblclick", onDblClick, true);
+    return () => {
+      root.removeEventListener("pointerdown", onPointerDown, true);
+      root.removeEventListener("pointermove", onPointerMove, true);
+      root.removeEventListener("pointerup", endDrag, true);
+      root.removeEventListener("pointercancel", endDrag, true);
+      root.removeEventListener("dblclick", onDblClick, true);
+    };
+  }, [session.width, session.nodeId, source]);
+
   return (
     <div
+      ref={stageRef}
       data-testid="mg-open-stage-remotion"
-      className="flex min-h-0 flex-1 items-center justify-center bg-black"
+      className="relative flex min-h-0 flex-1 items-center justify-center bg-black"
     >
       <div
         className="h-full max-h-full w-full max-w-full overflow-hidden"
@@ -184,15 +341,16 @@ function RemotionStage({
       >
         <Player
           ref={playerRef}
-          key={`mg-open:${session.componentId ?? session.nodeId}:${session.source}`}
+          key={`mg-open:${session.componentId ?? session.nodeId}:${source}`}
           component={RemotionSourceComposition}
           compositionWidth={session.width}
           compositionHeight={session.height}
           durationInFrames={session.durationInFrames}
           fps={session.fps}
           inputProps={{
-            source: session.source,
+            source,
             componentId: session.componentId ?? session.nodeId,
+            componentProps,
           }}
           controls={false}
           autoPlay={autoPlay}
@@ -230,7 +388,7 @@ function MgElementInspector({
           No editable elements. Author{" "}
           <code className="text-[10px]">data-mg-id</code> +{" "}
           <code className="text-[10px]">data-mg-editable=&quot;text,position&quot;</code>{" "}
-          on nodes (default create template includes one).
+          on HTML nodes or Remotion JSX (default create templates include one).
         </p>
       </div>
     );
@@ -453,27 +611,16 @@ function MgInspector({
           </form>
         </div>
 
-        {session.kind === "html-motion" ? (
-          <MgElementInspector
-            elements={elements}
-            selectedId={selectedElementId}
-            onSelect={onSelectElement}
-            onPatch={onElementPatch}
-          />
-        ) : (
-          <p
-            data-testid="mg-open-remotion-element-note"
-            className="border-t border-warm-border pt-4 text-xs leading-relaxed text-content-muted"
-          >
-            Element text/position edit applies to HTML Motion (
-            <code className="text-[10px]">data-mg-*</code>). Remotion open keeps
-            stage scrub + transport only in this phase.
-          </p>
-        )}
+        <MgElementInspector
+          elements={elements}
+          selectedId={selectedElementId}
+          onSelect={onSelectElement}
+          onPatch={onElementPatch}
+        />
 
         <p className="mt-auto text-xs leading-relaxed text-content-muted">
-          Preview + HTML element edit lite — Hilo surface homage. Edit code /
-          Edit HTML dialogs are not restored. No audio-master-clock.
+          Preview + element edit lite (HTML + Remotion) — Hilo surface homage.
+          Edit code / Edit HTML dialogs are not restored. No audio-master-clock.
         </p>
       </div>
     </aside>
@@ -494,7 +641,9 @@ export function MgOpenSurface({
   const [draftOverrides, setDraftOverrides] =
     useState<MgElementOverrides>(initialOverrides);
   const [source, setSource] = useState(() =>
-    deriveHtmlMotionContent(session.source, initialOverrides),
+    session.kind === "html-motion"
+      ? deriveHtmlMotionContent(session.source, initialOverrides)
+      : session.source,
   );
   const [selectedElementId, setSelectedElementId] = useState<string | null>(
     null,
@@ -502,15 +651,23 @@ export function MgOpenSurface({
   const loroSync = useOptionalLoroSyncContext();
   const reactFlow = useReactFlow();
 
-  const baseHtmlRef = useRef(session.source);
+  /** Base/template source (HTML doc or Remotion TSX) — not the draft-derived view. */
+  const baseSourceRef = useRef(session.source);
   const latestOverridesRef = useRef<MgElementOverrides>(initialOverrides);
   const persistedOverridesRef = useRef<string>(
     serializeElementOverrides(initialOverrides),
   );
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const kindRef = useRef(session.kind);
+  kindRef.current = session.kind;
 
   const sessionOverridesKey = serializeElementOverrides(
     normalizeElementOverrides(session.elementOverrides),
+  );
+
+  const remotionComponentProps = useMemo(
+    () => buildRemotionMgComponentProps(draftOverrides),
+    [draftOverrides],
   );
 
   useEffect(() => {
@@ -519,11 +676,15 @@ export function MgOpenSurface({
       autosaveTimerRef.current = null;
     }
     const nextOverrides = normalizeElementOverrides(session.elementOverrides);
-    baseHtmlRef.current = session.source;
+    baseSourceRef.current = session.source;
     latestOverridesRef.current = nextOverrides;
     persistedOverridesRef.current = serializeElementOverrides(nextOverrides);
     setDraftOverrides(nextOverrides);
-    setSource(deriveHtmlMotionContent(session.source, nextOverrides));
+    setSource(
+      session.kind === "html-motion"
+        ? deriveHtmlMotionContent(session.source, nextOverrides)
+        : session.source,
+    );
     setSelectedElementId(null);
     setFrame(0);
     setPlaying(true);
@@ -534,10 +695,13 @@ export function MgOpenSurface({
     () =>
       session.kind === "html-motion"
         ? listHtmlMotionEditableElementsWithOverrides(
-            baseHtmlRef.current,
+            baseSourceRef.current,
             draftOverrides,
           )
-        : [],
+        : listRemotionEditableElementsWithOverrides(
+            baseSourceRef.current,
+            draftOverrides,
+          ),
     [session.kind, draftOverrides, source],
   );
 
@@ -575,12 +739,17 @@ export function MgOpenSurface({
     if (fingerprint === persistedOverridesRef.current) {
       return;
     }
-    const derived = deriveHtmlMotionContent(baseHtmlRef.current, overrides);
     const nodeId = nodeIdRef.current;
-    const dataPatch = {
-      content: derived,
-      elementOverrides: overrides,
-    };
+    const dataPatch =
+      kindRef.current === "html-motion"
+        ? {
+            content: deriveHtmlMotionContent(baseSourceRef.current, overrides),
+            elementOverrides: overrides,
+          }
+        : {
+            // Remotion: keep TSX content; SoT is elementOverrides → componentProps.
+            elementOverrides: overrides,
+          };
     try {
       reactFlowRef.current.setNodes((nodes) =>
         nodes.map((node) =>
@@ -602,7 +771,9 @@ export function MgOpenSurface({
       data: dataPatch,
     });
     persistedOverridesRef.current = fingerprint;
-    setSource(derived);
+    if (kindRef.current === "html-motion" && "content" in dataPatch) {
+      setSource(dataPatch.content as string);
+    }
   }, []);
 
   const schedulePersist = useCallback(() => {
@@ -619,14 +790,24 @@ export function MgOpenSurface({
     (elementId: string, patch: MgElementPatch, mode: "debounce" | "immediate") => {
       try {
         let next = latestOverridesRef.current;
-        // Migrate: first edit seeds absolute values from current HTML.
-        next = seedElementOverridesFromHtml(baseHtmlRef.current, next, [
-          elementId,
-        ]);
+        // Migrate: first edit seeds absolute values from current source markers.
+        if (kindRef.current === "html-motion") {
+          next = seedElementOverridesFromHtml(baseSourceRef.current, next, [
+            elementId,
+          ]);
+        } else {
+          next = seedElementOverridesFromRemotionSource(
+            baseSourceRef.current,
+            next,
+            [elementId],
+          );
+        }
         next = mergeElementOverride(next, elementId, patch);
         latestOverridesRef.current = next;
         setDraftOverrides(next);
-        setSource(deriveHtmlMotionContent(baseHtmlRef.current, next));
+        if (kindRef.current === "html-motion") {
+          setSource(deriveHtmlMotionContent(baseSourceRef.current, next));
+        }
         if (mode === "immediate") {
           persistDraft();
         } else {
@@ -764,8 +945,12 @@ export function MgOpenSurface({
           ) : (
             <RemotionStage
               session={session}
+              source={source}
+              componentProps={remotionComponentProps}
               playerRef={playerRef}
               autoPlay={playing}
+              onElementEdit={applyElementPatchImmediate}
+              onElementSelect={setSelectedElementId}
             />
           )}
           <StageProgressBar

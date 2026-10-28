@@ -45,13 +45,36 @@ vi.mock("./ui/dialog", () => ({
 vi.mock("@remotion/player", () => ({
   Player: ({
     controls,
+    inputProps,
   }: {
     controls?: boolean;
+    inputProps?: {
+      source?: string;
+      componentProps?: { mgElementOverrides?: Record<string, unknown> };
+    };
   }) => (
     <div
       data-testid="remotion-player"
       data-controls={String(Boolean(controls))}
-    />
+      data-has-overrides={String(
+        Boolean(
+          inputProps?.componentProps?.mgElementOverrides &&
+            Object.keys(inputProps.componentProps.mgElementOverrides).length >
+              0,
+        ),
+      )}
+    >
+      <button
+        type="button"
+        data-testid="remotion-stage-commit"
+        onClick={() => {
+          // Stage commit is exercised via RemotionStage listeners in product;
+          // unit tests drive inspector + persist path instead.
+        }}
+      >
+        stage
+      </button>
+    </div>
   ),
 }));
 
@@ -99,7 +122,23 @@ const remotionSession: MgOpenSession = {
   nodeId: "r1",
   kind: "remotion-component",
   label: "Greeting",
-  source: "export default function(){return null}",
+  source: `export default function Component(props) {
+  const title = props.mgElementOverrides?.title;
+  const text = title?.text ?? "Hi Remotion";
+  const x = title?.x ?? 0;
+  const y = title?.y ?? 0;
+  return (
+    <div
+      data-mg-id="title"
+      data-mg-editable="text,position"
+      data-mg-default-text="Hi Remotion"
+      data-mg-default-x={0}
+      data-mg-default-y={0}
+      data-mg-x={x}
+      data-mg-y={y}
+    >{text}</div>
+  );
+}`,
   width: 720,
   height: 1280,
   fps: 30,
@@ -149,11 +188,70 @@ describe("MgOpenSurface", () => {
     expect(screen.getByTestId("remotion-player").dataset.controls).toBe(
       "false",
     );
-    expect(screen.getByTestId("mg-open-remotion-element-note")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-element-inspector")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-element-text")).toBeTruthy();
     fireEvent.click(
       screen.getByRole("button", { name: "Close Remotion preview" }),
     );
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("edits Remotion element text/position via SessionDraft overrides (no TSX rewrite)", () => {
+    vi.useFakeTimers();
+    render(<MgOpenSurface session={remotionSession} onClose={() => {}} />);
+
+    expect(
+      (screen.getByTestId("mg-open-element-text") as HTMLInputElement).value,
+    ).toBe("Hi Remotion");
+
+    fireEvent.change(screen.getByTestId("mg-open-element-text"), {
+      target: { value: "Edited Remotion" },
+    });
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(mocks.updateNode).toHaveBeenCalled();
+    const last = mocks.updateNode.mock.calls.at(-1);
+    expect(last?.[0]).toBe("r1");
+    expect(last?.[1]?.data?.elementOverrides?.title?.text).toBe(
+      "Edited Remotion",
+    );
+    // Remotion SoT is overrides — content TSX is not rewritten on checkpoint.
+    expect(last?.[1]?.data?.content).toBeUndefined();
+
+    mocks.updateNode.mockClear();
+    fireEvent.change(screen.getByTestId("mg-open-element-x"), {
+      target: { value: "42" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    const afterPos = mocks.updateNode.mock.calls.at(-1);
+    expect(afterPos?.[1]?.data?.elementOverrides?.title?.x).toBe(42);
+    expect(afterPos?.[1]?.data?.elementOverrides?.title?.text).toBe(
+      "Edited Remotion",
+    );
+  });
+
+  it("loads Remotion session elementOverrides into draft without Canvas write until edit", () => {
+    vi.useFakeTimers();
+    render(
+      <MgOpenSurface
+        session={{
+          ...remotionSession,
+          elementOverrides: { title: { text: "From map", x: 7, y: 8 } },
+        }}
+        onClose={() => {}}
+      />,
+    );
+    expect(
+      (screen.getByTestId("mg-open-element-text") as HTMLInputElement).value,
+    ).toBe("From map");
+    expect(
+      (screen.getByTestId("mg-open-element-x") as HTMLInputElement).value,
+    ).toBe("7");
+    expect(mocks.updateNode).not.toHaveBeenCalled();
   });
 
   it("renders HTML stage with progress bar and element text/position inspector", () => {

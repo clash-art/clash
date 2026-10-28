@@ -10,6 +10,11 @@ export type ResolvedTimelineItem = Item & {
   resolvedSrcUrl?: string;
   /** Render-start-only source resolved from a live Remotion Canvas node. */
   componentSource?: string;
+  /**
+   * Remotion MG elementOverrides applied as RemotionSourceComposition
+   * componentProps (`mgElementOverrides`). Ephemeral resolve-time field.
+   */
+  componentProps?: Record<string, unknown>;
   /** Live HTML document resolved from a Canvas html-motion node (runtime: html). */
   htmlSource?: string;
 };

@@ -177,9 +177,10 @@ z.object({
    */
   documentId: z.string().min(1).optional(),
   /**
-   * HTML MG element edit SoT: map of `data-mg-id` -> `{ text?, x?, y? }`.
-   * Absolute overrides applied onto base `content` HTML. Checkpoints may also
-   * write derived HTML back to `content` for non-open consumers.
+   * MG element edit SoT (HTML + Remotion): map of `data-mg-id` ->
+   * `{ text?, x?, y? }`. Absolute overrides. HTML applies onto base `content`
+   * and may write derived HTML back on checkpoint; Remotion applies via
+   * `componentProps.mgElementOverrides` without rewriting TSX content.
    */
   elementOverrides: z
     .record(

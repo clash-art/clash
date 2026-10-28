@@ -756,6 +756,14 @@ function frozenRemotionTimelineInput(options: {
           );
         }
         item.componentSource = sourceData.content;
+        item.componentProps = {
+          mgElementOverrides:
+            sourceData.elementOverrides &&
+            typeof sourceData.elementOverrides === "object" &&
+            !Array.isArray(sourceData.elementOverrides)
+              ? sourceData.elementOverrides
+              : {},
+        };
         if (
           typeof sourceData.componentId === "string" &&
           sourceData.componentId.trim()

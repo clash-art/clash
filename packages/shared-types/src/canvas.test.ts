@@ -199,6 +199,22 @@ describe("Remotion component canvas node contract", () => {
 });
 
 describe("Canvas Project persistence", () => {
+
+  it("stores remotion-component elementOverrides as the same element-edit SoT map", () => {
+    const parsed = NodeDataSchema.parse({
+      content: "export default function(){return null}",
+      componentId: "Greeting",
+      elementOverrides: {
+        title: { text: "Hi", x: 1, y: 2 },
+      },
+    });
+    expect(parsed.elementOverrides?.title).toEqual({
+      text: "Hi",
+      x: 1,
+      y: 2,
+    });
+  });
+
   it("keeps media projections out of synchronized node data", () => {
     const doc = new LoroDoc();
     const canvas = new Canvas(doc, () => {}, "main");
