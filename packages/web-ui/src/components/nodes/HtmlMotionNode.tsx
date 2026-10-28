@@ -1,19 +1,13 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo } from "react";
 import {
   Handle,
   Position,
-  useReactFlow,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { Code, FloppyDisk } from "@phosphor-icons/react";
+import { Code } from "@phosphor-icons/react";
 
-import { useOptionalLoroSyncContext } from "../LoroSyncContext";
-import { NodeModalDialog } from "./NodeModalDialog";
 import { calculateScaledDimensions } from "./assetNodeSizing";
-import { Button } from "../ui/button";
-import { Input } from "../ui/input";
-import { Textarea } from "../ui/textarea";
 
 /**
  * Default HTML MG document. Production preview must host this in a sandboxed
@@ -94,158 +88,47 @@ const HtmlMotionNode = ({
   width,
   height,
 }: NodeProps<Node<Record<string, unknown>>>) => {
-  const loroSync = useOptionalLoroSyncContext();
-  const { setNodes } = useReactFlow();
   const persisted = documentValue(data, id);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [draftLabel, setDraftLabel] = useState(persisted.label);
-  const [draftSource, setDraftSource] = useState(persisted.source);
-
-  useEffect(() => {
-    if (!editorOpen) {
-      setDraftLabel(persisted.label);
-      setDraftSource(persisted.source);
-    }
-  }, [editorOpen, persisted.label, persisted.source]);
-
   const dimensions = calculateHtmlMotionNodeDimensions(
     persisted.width,
     persisted.height,
   );
 
-  const saveDocument = useCallback(() => {
-    const nextLabel = draftLabel.trim() || "HTML Motion";
-    const nextSource = draftSource.trim()
-      ? draftSource
-      : DEFAULT_HTML_MOTION_SOURCE;
-    const ok = loroSync?.updateNode(id, {
-      data: {
-        label: nextLabel,
-        documentId: persisted.documentId,
-        content: nextSource,
-        compositionWidth: persisted.width,
-        compositionHeight: persisted.height,
-        fps: persisted.fps,
-        durationInFrames: persisted.durationInFrames,
-      },
-    });
-    if (ok === false) return;
-    setNodes((nodes) =>
-      nodes.map((candidate) =>
-        candidate.id === id
-          ? {
-              ...candidate,
-              data: {
-                ...candidate.data,
-                label: nextLabel,
-                documentId: persisted.documentId,
-                content: nextSource,
-                compositionWidth: persisted.width,
-                compositionHeight: persisted.height,
-                fps: persisted.fps,
-                durationInFrames: persisted.durationInFrames,
-              },
-            }
-          : candidate,
-      ),
-    );
-    setEditorOpen(false);
-  }, [
-    draftLabel,
-    draftSource,
-    id,
-    loroSync,
-    persisted.documentId,
-    persisted.durationInFrames,
-    persisted.fps,
-    persisted.height,
-    persisted.width,
-    setNodes,
-  ]);
-
   return (
-    <>
+    <div
+      data-testid="html-motion-node"
+      className={`relative overflow-hidden rounded-xl border bg-neutral-950 text-neutral-100 shadow-lg ${
+        selected ? "border-cyan-400" : "border-neutral-700"
+      }`}
+      style={{
+        width: width ?? dimensions.width,
+        height: height ?? dimensions.height,
+      }}
+    >
+      <div className="flex h-11 items-center gap-2 border-b border-neutral-800 px-3">
+        <Code size={16} className="shrink-0 text-cyan-300" />
+        <span className="truncate text-sm font-medium">{persisted.label}</span>
+      </div>
       <div
-        data-testid="html-motion-node"
-        className={`relative overflow-hidden rounded-xl border bg-neutral-950 text-neutral-100 shadow-lg ${
-          selected ? "border-cyan-400" : "border-neutral-700"
-        }`}
+        data-testid="html-motion-preview"
+        className="flex items-center justify-center bg-neutral-900 text-center text-xs text-neutral-400"
         style={{
-          width: width ?? dimensions.width,
-          height: height ?? dimensions.height,
+          width: dimensions.preview.width,
+          height: dimensions.preview.height,
         }}
       >
-        <div className="flex h-11 items-center justify-between gap-2 border-b border-neutral-800 px-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <Code size={16} className="shrink-0 text-cyan-300" />
-            <span className="truncate text-sm font-medium">{persisted.label}</span>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            shape="rounded"
-            aria-label="Edit HTML"
-            className="nodrag h-7 min-h-7 px-2 text-xs"
-            onClick={() => setEditorOpen(true)}
-          >
-            Edit HTML
-          </Button>
-        </div>
-        <div
-          data-testid="html-motion-preview"
-          className="flex items-center justify-center bg-neutral-900 text-center text-xs text-neutral-400"
-          style={{
-            width: dimensions.preview.width,
-            height: dimensions.preview.height,
-          }}
-        >
-          HTML Motion source
-          <br />
-          {persisted.width}×{persisted.height} · {persisted.fps}fps ·{" "}
-          {persisted.durationInFrames}f
-          <br />
-          <span className="text-neutral-500">
-            Live iframe preview ships with the isolation host
-          </span>
-        </div>
-        <Handle type="source" position={Position.Right} />
-        <Handle type="target" position={Position.Left} />
+        HTML Motion source
+        <br />
+        {persisted.width}×{persisted.height} · {persisted.fps}fps ·{" "}
+        {persisted.durationInFrames}f
+        <br />
+        <span className="text-neutral-500">
+          Live iframe preview ships with the isolation host
+        </span>
       </div>
-
-      <NodeModalDialog
-        open={editorOpen}
-        onClose={() => setEditorOpen(false)}
-        ariaLabel={`Edit ${persisted.label}`}
-        contentClassName="max-w-[min(1100px,calc(100vw-4rem))]"
-      >
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-warm-border px-4">
-          <Code className="h-5 w-5 text-brand" weight="duotone" />
-          <Input
-            aria-label="Document label"
-            value={draftLabel}
-            onChange={(event) => setDraftLabel(event.target.value)}
-            className="min-w-0 flex-1 border-none bg-transparent text-base font-semibold"
-          />
-          <Button
-            size="sm"
-            shape="rounded"
-            aria-label="Save document"
-            leftIcon={<FloppyDisk className="h-4 w-4" />}
-            onClick={saveDocument}
-          >
-            Save
-          </Button>
-        </header>
-        <div className="p-4">
-          <Textarea
-            aria-label="HTML document"
-            value={draftSource}
-            onChange={(event) => setDraftSource(event.target.value)}
-            className="min-h-[360px] font-mono text-xs"
-          />
-        </div>
-      </NodeModalDialog>
-    </>
+      <Handle type="source" position={Position.Right} />
+      <Handle type="target" position={Position.Left} />
+    </div>
   );
 };
 
