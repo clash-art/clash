@@ -9082,7 +9082,9 @@ export default function ProjectEditor({
                                                   }
                                                   collapsedLauncherPlacement={
                                                     workspaceSurface.kind ===
-                                                    "canvas"
+                                                      "canvas" ||
+                                                    workspaceSurface.kind ===
+                                                      "motion-asset"
                                                       ? "canvas"
                                                       : "header"
                                                   }
