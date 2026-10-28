@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect } from "react";
 import {
   Handle,
   Position,
@@ -6,15 +6,16 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { FilmStrip, X } from "@phosphor-icons/react";
+import { FilmStrip } from "@phosphor-icons/react";
 import { Player } from "@remotion/player";
 import { RemotionSourceComposition } from "@clash/remotion-components";
 
 import { useOptionalLoroSyncContext } from "../LoroSyncContext";
-import { useMgPreviewOpenRequest } from "../MgPreviewContext";
-import { IconButton } from "../ui/icon-button";
+import {
+  useMgPreviewOpenRequest,
+  useOptionalMgPreview,
+} from "../MgPreviewContext";
 import { calculateScaledDimensions } from "./assetNodeSizing";
-import { NodeModalDialog } from "./NodeModalDialog";
 
 export const DEFAULT_REMOTION_COMPONENT_SOURCE = `import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
@@ -91,8 +92,8 @@ const RemotionComponentNode = ({
   height,
 }: NodeProps<Node<Record<string, unknown>>>) => {
   const loroSync = useOptionalLoroSyncContext();
+  const mg = useOptionalMgPreview();
   const { getNode, setNodes } = useReactFlow();
-  const [previewOpen, setPreviewOpen] = useState(false);
   const persisted = componentValue(data, id);
   const nodeDimensions = calculateRemotionComponentNodeDimensions(
     persisted.width,
@@ -100,8 +101,29 @@ const RemotionComponentNode = ({
   );
   const previewSize = nodeDimensions.preview;
 
-  const openPreview = useCallback(() => setPreviewOpen(true), []);
-  const closePreview = useCallback(() => setPreviewOpen(false), []);
+  const openPreview = useCallback(() => {
+    mg?.openMgPreview({
+      nodeId: id,
+      kind: "remotion-component",
+      label: persisted.label,
+      source: persisted.source,
+      width: persisted.width,
+      height: persisted.height,
+      fps: persisted.fps,
+      durationInFrames: persisted.durationInFrames,
+      componentId: persisted.componentId,
+    });
+  }, [
+    id,
+    mg,
+    persisted.componentId,
+    persisted.durationInFrames,
+    persisted.fps,
+    persisted.height,
+    persisted.label,
+    persisted.source,
+    persisted.width,
+  ]);
   useMgPreviewOpenRequest(id, openPreview);
 
   useEffect(() => {
@@ -164,100 +186,41 @@ const RemotionComponentNode = ({
   );
 
   return (
-    <>
-      <div
-        data-testid="remotion-component-node"
-        className="group relative"
-        style={{ width: previewSize.width }}
-        onDoubleClick={(event) => {
-          event.stopPropagation();
-          openPreview();
-        }}
+    <div
+      data-testid="remotion-component-node"
+      className="group relative"
+      style={{ width: previewSize.width }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        openPreview();
+      }}
+    >
+      <article
+        className={`flex flex-col overflow-hidden rounded-matrix bg-warm-surface shadow-lg ring-1 ring-warm-border ${
+          selected ? "ring-4 ring-brand ring-offset-2" : ""
+        }`}
       >
-        <article
-          className={`flex flex-col overflow-hidden rounded-matrix bg-warm-surface shadow-lg ring-1 ring-warm-border ${
-            selected ? "ring-4 ring-brand ring-offset-2" : ""
-          }`}
-        >
-          <header className="flex h-11 shrink-0 items-center gap-2 border-b border-warm-border px-3">
-            <FilmStrip className="h-4 w-4 text-brand" weight="duotone" />
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-content-primary">
-              {persisted.label}
-            </span>
-          </header>
-          <div
-            data-testid="remotion-component-preview"
-            className="pointer-events-none shrink-0 select-none bg-black"
-            style={{ width: previewSize.width, height: previewSize.height }}
-          >
-            {player}
-          </div>
-        </article>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="output"
-          className="!h-4 !w-4 !translate-x-2 !border-4 !border-warm-surface !bg-content-muted shadow-sm transition-all hover:scale-125 hover:!bg-brand"
-        />
-      </div>
-
-      <NodeModalDialog
-        open={previewOpen}
-        onClose={closePreview}
-        ariaLabel={`Preview ${persisted.label}`}
-        overlayClassName="bg-black/70"
-        contentClassName="max-h-[95vh] max-w-[95vw] h-[92vh] w-[95vw] rounded-2xl border-warm-border/60 bg-warm-surface p-0"
-      >
+        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-warm-border px-3">
+          <FilmStrip className="h-4 w-4 text-brand" weight="duotone" />
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-content-primary">
+            {persisted.label}
+          </span>
+        </header>
         <div
-          data-testid="remotion-component-fullscreen-preview"
-          className="flex h-full min-h-0 flex-col"
+          data-testid="remotion-component-preview"
+          className="pointer-events-none shrink-0 select-none bg-black"
+          style={{ width: previewSize.width, height: previewSize.height }}
         >
-          <header className="flex h-12 shrink-0 items-center gap-3 border-b border-warm-border px-4">
-            <FilmStrip className="h-4 w-4 text-brand" weight="duotone" />
-            <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-content-primary">
-              {persisted.label}
-            </h2>
-            <span className="shrink-0 text-xs tabular-nums text-content-muted">
-              {persisted.width}×{persisted.height} · {persisted.fps}fps ·{" "}
-              {persisted.durationInFrames}f
-            </span>
-            <IconButton
-              label="Close Remotion preview"
-              onClick={closePreview}
-              icon={<X className="h-5 w-5" weight="bold" />}
-              size="sm"
-              shape="circle"
-              className="text-content-secondary hover:bg-warm-hover hover:text-content-primary"
-            />
-          </header>
-          <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-4">
-            <div
-              className="h-full max-h-full w-full max-w-full"
-              style={{
-                aspectRatio: `${persisted.width} / ${persisted.height}`,
-              }}
-            >
-              <Player
-                key={`fullscreen:${persisted.componentId}:${persisted.source}`}
-                component={RemotionSourceComposition}
-                compositionWidth={persisted.width}
-                compositionHeight={persisted.height}
-                durationInFrames={persisted.durationInFrames}
-                fps={persisted.fps}
-                inputProps={{
-                  source: persisted.source,
-                  componentId: persisted.componentId,
-                }}
-                controls
-                autoPlay
-                loop
-                style={{ width: "100%", height: "100%" }}
-              />
-            </div>
-          </div>
+          {player}
         </div>
-      </NodeModalDialog>
-    </>
+      </article>
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="output"
+        className="!h-4 !w-4 !translate-x-2 !border-4 !border-warm-surface !bg-content-muted shadow-sm transition-all hover:scale-125 hover:!bg-brand"
+      />
+    </div>
   );
 };
 

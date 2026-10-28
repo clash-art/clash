@@ -22,16 +22,15 @@ vi.mock("@xyflow/react", async () => {
   };
 });
 
-
-vi.mock("./NodeModalDialog", () => ({
-  NodeModalDialog: ({
+vi.mock("../ui/dialog", () => ({
+  Dialog: ({
     open,
     children,
     ariaLabel,
   }: {
     open: boolean;
     children: any;
-    ariaLabel: string;
+    ariaLabel?: string;
   }) =>
     open ? (
       <div role="dialog" aria-label={ariaLabel}>
@@ -60,8 +59,10 @@ vi.mock("@clash/remotion-components", () => ({
       data-frame={String(frame)}
     />
   ),
+  RemotionSourceComposition: () => null,
 }));
 
+import { MgPreviewProvider } from "../MgPreviewContext";
 import HtmlMotionNode, {
   calculateHtmlMotionNodeDimensions,
   DEFAULT_HTML_MOTION_SOURCE,
@@ -90,6 +91,10 @@ const baseProps = {
   },
 } as const;
 
+function renderNode(ui: React.ReactElement = <HtmlMotionNode {...baseProps} />) {
+  return render(<MgPreviewProvider>{ui}</MgPreviewProvider>);
+}
+
 describe("HtmlMotionNode", () => {
   afterEach(cleanup);
 
@@ -105,25 +110,32 @@ describe("HtmlMotionNode", () => {
     expect(dimensions.height).toBeGreaterThan(dimensions.preview.height);
   });
 
-  it("renders a distinct html-motion node with a placeholder preview and no HTML-edit chrome", () => {
-    render(<HtmlMotionNode {...baseProps} />);
+  it("renders a distinct html-motion node with in-node sandboxed paint and no HTML-edit chrome", () => {
+    renderNode();
 
     expect(screen.getByTestId("html-motion-node")).toBeTruthy();
-    expect(screen.getByTestId("html-motion-preview").textContent).toMatch(
-      /HTML Motion source/,
-    );
+    expect(screen.getByTestId("html-motion-preview")).toBeTruthy();
+    expect(
+      screen.getAllByTestId("html-scene-surface").length,
+    ).toBeGreaterThanOrEqual(1);
     expect(screen.queryByRole("button", { name: "Edit HTML" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Edit$/i })).toBeNull();
     expect(screen.getByText("Lower third")).toBeTruthy();
+    expect(
+      screen.queryByText(/Double-click for fullscreen/i),
+    ).toBeNull();
   });
 
-  it("opens a sandboxed fullscreen preview on double-click without HTML-edit chrome", () => {
-    render(<HtmlMotionNode {...baseProps} />);
+  it("opens Hilo-homage MG surface (stage + inspector) on double-click without HTML-edit chrome", () => {
+    renderNode();
 
     fireEvent.doubleClick(screen.getByTestId("html-motion-node"));
 
+    expect(screen.getByTestId("mg-open-surface")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-inspector")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-transport")).toBeTruthy();
     expect(screen.getByTestId("html-motion-fullscreen-preview")).toBeTruthy();
-    expect(screen.getByTestId("html-scene-surface")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-stage-html")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Close HTML Motion preview" }),
     ).toBeTruthy();

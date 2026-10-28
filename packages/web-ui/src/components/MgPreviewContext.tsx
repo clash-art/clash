@@ -9,27 +9,34 @@ import {
   type ReactNode,
 } from "react";
 
+import { MgOpenSurface, type MgOpenSession } from "./MgOpenSurface";
+
+export type { MgOpenSession };
+
 export type MgPreviewRequest = {
   nodeId: string;
   nonce: number;
 };
 
 type MgPreviewContextValue = {
+  session: MgOpenSession | null;
+  /** Assets (or peers) request open by nodeId; matching node opens full session. */
   previewNodeId: string | null;
   previewNonce: number;
-  openMgPreview: (nodeId: string) => void;
+  openMgPreview: (session: MgOpenSession) => void;
+  closeMgPreview: () => void;
   clearMgPreviewRequest: () => void;
 };
 
 const MgPreviewContext = createContext<MgPreviewContextValue | null>(null);
 
 /**
- * Lightweight preview-session bus for Remotion/HTML Motion nodes.
- * Mirrors Hilo's "open into a dedicated MG surface" product feel without
- * pulling mg-edit-session-convergence or audio-master-clock into this phase.
+ * Dedicated MG open session — Hilo-homage full-bleed stage + inspector.
+ * Preview-only; does not pull mg-edit-session-convergence or audio-master-clock.
  *
  * Parent may pass `externalRequest` (e.g. Assets sidebar select) so ProjectEditor
- * can open the same node-local fullscreen preview without lifting the modal.
+ * can open the same surface without lifting node payloads; the matching Canvas
+ * node supplies the session via `useMgPreviewOpenRequest`.
  */
 export function MgPreviewProvider({
   children,
@@ -40,13 +47,18 @@ export function MgPreviewProvider({
   externalRequest?: MgPreviewRequest | null;
   onExternalRequestConsumed?: () => void;
 }) {
+  const [session, setSession] = useState<MgOpenSession | null>(null);
   const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
   const [previewNonce, setPreviewNonce] = useState(0);
   const lastExternalNonceRef = useRef(0);
 
-  const openMgPreview = useCallback((nodeId: string) => {
-    setPreviewNodeId(nodeId);
-    setPreviewNonce((value) => value + 1);
+  const openMgPreview = useCallback((next: MgOpenSession) => {
+    setSession(next);
+    setPreviewNodeId(null);
+  }, []);
+
+  const closeMgPreview = useCallback(() => {
+    setSession(null);
   }, []);
 
   const clearMgPreviewRequest = useCallback(() => {
@@ -64,16 +76,30 @@ export function MgPreviewProvider({
 
   const value = useMemo(
     () => ({
+      session,
       previewNodeId,
       previewNonce,
       openMgPreview,
+      closeMgPreview,
       clearMgPreviewRequest,
     }),
-    [clearMgPreviewRequest, openMgPreview, previewNodeId, previewNonce],
+    [
+      clearMgPreviewRequest,
+      closeMgPreview,
+      openMgPreview,
+      previewNodeId,
+      previewNonce,
+      session,
+    ],
   );
 
   return (
-    <MgPreviewContext.Provider value={value}>{children}</MgPreviewContext.Provider>
+    <MgPreviewContext.Provider value={value}>
+      {children}
+      {session ? (
+        <MgOpenSurface session={session} onClose={closeMgPreview} />
+      ) : null}
+    </MgPreviewContext.Provider>
   );
 }
 
@@ -81,7 +107,7 @@ export function useOptionalMgPreview() {
   return useContext(MgPreviewContext);
 }
 
-/** Open the node-local fullscreen preview when Assets (or peers) request it. */
+/** Open the shared MG surface when Assets (or peers) request this nodeId. */
 export function useMgPreviewOpenRequest(
   nodeId: string,
   onOpen: () => void,

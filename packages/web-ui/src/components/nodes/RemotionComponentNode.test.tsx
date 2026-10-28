@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { MgPreviewProvider } from "../MgPreviewContext";
 import RemotionComponentNode from "./RemotionComponentNode";
 
 const mocks = vi.hoisted(() => ({
@@ -47,18 +48,18 @@ vi.mock("@remotion/player", () => ({
 
 vi.mock("@clash/remotion-components", () => ({
   RemotionSourceComposition: () => null,
+  HtmlSceneSurface: () => null,
 }));
 
-
-vi.mock("./NodeModalDialog", () => ({
-  NodeModalDialog: ({
+vi.mock("../ui/dialog", () => ({
+  Dialog: ({
     open,
     children,
     ariaLabel,
   }: {
     open: boolean;
     children: any;
-    ariaLabel: string;
+    ariaLabel?: string;
   }) =>
     open ? (
       <div role="dialog" aria-label={ariaLabel}>
@@ -104,6 +105,12 @@ const baseProps = {
   },
 } as const;
 
+function renderNode(
+  ui: React.ReactElement = <RemotionComponentNode {...baseProps} />,
+) {
+  return render(<MgPreviewProvider>{ui}</MgPreviewProvider>);
+}
+
 describe("RemotionComponentNode", () => {
   afterEach(cleanup);
 
@@ -115,7 +122,7 @@ describe("RemotionComponentNode", () => {
   });
 
   it("is a distinct Remotion node with a real Player preview and no code-edit chrome", () => {
-    render(<RemotionComponentNode {...baseProps} />);
+    renderNode();
 
     expect(
       screen.getByTestId("remotion-player").getAttribute("data-source"),
@@ -126,7 +133,7 @@ describe("RemotionComponentNode", () => {
   });
 
   it("shapes the Canvas node preview from the component composition", () => {
-    const { rerender } = render(<RemotionComponentNode {...baseProps} />);
+    const { rerender } = renderNode();
 
     const portraitNode = screen.getByTestId("remotion-component-node");
     const portraitPreview = screen.getByTestId("remotion-component-preview");
@@ -137,14 +144,16 @@ describe("RemotionComponentNode", () => {
     expect(portraitNode.style.width).toBe(portraitPreview.style.width);
 
     rerender(
-      <RemotionComponentNode
-        {...baseProps}
-        data={{
-          ...baseProps.data,
-          compositionWidth: 1920,
-          compositionHeight: 1080,
-        }}
-      />,
+      <MgPreviewProvider>
+        <RemotionComponentNode
+          {...baseProps}
+          data={{
+            ...baseProps.data,
+            compositionWidth: 1920,
+            compositionHeight: 1080,
+          }}
+        />
+      </MgPreviewProvider>,
     );
 
     const landscapeNode = screen.getByTestId("remotion-component-node");
@@ -158,7 +167,7 @@ describe("RemotionComponentNode", () => {
   });
 
   it("keeps the Canvas preview available as a node drag surface", () => {
-    render(<RemotionComponentNode {...baseProps} />);
+    renderNode();
 
     const preview = screen.getByTestId("remotion-component-preview");
     expect(preview.className).toContain("pointer-events-none");
@@ -184,7 +193,9 @@ describe("RemotionComponentNode", () => {
       },
     );
 
-    render(<RemotionComponentNode {...baseProps} width={420} height={320} />);
+    renderNode(
+      <RemotionComponentNode {...baseProps} width={420} height={320} />,
+    );
 
     expect(projected[0]).toMatchObject({
       width: 281,
@@ -199,7 +210,7 @@ describe("RemotionComponentNode", () => {
   });
 
   it("uses a Canvas connection as its only Timeline handoff", () => {
-    render(<RemotionComponentNode {...baseProps} />);
+    renderNode();
 
     expect(screen.getByTestId("source-handle-right")).toBeTruthy();
     expect(
@@ -208,22 +219,29 @@ describe("RemotionComponentNode", () => {
     expect(screen.queryByTestId("timeline-select")).toBeNull();
   });
 
-  it("opens a preview-only fullscreen session on double-click", () => {
-    render(<RemotionComponentNode {...baseProps} />);
+  it("opens Hilo-homage MG surface with trusted transport (no stock Player controls as chrome)", () => {
+    renderNode();
 
     fireEvent.doubleClick(screen.getByTestId("remotion-component-node"));
 
+    expect(screen.getByTestId("mg-open-surface")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-inspector")).toBeTruthy();
+    expect(screen.getByTestId("mg-open-transport")).toBeTruthy();
     expect(
       screen.getByTestId("remotion-component-fullscreen-preview"),
     ).toBeTruthy();
+    expect(screen.getByTestId("mg-open-stage-remotion")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Close Remotion preview" }),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Edit code" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Edit$/i })).toBeNull();
-    const players = screen.getAllByTestId("remotion-player");
-    expect(
-      players.some((player) => player.dataset.controls === "true"),
-    ).toBe(true);
+    const openPlayers = screen
+      .getAllByTestId("remotion-player")
+      .filter((el) => el.closest('[data-testid="mg-open-surface"]'));
+    expect(openPlayers.length).toBeGreaterThan(0);
+    expect(openPlayers.every((player) => player.dataset.controls === "false")).toBe(
+      true,
+    );
   });
 });
