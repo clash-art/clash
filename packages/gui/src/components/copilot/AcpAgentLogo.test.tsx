@@ -21,13 +21,25 @@ describe("AcpAgentLogo", () => {
 
     const logo = screen.getByRole("img", { name: "Devin" });
     expect(logo).toBeInTheDocument();
-    expect(logo).toHaveAttribute("data-acp-agent-logo", "");
+    expect(logo).toHaveAttribute("data-openma-agent-brand-icon", "");
+  });
+
+  it("renders DeepSeek brand mark for dsh-acp (not generic robot)", () => {
+    render(<AcpAgentLogo agentId="dsh-acp" />);
+
+    const logo = screen.getByRole("img", { name: "DeepSeek" });
+    expect(logo).toBeInTheDocument();
+    expect(logo).toHaveAttribute("data-agent-brand-id", "dsh-acp");
+    expect(logo).toHaveAttribute("data-agent-icon-source", "brand");
   });
 
   it("uses the official ACP registry icon for Qwen Code", () => {
     render(<AcpAgentLogo agentId="qwen-code" />);
 
-    expect(screen.getByRole("img", { name: "Qwen Code" })).toHaveAttribute("viewBox", "0 0 141.38 140");
+    expect(screen.getByRole("img", { name: "Qwen Code" })).toHaveAttribute(
+      "viewBox",
+      "0 0 141.38 140",
+    );
   });
 
   it("does not reserve retired built-in harness identities for custom agents", () => {
@@ -47,6 +59,9 @@ describe("AcpAgentLogo", () => {
   it("keeps unknown harness identities separate from the Clash persona avatar", () => {
     render(<AcpAgentLogo agentId="custom-harness" />);
 
-    expect(screen.getByLabelText("custom-harness")).toHaveAttribute("data-slot", "agent-provider-logo");
+    expect(screen.getByLabelText("custom-harness")).toHaveAttribute(
+      "data-slot",
+      "agent-provider-logo",
+    );
   });
 });

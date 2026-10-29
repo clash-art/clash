@@ -5677,6 +5677,18 @@ button[data-chat-turn-disclosure-trigger]:disabled .activity-disclosure-chevron 
   --composer-chip-padding-inline: 6px;
 }
 
+
+/* Map Clash warm tokens onto openma composer chrome (chips / run action). */
+.openma-composer-shell {
+  --composer-chip-fg: var(--content-secondary, var(--fg-muted));
+  --composer-chip-fg-active: var(--content-primary, var(--fg));
+  --composer-chip-bg-hover: var(--warm-muted);
+  --composer-chip-bg-open: var(--warm-muted);
+  --composer-chip-focus-ring: var(--ring);
+  --composer-run-fg: var(--content-muted, var(--fg-subtle));
+  --composer-run-fg-ready: var(--content-secondary);
+}
+
 .openma-composer-toolbar .clash-session-config-trigger,
 .openma-composer-toolbar .clash-session-permission-trigger,
 .openma-composer-toolbar .clash-inline-session-config-trigger,

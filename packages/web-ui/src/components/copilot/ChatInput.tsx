@@ -49,7 +49,10 @@ import {
   VoiceInputSetupPopover,
   type VoiceInputNotice,
 } from "./VoiceInputSetupPopover";
-import { ComposerShell } from "@openma/common/chat-ui";
+import {
+  ComposerShell,
+  COMPOSER_RUN_ACTION_CLASS,
+} from "@openma/common/chat-ui";
 
 // Lazy load MilkdownEditor to avoid SSR issues
 const MilkdownEditor = lazy(() => import("../MilkdownEditor"));
@@ -880,7 +883,7 @@ function ChatInputInner(
                             shape="rounded"
                             size="sm"
                             data-composer-submit="true"
-                            className="clash-chat-input-icon-control clash-composer-action"
+                            className={`clash-chat-input-icon-control clash-composer-action ${COMPOSER_RUN_ACTION_CLASS}`}
                             icon={
                               <ArrowElbowDownLeft
                                 className="w-4 h-4"
@@ -896,7 +899,7 @@ function ChatInputInner(
                             shape="rounded"
                             size="sm"
                             data-composer-stop="true"
-                            className="clash-chat-input-icon-control clash-composer-action"
+                            className={`clash-chat-input-icon-control clash-composer-action ${COMPOSER_RUN_ACTION_CLASS}`}
                             icon={
                               <span className="h-3 w-3 rounded-[2px] bg-current" />
                             }
@@ -914,7 +917,7 @@ function ChatInputInner(
                                 ? undefined
                                 : "true"
                             }
-                            className={`clash-chat-input-icon-control clash-composer-action ${
+                            className={`clash-chat-input-icon-control clash-composer-action ${COMPOSER_RUN_ACTION_CLASS} ${
                               isCreatingSession || uploading > 0 || canSend
                                 ? "clash-composer-action--ready"
                                 : "clash-composer-action--idle"

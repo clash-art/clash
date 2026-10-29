@@ -57,6 +57,11 @@ import type { ClashProjectEntity } from "./copilot/AcpInlineRenderers";
 import { AgentMotion, type AgentMotionState } from "./copilot/AgentMotion";
 import { RuntimeSessionTimeline } from "./copilot/RuntimeSessionTimeline";
 import { AcpAgentLogo } from "./copilot/AcpAgentLogo";
+import {
+  COMPOSER_CHIP_CLASS,
+  DshPresetStandardIcon,
+  agentPresetIcon,
+} from "@openma/common/chat-ui";
 import { CopilotRailSlot } from "./copilot/CopilotRail";
 import { MessageErrorBoundary } from "./copilot/MessageErrorBoundary";
 import { RuntimePickerDialog } from "./copilot/RuntimePickerDialog";
@@ -164,6 +169,7 @@ import {
   buildRunMenuConfigOptions,
   configModeOptionPresentation,
   findSelectConfigOption,
+  isAgentPresetConfigOption,
   isFastSessionConfigOption,
   sessionConfigOptionEnabled,
   withSessionStateCommands,
@@ -4714,7 +4720,7 @@ export function SessionConfigSelector({
           ? "relative flex justify-start"
           : "relative flex justify-start px-4 pb-2"
       }
-      triggerClassName="clash-session-config-trigger clash-composer-footer-chip max-w-full text-left text-xs"
+      triggerClassName={`clash-session-config-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} max-w-full text-left text-xs`}
       triggerTestId="session-harness-config-trigger"
       open={open}
       onOpenChange={onOpenChange}
@@ -4797,12 +4803,10 @@ export function SessionConfigSelector({
               weight="fill"
             />
           ) : null}
-          <span className="shrink-0">{modelLabel}</span>
-          {selectedEffort ? (
-            <span className="clash-session-config-effort truncate font-normal text-stone-500 dark:text-stone-400">
-              {selectedEffort.name}
-            </span>
-          ) : null}
+          {/* Backchat topology: brand icon + effort/thinking chip label ("High"). */}
+          <span className="shrink-0">
+            {selectedEffort?.name ?? modelLabel}
+          </span>
         </span>
       }
     />
@@ -4915,7 +4919,7 @@ export function HarnessPermissionSelector({
   return (
     <SelectMenu
       className="relative flex shrink-0 justify-start"
-      triggerClassName="clash-session-permission-trigger clash-composer-footer-chip shrink-0 text-left text-xs focus-visible:bg-warm-muted focus-visible:ring-0 focus-visible:ring-offset-0"
+      triggerClassName={`clash-session-permission-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} shrink-0 text-left text-xs focus-visible:bg-warm-muted focus-visible:ring-0 focus-visible:ring-offset-0`}
       triggerTestId="session-permission-mode-trigger"
       value={selectedMode.value}
       sections={sections}
@@ -5185,12 +5189,18 @@ export function InlineSessionConfigControls({
                 onSelectConfigOption(option.id, !option.currentValue)
               }
               size="sm"
-              className={`clash-inline-session-config-trigger clash-composer-footer-chip h-7 min-h-7 shrink-0 gap-1 rounded-md border-transparent px-1.5 text-xs font-normal shadow-none ${
+              className={`clash-inline-session-config-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} h-7 min-h-7 shrink-0 gap-1 rounded-md border-transparent px-1.5 text-xs font-normal shadow-none ${
                 option.currentValue
                   ? "bg-brand/[0.08] text-slate-900 dark:bg-brand/[0.12] dark:text-neutral-50"
                   : "bg-transparent text-stone-600 hover:bg-warm-muted/60 dark:text-stone-300"
               }`}
-              leftIcon={<SlidersHorizontal className="size-3.5" />}
+              leftIcon={
+                isAgentPresetConfigOption(option) ? (
+                  <DshPresetStandardIcon className="size-3.5" />
+                ) : (
+                  <SlidersHorizontal className="size-3.5" />
+                )
+              }
             >
               <span className="clash-inline-session-config-label">
                 {option.name}
@@ -5207,7 +5217,7 @@ export function InlineSessionConfigControls({
           <SelectMenu
             key={option.id}
             className="relative flex justify-start"
-            triggerClassName="clash-inline-session-config-trigger clash-composer-footer-chip max-w-[180px] text-left text-xs"
+            triggerClassName={`clash-inline-session-config-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} max-w-[180px] text-left text-xs`}
             value={selected.value}
             sections={[
               {
@@ -5231,10 +5241,22 @@ export function InlineSessionConfigControls({
             stopPropagation
             triggerPrefix={
               <span data-control-icon="">
-                <SlidersHorizontal className="size-3.5" aria-hidden="true" />
+                {(() => {
+                  if (isAgentPresetConfigOption(option)) {
+                    const PresetIcon = agentPresetIcon(selected.value);
+                    return <PresetIcon className="size-3.5" />;
+                  }
+                  return (
+                    <SlidersHorizontal className="size-3.5" aria-hidden="true" />
+                  );
+                })()}
               </span>
             }
-            triggerLabel={`${option.name} · ${selected.name}`}
+            triggerLabel={
+              isAgentPresetConfigOption(option)
+                ? selected.name
+                : `${option.name} · ${selected.name}`
+            }
           />
         );
       })}
