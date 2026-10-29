@@ -7,6 +7,7 @@ import {
   HTML_SCENE_SANDBOX,
   createHtmlSceneBlobUrl,
   htmlSceneBootstrapScript,
+  htmlSceneElementEditBridgeScript,
   measureHtmlDocumentBytes,
   validateHtmlDocumentCapacity,
   wrapHtmlDocumentForPreview,
@@ -41,6 +42,16 @@ describe("htmlSandbox", () => {
     expect(wrapped).toContain(HTML_SCENE_DOCUMENT_PROTOCOL);
     expect(htmlSceneBootstrapScript()).toContain("clash-html-scene-frame");
     expect(measureHtmlDocumentBytes(wrapped)).toBeGreaterThan(0);
+  });
+
+  it("injects element edit bridge when elementEdit is enabled", () => {
+    const wrapped = wrapHtmlDocumentForPreview("<body>hi</body>", {
+      elementEdit: true,
+      sceneWidth: 1280,
+    });
+    expect(wrapped).toContain("element-edit");
+    expect(wrapped).toContain("data-mg-id");
+    expect(htmlSceneElementEditBridgeScript(1280)).toContain("SCENE_W");
   });
 
   it("creates and revokes blob URLs", () => {
