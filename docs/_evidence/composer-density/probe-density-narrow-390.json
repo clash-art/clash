@@ -1,0 +1,33 @@
+{
+  "shellW": 390,
+  "surfaceW": 390,
+  "startLabels": [
+    {
+      "text": "Workspace write",
+      "display": "none",
+      "cls": "min-w-0 flex-1 truncate text-left"
+    },
+    {
+      "text": "Workspace write",
+      "display": "none",
+      "cls": "clash-session-permission-label openma-composer-chip-label truncate"
+    },
+    {
+      "text": "Standard",
+      "display": "none",
+      "cls": "min-w-0 flex-1 truncate text-left"
+    }
+  ],
+  "endLabels": [
+    {
+      "text": "High",
+      "display": "block",
+      "cls": "min-w-0 flex-1 truncate text-left"
+    },
+    {
+      "text": "High",
+      "display": "inline-flex",
+      "cls": "clash-session-config-summary inline-flex min-w-0 items-center gap-1.5"
+    }
+  ]
+}

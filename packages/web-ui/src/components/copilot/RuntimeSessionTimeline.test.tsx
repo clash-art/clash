@@ -708,7 +708,7 @@ describe("RuntimeSessionTimeline", () => {
     expect(screen.getAllByTestId("acp-tool-row")).toHaveLength(4);
   });
 
-  it("keeps the completed tail tool visibly live until another event arrives", () => {
+  it("keeps completed tool rows available under the thinking fallback while streaming", () => {
     const store = createAgentUIStore("session-live-tail-tool");
     dispatch(store, "user-live-tail", "user.message", {
       message_id: "user-live-tail",
@@ -747,8 +747,9 @@ describe("RuntimeSessionTimeline", () => {
     const group = document.querySelector('[data-tool-group-size="3"]');
     const trigger = group?.querySelector<HTMLElement>(":scope > button");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(trigger).toHaveTextContent("搜索中 dialog");
-    expect(trigger?.querySelector(".animate-spin")).toBeTruthy();
+    // openma 0.12+: completed tool group while turn still streams shows the
+    // thinking fallback on the group trigger (not a fake live "搜索中").
+    expect(trigger).toHaveTextContent("正在思考");
 
     fireEvent.click(trigger!);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
@@ -812,7 +813,7 @@ describe("RuntimeSessionTimeline", () => {
     expect(screen.queryByRole("button", { name: /已工作/ })).toBeNull();
   });
 
-  it("keeps the process strip open when a watched turn completes", () => {
+  it("collapses the process strip when a watched turn completes (Backchat homage)", () => {
     const store = createAgentUIStore("session-process-open");
     dispatch(store, "user-process", "user.message", {
       message_id: "user-process",
@@ -846,12 +847,28 @@ describe("RuntimeSessionTimeline", () => {
       '[data-session-process-state="complete"]',
     );
     expect(stoppedProcess).toBeTruthy();
-    const stoppedActivity = stoppedProcess?.querySelector<HTMLElement>(
-      '[data-session-process-activity="true"]',
+    // collapseProcessOnComplete: process header stays; body closes via Collapsible.
+    const processHeader = screen.getByRole("button", { name: /已工作/ });
+    expect(processHeader).toHaveAttribute("aria-expanded", "false");
+    const collapse = stoppedProcess?.querySelector(".reasoning-collapse");
+    expect(collapse).toHaveAttribute("data-state", "closed");
+    expect(
+      stoppedProcess?.querySelector('[data-session-process-activity="true"]'),
+    ).toBeTruthy();
+  });
+
+  it("wires AgentUITurnView without a host max-width override on the turn root", () => {
+    const { container } = render(
+      <RuntimeSessionTimeline
+        store={completedCodexTurn()}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
     );
-    expect(stoppedActivity).toBeTruthy();
-    expect(stoppedActivity).not.toHaveAttribute("hidden");
-    expect(screen.getByRole("button", { name: /已工作/ })).toBeTruthy();
+    const turn = container.querySelector("[data-turn-id]");
+    expect(turn).toBeTruthy();
+    // Parent chat-turn-frame owns max-w-3xl; turn root must not !max-w-3xl.
+    expect(turn?.className ?? "").not.toMatch(/max-w-3xl/);
   });
 
   it("does not mount a collapsed history process body until opened", () => {
