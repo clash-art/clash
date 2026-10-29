@@ -49,6 +49,10 @@ import {
 import { isTimelineTransitionRenderItem } from "./timeline-render-field-consumers";
 import { RemotionSourceComposition } from "./inline-remotion-source";
 import { HtmlSceneSurface } from "./html-scene";
+import {
+  useRemotionMgElementEdit,
+  type MgElementEditHandlers,
+} from "./mg-element-edit";
 import { resolveProjectedMediaUrl } from "./projected-media-url";
 
 export {
@@ -832,6 +836,10 @@ const ItemComponent: React.FC<{
   transitionTo?: ResolvedTimelineItem;
   /** Composition-absolute ranges containing known spoken media. */
   duckingWindows?: ReturnType<typeof buildAudioDuckingWindows>;
+  /** Timeline selection drives in-place MG element edit. */
+  isSelected?: boolean;
+  /** Optional in-place MG element edit bridge from the Timeline editor. */
+  mgElementEditHandlers?: MgElementEditHandlers;
 }> = ({
   item,
   durationInFrames: _durationInFrames,
@@ -844,6 +852,8 @@ const ItemComponent: React.FC<{
   transitionFrom,
   transitionTo,
   duckingWindows = [],
+  isSelected = false,
+  mgElementEditHandlers,
 }) => {
   const frame = useCurrentFrame();
   const { width: compWidth, height: compHeight, fps } = useVideoConfig();
@@ -865,6 +875,26 @@ const ItemComponent: React.FC<{
     durationInFrames: resolvedItem.durationInFrames,
     width: compWidth,
     height: compHeight,
+  });
+
+  const compositionRuntime =
+    resolvedItem.type === "composition" ? resolvedItem.runtime : undefined;
+  const compositionSourceNodeId =
+    resolvedItem.type === "composition" ? resolvedItem.sourceNodeId : undefined;
+  const compositionElementEditActive = Boolean(
+    isSelected &&
+    compositionSourceNodeId &&
+    mgElementEditHandlers &&
+    (compositionRuntime === "html" || compositionRuntime === "remotion") &&
+    mgElementEditHandlers.activeSourceNodeId === compositionSourceNodeId,
+  );
+  const remotionElementEditRootRef = React.useRef<HTMLDivElement | null>(null);
+  useRemotionMgElementEdit({
+    rootRef: remotionElementEditRootRef,
+    enabled: compositionRuntime === "remotion" && compositionElementEditActive,
+    sourceNodeId: compositionSourceNodeId,
+    compositionWidth: compWidth,
+    handlers: mgElementEditHandlers,
   });
 
   const transformStyle = React.useMemo(
@@ -1069,6 +1099,7 @@ const ItemComponent: React.FC<{
       return (
         <AbsoluteFill
           ref={(el) => {
+            remotionElementEditRootRef.current = el as HTMLDivElement | null;
             if (!itemsDomMapRef?.current || !el) return;
             itemsDomMapRef.current.set(resolvedItem.id, el as HTMLElement);
           }}
@@ -1077,6 +1108,9 @@ const ItemComponent: React.FC<{
           data-composition-kind={compositionItem.compositionKind}
           data-composition-runtime={compositionItem.runtime}
           data-remotion-source-node-id={compositionItem.sourceNodeId}
+          data-mg-element-edit={
+            compositionElementEditActive ? "true" : undefined
+          }
           style={applyTransform({
             overflow: "hidden",
             opacity: isObscured ? 0 : 1,
@@ -1142,6 +1176,27 @@ const ItemComponent: React.FC<{
               sourceNodeId={compositionItem.sourceNodeId}
               compositionItemId={resolvedItem.id}
               title={`HTML MG ${compositionItem.compositionId ?? resolvedItem.id}`}
+              elementEdit={compositionElementEditActive}
+              sceneWidth={compWidth}
+              onElementEdit={
+                compositionElementEditActive && compositionItem.sourceNodeId
+                  ? (event) =>
+                      mgElementEditHandlers?.onElementEdit(
+                        compositionItem.sourceNodeId!,
+                        event.elementId,
+                        event.patch,
+                      )
+                  : undefined
+              }
+              onElementSelect={
+                compositionElementEditActive && compositionItem.sourceNodeId
+                  ? (event) =>
+                      mgElementEditHandlers?.onElementSelect(
+                        compositionItem.sourceNodeId!,
+                        event.elementId,
+                      )
+                  : undefined
+              }
             />
           ) : (
             <div
@@ -1659,7 +1714,15 @@ const TrackComponent: React.FC<{
   track: PreparedTrack;
   itemsDomMapRef?: React.RefObject<Map<string, HTMLElement>>;
   duckingWindows: ReturnType<typeof buildAudioDuckingWindows>;
-}> = React.memo(({ track, itemsDomMapRef, duckingWindows }) => {
+  selectedItemId?: string | null;
+  mgElementEditHandlers?: MgElementEditHandlers;
+}> = React.memo(({
+  track,
+  itemsDomMapRef,
+  duckingWindows,
+  selectedItemId,
+  mgElementEditHandlers,
+}) => {
   if (track.hidden) {
     return null;
   }
@@ -1698,6 +1761,8 @@ const TrackComponent: React.FC<{
               transitionFrom={transitionFrom}
               transitionTo={transitionTo}
               duckingWindows={duckingWindows}
+              isSelected={selectedItemId === item.id}
+              mgElementEditHandlers={mgElementEditHandlers}
             />
           </Sequence>
         );
@@ -1717,6 +1782,8 @@ export const VideoComposition: React.FC<{
   onMediaError?: PreviewMediaErrorReporter;
   /** Interactive preview only: a new value remounts every media element. */
   mediaEpoch?: number;
+  /** Optional in-place MG element edit bridge for the selected composition. */
+  mgElementEditHandlers?: MgElementEditHandlers;
 }> = ({
   tracks,
   allNodes,
@@ -1725,6 +1792,7 @@ export const VideoComposition: React.FC<{
   itemsDomMapRef,
   onMediaError,
   mediaEpoch = 0,
+  mgElementEditHandlers,
 }) => {
   const { width: compWidth, height: compHeight } = useVideoConfig();
   const compositionFrame = useCurrentFrame();
@@ -1903,6 +1971,8 @@ export const VideoComposition: React.FC<{
             track={track}
             itemsDomMapRef={itemsDomMapRef}
             duckingWindows={duckingWindows}
+            selectedItemId={selectedItemId}
+            mgElementEditHandlers={mgElementEditHandlers}
           />
         ))}
 

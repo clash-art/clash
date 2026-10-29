@@ -14,34 +14,22 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type FormEvent,
   type RefObject,
 } from "react";
-import { useReactFlow } from "@xyflow/react";
 import { Code, FilmStrip, X } from "@phosphor-icons/react";
 import { Player, type PlayerRef } from "@remotion/player";
 import { HtmlSceneSurface, RemotionSourceComposition } from "@clash/remotion-components";
 
-import { useOptionalLoroSyncContext } from "./LoroSyncContext";
 import {
-  deriveHtmlMotionContent,
-  listHtmlMotionEditableElementsWithOverrides,
-  mergeElementOverride,
-  normalizeElementOverrides,
-  seedElementOverridesFromHtml,
-  serializeElementOverrides,
   type MgEditableElement,
   type MgElementOverrides,
   type MgElementPatch,
 } from "../lib/htmlMotionElementEdit";
-import {
-  buildRemotionMgComponentProps,
-  listRemotionEditableElementsWithOverrides,
-  seedElementOverridesFromRemotionSource,
-} from "../lib/remotionElementEdit";
+import { useMgElementEditSession } from "../lib/useMgElementEditSession";
+import { MgElementInspector } from "./MgElementInspector";
 import { Dialog } from "./ui/dialog";
 import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
@@ -363,125 +351,6 @@ function RemotionStage({
   );
 }
 
-function MgElementInspector({
-  elements,
-  selectedId,
-  onSelect,
-  onPatch,
-}: {
-  elements: MgEditableElement[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onPatch: (elementId: string, patch: MgElementPatch) => void;
-}) {
-  const selected =
-    elements.find((item) => item.id === selectedId) ?? elements[0] ?? null;
-
-  if (!elements.length) {
-    return (
-      <div
-        data-testid="mg-open-element-inspector-empty"
-        className="space-y-1 border-t border-warm-border pt-4"
-      >
-        <p className="text-xs font-medium text-content-secondary">Elements</p>
-        <p className="text-xs leading-relaxed text-content-muted">
-          No editable elements. Author{" "}
-          <code className="text-[10px]">data-mg-id</code> +{" "}
-          <code className="text-[10px]">data-mg-editable=&quot;text,position&quot;</code>{" "}
-          on HTML nodes or Remotion JSX (default create templates include one).
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      data-testid="mg-open-element-inspector"
-      className="space-y-3 border-t border-warm-border pt-4"
-      aria-label="Motion element inspector"
-    >
-      <p className="text-xs font-medium text-content-secondary">Elements</p>
-      <ul className="space-y-1" data-testid="mg-open-element-list">
-        {elements.map((el) => (
-          <li key={el.id}>
-            <button
-              type="button"
-              data-testid={`mg-open-element-${el.id}`}
-              aria-pressed={selected?.id === el.id}
-              className={`w-full truncate rounded px-2 py-1.5 text-left text-xs ${
-                selected?.id === el.id
-                  ? "bg-warm-hover text-content-primary"
-                  : "text-content-secondary hover:bg-warm-hover/60"
-              }`}
-              onClick={() => onSelect(el.id)}
-            >
-              {el.id}
-            </button>
-          </li>
-        ))}
-      </ul>
-
-      {selected ? (
-        <div className="space-y-3" data-testid="mg-open-element-fields">
-          <p className="truncate text-xs text-content-muted">{selected.id}</p>
-          {selected.editable.includes("text") ? (
-            <label className="block space-y-1 text-xs text-content-secondary">
-              <span>Text</span>
-              <Input
-                data-testid="mg-open-element-text"
-                aria-label="Element text"
-                value={selected.text}
-                maxLength={8192}
-                onChange={(event) =>
-                  onPatch(selected.id, { text: event.target.value })
-                }
-              />
-            </label>
-          ) : null}
-          {selected.editable.includes("position") ? (
-            <div className="grid grid-cols-2 gap-2">
-              <label className="block space-y-1 text-xs text-content-secondary">
-                <span>X</span>
-                <Input
-                  data-testid="mg-open-element-x"
-                  aria-label="Element X"
-                  type="number"
-                  step={1}
-                  value={String(Math.round(selected.x * 100) / 100)}
-                  onChange={(event) => {
-                    const n = Number(event.target.value);
-                    if (!Number.isFinite(n)) return;
-                    onPatch(selected.id, { x: n });
-                  }}
-                />
-              </label>
-              <label className="block space-y-1 text-xs text-content-secondary">
-                <span>Y</span>
-                <Input
-                  data-testid="mg-open-element-y"
-                  aria-label="Element Y"
-                  type="number"
-                  step={1}
-                  value={String(Math.round(selected.y * 100) / 100)}
-                  onChange={(event) => {
-                    const n = Number(event.target.value);
-                    if (!Number.isFinite(n)) return;
-                    onPatch(selected.id, { y: n });
-                  }}
-                />
-              </label>
-            </div>
-          ) : null}
-          <p className="text-[11px] leading-relaxed text-content-muted">
-            Drag on stage to move position; double-click text on stage to edit.
-            Draft overrides flush to Canvas on pause / drag end / close.
-          </p>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function MgInspector({
   session,
   frame,
@@ -572,7 +441,9 @@ function MgInspector({
           className="space-y-3 border-t border-warm-border pt-4"
           aria-label="Preview transport"
         >
-          <p className="text-xs font-medium text-content-secondary">Transport</p>
+          <p className="text-xs font-medium text-content-secondary">
+            Transport
+          </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
@@ -616,6 +487,7 @@ function MgInspector({
           selectedId={selectedElementId}
           onSelect={onSelectElement}
           onPatch={onElementPatch}
+          testIdPrefix="mg-open-element"
         />
 
         <p className="mt-auto text-xs leading-relaxed text-content-muted">
@@ -637,214 +509,30 @@ export function MgOpenSurface({
   const playerRef = useRef<PlayerRef>(null);
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(true);
-  const initialOverrides = normalizeElementOverrides(session.elementOverrides);
-  const [draftOverrides, setDraftOverrides] =
-    useState<MgElementOverrides>(initialOverrides);
-  const [source, setSource] = useState(() =>
-    session.kind === "html-motion"
-      ? deriveHtmlMotionContent(session.source, initialOverrides)
-      : session.source,
-  );
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(
-    null,
-  );
-  const loroSync = useOptionalLoroSyncContext();
-  const reactFlow = useReactFlow();
 
-  /** Base/template source (HTML doc or Remotion TSX) — not the draft-derived view. */
-  const baseSourceRef = useRef(session.source);
-  const latestOverridesRef = useRef<MgElementOverrides>(initialOverrides);
-  const persistedOverridesRef = useRef<string>(
-    serializeElementOverrides(initialOverrides),
-  );
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const kindRef = useRef(session.kind);
-  kindRef.current = session.kind;
+  const {
+    elements,
+    selectedElementId,
+    setSelectedElementId,
+    applyElementPatch,
+    applyElementPatchImmediate,
+    persistDraft,
+    remotionComponentProps,
+    derivedSource,
+  } = useMgElementEditSession({
+    nodeId: session.nodeId,
+    kind: session.kind,
+    source: session.source,
+    elementOverrides: session.elementOverrides,
+    autosaveDelayMs: MG_ELEMENT_AUTOSAVE_DELAY_MS,
+  });
 
-  const sessionOverridesKey = serializeElementOverrides(
-    normalizeElementOverrides(session.elementOverrides),
-  );
-
-  const remotionComponentProps = useMemo(
-    () => buildRemotionMgComponentProps(draftOverrides),
-    [draftOverrides],
-  );
+  const source = derivedSource ?? session.source;
 
   useEffect(() => {
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-    }
-    const nextOverrides = normalizeElementOverrides(session.elementOverrides);
-    baseSourceRef.current = session.source;
-    latestOverridesRef.current = nextOverrides;
-    persistedOverridesRef.current = serializeElementOverrides(nextOverrides);
-    setDraftOverrides(nextOverrides);
-    setSource(
-      session.kind === "html-motion"
-        ? deriveHtmlMotionContent(session.source, nextOverrides)
-        : session.source,
-    );
-    setSelectedElementId(null);
     setFrame(0);
     setPlaying(true);
-    // sessionOverridesKey fingerprints elementOverrides (avoid object-identity churn).
-  }, [session.nodeId, session.source, session.kind, sessionOverridesKey]);
-
-  const elements = useMemo(
-    () =>
-      session.kind === "html-motion"
-        ? listHtmlMotionEditableElementsWithOverrides(
-            baseSourceRef.current,
-            draftOverrides,
-          )
-        : listRemotionEditableElementsWithOverrides(
-            baseSourceRef.current,
-            draftOverrides,
-          ),
-    [session.kind, draftOverrides, source],
-  );
-
-  useEffect(() => {
-    if (!elements.length) {
-      setSelectedElementId(null);
-      return;
-    }
-    if (
-      selectedElementId &&
-      elements.some((item) => item.id === selectedElementId)
-    ) {
-      return;
-    }
-    setSelectedElementId(elements[0]!.id);
-  }, [elements, selectedElementId]);
-
-  // Keep canvas writers in refs so persistDraft stays identity-stable
-  // (mirror TextDocumentEditorSurface onSaveRef) — otherwise the unmount-flush
-  // effect re-runs cleanup on every render and defeats debounce.
-  const nodeIdRef = useRef(session.nodeId);
-  const reactFlowRef = useRef(reactFlow);
-  const loroSyncRef = useRef(loroSync);
-  nodeIdRef.current = session.nodeId;
-  reactFlowRef.current = reactFlow;
-  loroSyncRef.current = loroSync;
-
-  const persistDraft = useCallback(() => {
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-    }
-    const overrides = latestOverridesRef.current;
-    const fingerprint = serializeElementOverrides(overrides);
-    if (fingerprint === persistedOverridesRef.current) {
-      return;
-    }
-    const nodeId = nodeIdRef.current;
-    const dataPatch =
-      kindRef.current === "html-motion"
-        ? {
-            content: deriveHtmlMotionContent(baseSourceRef.current, overrides),
-            elementOverrides: overrides,
-          }
-        : {
-            // Remotion: keep TSX content; SoT is elementOverrides → componentProps.
-            elementOverrides: overrides,
-          };
-    try {
-      reactFlowRef.current.setNodes((nodes) =>
-        nodes.map((node) =>
-          node.id === nodeId
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  ...dataPatch,
-                },
-              }
-            : node,
-        ),
-      );
-    } catch {
-      // Outside ReactFlow in unit tests — persistence via loro still attempted.
-    }
-    loroSyncRef.current?.updateNode?.(nodeId, {
-      data: dataPatch,
-    });
-    persistedOverridesRef.current = fingerprint;
-    if (kindRef.current === "html-motion" && "content" in dataPatch) {
-      setSource(dataPatch.content as string);
-    }
-  }, []);
-
-  const schedulePersist = useCallback(() => {
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-    }
-    autosaveTimerRef.current = setTimeout(() => {
-      autosaveTimerRef.current = null;
-      persistDraft();
-    }, MG_ELEMENT_AUTOSAVE_DELAY_MS);
-  }, [persistDraft]);
-
-  const commitOverridePatch = useCallback(
-    (elementId: string, patch: MgElementPatch, mode: "debounce" | "immediate") => {
-      try {
-        let next = latestOverridesRef.current;
-        // Migrate: first edit seeds absolute values from current source markers.
-        if (kindRef.current === "html-motion") {
-          next = seedElementOverridesFromHtml(baseSourceRef.current, next, [
-            elementId,
-          ]);
-        } else {
-          next = seedElementOverridesFromRemotionSource(
-            baseSourceRef.current,
-            next,
-            [elementId],
-          );
-        }
-        next = mergeElementOverride(next, elementId, patch);
-        latestOverridesRef.current = next;
-        setDraftOverrides(next);
-        if (kindRef.current === "html-motion") {
-          setSource(deriveHtmlMotionContent(baseSourceRef.current, next));
-        }
-        if (mode === "immediate") {
-          persistDraft();
-        } else {
-          schedulePersist();
-        }
-      } catch {
-        // Invalid patch — keep previous draft.
-      }
-    },
-    [persistDraft, schedulePersist],
-  );
-
-  /** Inspector Text/X/Y: local draft immediate; Canvas/loro debounced. */
-  const applyElementPatch = useCallback(
-    (elementId: string, patch: MgElementPatch) => {
-      commitOverridePatch(elementId, patch, "debounce");
-    },
-    [commitOverridePatch],
-  );
-
-  /**
-   * Stage pointerup / in-iframe text commit: already one-shot — persist immediately
-   * (live translate stays in-iframe until pointerup; see htmlSandbox).
-   */
-  const applyElementPatchImmediate = useCallback(
-    (elementId: string, patch: MgElementPatch) => {
-      commitOverridePatch(elementId, patch, "immediate");
-    },
-    [commitOverridePatch],
-  );
-
-  useEffect(
-    () => () => {
-      persistDraft();
-    },
-    [persistDraft],
-  );
+  }, [session.nodeId, session.source, session.kind]);
 
   const handleClose = useCallback(() => {
     persistDraft();

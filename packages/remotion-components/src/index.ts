@@ -1,4 +1,9 @@
 export { VideoComposition } from "./VideoComposition";
+export {
+  useRemotionMgElementEdit,
+  type MgElementEditHandlers,
+  type MgElementEditPatch,
+} from "./mg-element-edit";
 export { resolveProjectedMediaUrl } from "./projected-media-url";
 export {
   InlineRemotionSourceError,

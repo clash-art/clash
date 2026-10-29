@@ -26,6 +26,7 @@ import {
 import type {
   AudioItem,
   ClipAnimationType,
+  CompositionItem,
   DerivedOverlayItem,
   EffectParamValue,
   Item,
@@ -1175,12 +1176,15 @@ type PropertiesPanelProps = {
   showHeader?: boolean;
   title?: string;
   headerAction?: React.ReactNode;
+  /** Host-rendered in-place MG element inspector for the selected composition. */
+  renderCompositionInspector?: (item: CompositionItem) => React.ReactNode;
 };
 
 export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   showHeader = true,
   title = 'Properties',
   headerAction,
+  renderCompositionInspector,
 }) => {
   const dispatch = useEditorDispatch();
   const textSectionRef = React.useRef<HTMLDivElement>(null);
@@ -2247,7 +2251,11 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
         {item.type === 'composition' && (
           <div className={inspectorSectionClassName}>
             <h3 className={sectionTitleClassName}>
-              {item.runtime === 'remotion' ? 'Remotion Component' : 'Composition'}
+              {item.runtime === 'remotion'
+                ? 'Remotion Component'
+                : item.runtime === 'html'
+                  ? 'HTML Motion'
+                  : 'Composition'}
             </h3>
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
@@ -2258,10 +2266,13 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                 <InspectorIdentityRow label="Canvas node" value={item.sourceNodeId} />
               )}
               <p className={`m-0 text-stone-500 ${editorTypeClassName.control}`}>
-                {item.runtime === 'remotion'
-                  ? 'Edit this component on its linked Canvas node. Timeline preview and render resolve that node\'s latest source.'
-                  : 'This legacy composition is rendered by its declared runtime or rendered asset fallback.'}
+                {item.sourceNodeId && (item.runtime === 'html' || item.runtime === 'remotion')
+                  ? 'Edit text and position in place here or by dragging on the Timeline preview. Changes write to the linked Canvas node.'
+                  : item.runtime === 'remotion'
+                    ? 'Edit this component on its linked Canvas node. Timeline preview and render resolve that node\'s latest source.'
+                    : 'This legacy composition is rendered by its declared runtime or rendered asset fallback.'}
               </p>
+              {renderCompositionInspector?.(item)}
             </div>
           </div>
         )}

@@ -28,6 +28,7 @@ import {
 import {
   publishTimelineExportNodes,
 } from "../preview-host/exportNodesRegistry";
+import type { MgElementEditHandlers } from "./mgElementEdit";
 import { TimelineIconButton, TimelineRangeInput } from "./ui/controls";
 import { colors, typography } from "./timeline/styles";
 import { formatTimecode } from "./timeline/utils/timeFormatter";
@@ -169,6 +170,8 @@ type CanvasPreviewProps = {
   audioMeterStore?: PreviewAudioMeterStore;
   /** Live Canvas nodes resolved by Timeline items such as remotion-component. */
   runtimeNodes?: TimelineRuntimeNode[];
+  /** Optional in-place MG element edit bridge for the selected composition. */
+  mgElementEditHandlers?: MgElementEditHandlers;
 };
 
 export type TimelineRuntimeNode = {
@@ -183,6 +186,7 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
     onToggleAudioMeter,
     audioMeterStore,
     runtimeNodes = [],
+    mgElementEditHandlers,
   }) => {
     const dispatch = useEditorDispatch();
     const { beginHistoryGroup, endHistoryGroup } = useEditorHistory();
@@ -460,6 +464,7 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
             tracks={tracks}
             allNodesMap={allNodesMap}
             selectedItemId={selectedItemId}
+            mgElementEditHandlers={mgElementEditHandlers}
             currentFrame={currentFrame}
             compositionWidth={compositionWidth}
             compositionHeight={compositionHeight}

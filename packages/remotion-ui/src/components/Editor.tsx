@@ -11,6 +11,7 @@ import {
   useEditor,
   useEditorDispatch,
   useEditorStaticState,
+  type CompositionItem,
   type EditorState,
   type EditorAssetInput,
   type Asset,
@@ -19,6 +20,7 @@ import {
   type NleTarget,
 } from "@clash/remotion-core";
 import { CanvasPreview } from "./CanvasPreview";
+import type { MgElementEditHandlers } from "./mgElementEdit";
 import type { TimelineRuntimeNode } from "./CanvasPreview";
 import { Timeline } from "./Timeline";
 import type { TimelineAssetInsertRequest } from "./timeline/insertAssetRequest";
@@ -296,6 +298,10 @@ type EditorProps = {
   layout?: "standalone" | "embedded";
   /** Opaque Host authority scope for disposable poster, filmstrip, and waveform caches. */
   previewCacheScope?: string;
+  /** Host-rendered in-place MG element inspector for the selected composition. */
+  renderCompositionInspector?: (item: CompositionItem) => React.ReactNode;
+  /** Host-owned bridge for stage drag/dblclick over the selected composition. */
+  mgElementEditHandlers?: MgElementEditHandlers;
 };
 
 export const Editor: React.FC<EditorProps> = ({
@@ -328,6 +334,8 @@ export const Editor: React.FC<EditorProps> = ({
   onAnnotationTargetContextMenu,
   layout = "standalone",
   previewCacheScope,
+  renderCompositionInspector,
+  mgElementEditHandlers,
 }) => {
   const [embeddedPanel, setEmbeddedPanel] =
     React.useState<EmbeddedPanel>("media");
@@ -943,6 +951,7 @@ export const Editor: React.FC<EditorProps> = ({
               <div className="clash-timeline-preview-surface clash-timeline-panel-surface h-full w-full overflow-hidden bg-warm-surface">
                 <CanvasPreview
                   runtimeNodes={runtimeNodes}
+                  mgElementEditHandlers={mgElementEditHandlers}
                   audioMeterOpen={audioMeterOpen}
                   onToggleAudioMeter={toggleAudioMeter}
                   audioMeterStore={audioMeterStore}
@@ -989,6 +998,7 @@ export const Editor: React.FC<EditorProps> = ({
                 <PropertiesPanel
                   title="Properties"
                   headerAction={collapseInspectorButton}
+                  renderCompositionInspector={renderCompositionInspector}
                 />
               </div>
             </aside>
@@ -1108,6 +1118,7 @@ export const Editor: React.FC<EditorProps> = ({
                   <div className="h-full w-full overflow-hidden rounded-lg bg-warm-surface shadow-inner ring-1 ring-warm-border/70">
                     <CanvasPreview
                       runtimeNodes={runtimeNodes}
+                      mgElementEditHandlers={mgElementEditHandlers}
                       audioMeterOpen={audioMeterOpen}
                       onToggleAudioMeter={toggleAudioMeter}
                       audioMeterStore={audioMeterStore}
@@ -1115,7 +1126,9 @@ export const Editor: React.FC<EditorProps> = ({
                   </div>
                 </div>
                 <aside className="w-[320px] shrink-0 overflow-hidden rounded-xl border border-warm-border bg-warm-surface shadow-sm">
-                  <PropertiesPanel />
+                  <PropertiesPanel
+                    renderCompositionInspector={renderCompositionInspector}
+                  />
                 </aside>
               </div>
 

@@ -22,6 +22,7 @@ import {
 import {
   buildNleHandoff,
   type Asset as RemotionAsset,
+  type CompositionItem,
   type EditorAssetInput,
   type EditorAssetTranscript,
   type EditorState,
@@ -30,7 +31,15 @@ import {
   type TimelineDsl,
 } from "@clash/remotion-core";
 import type { AgentAnnotationObjectRef } from "@clash/shared-types";
-import type { TimelineAssetInsertRequest } from "@clash/remotion-ui";
+import type {
+  MgElementEditHandlers,
+  TimelineAssetInsertRequest,
+} from "@clash/remotion-ui";
+import {
+  MgTimelineCompositionInspector,
+  type MgTimelineDraftChange,
+  type MgTimelinePreviewPatch,
+} from "./MgTimelineInplaceEdit";
 import {
   AsrTimedTranscriptSchema,
   projectTimelineReadToken,
@@ -595,6 +604,11 @@ export function ProjectTimelineEditorSurface({
 }) {
   const [isProjectAssetDropActive, setIsProjectAssetDropActive] =
     useState(false);
+  const [mgElementEditHandlers, setMgElementEditHandlers] =
+    useState<MgElementEditHandlers | null>(null);
+  const [mgPreviewPatches, setMgPreviewPatches] = useState<
+    Record<string, MgTimelinePreviewPatch>
+  >({});
   const [editorMountReadyTimelineId, setEditorMountReadyTimelineId] = useState<
     string | null
   >(null);
@@ -1068,6 +1082,53 @@ export function ProjectTimelineEditorSurface({
       ? `calc(${rightInset}px - var(--clash-project-chrome-gutter, 0.5rem))`
       : 0;
 
+  const handleMgDraftChange = useCallback<MgTimelineDraftChange>(
+    (sourceNodeId, patch) => {
+      setMgPreviewPatches((current) => {
+        if (patch === null) {
+          if (!(sourceNodeId in current)) return current;
+          const next = { ...current };
+          delete next[sourceNodeId];
+          return next;
+        }
+        return { ...current, [sourceNodeId]: patch };
+      });
+    },
+    [],
+  );
+
+  // Live-preview the inspector draft without waiting for the Canvas/Loro round
+  // trip. The persisted node remains the authority; this only patches preview
+  // data for matching runtime nodes.
+  const patchedRuntimeNodes = useMemo(() => {
+    const sourceNodeIds = Object.keys(mgPreviewPatches);
+    if (!sourceNodeIds.length) return runtimeNodes;
+    return runtimeNodes.map((node) => {
+      const patch = mgPreviewPatches[node.id];
+      if (!patch) return node;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          elementOverrides: patch.elementOverrides,
+          ...(patch.content !== undefined ? { content: patch.content } : {}),
+        },
+      };
+    });
+  }, [mgPreviewPatches, runtimeNodes]);
+
+  const renderCompositionInspector = useCallback(
+    (item: CompositionItem) => (
+      <MgTimelineCompositionInspector
+        item={item}
+        runtimeNodes={runtimeNodes}
+        onDraftChange={handleMgDraftChange}
+        onRegisterHandlers={setMgElementEditHandlers}
+      />
+    ),
+    [handleMgDraftChange, runtimeNodes],
+  );
+
   return (
     <main
       data-testid="project-timeline-editor"
@@ -1102,7 +1163,9 @@ export function ProjectTimelineEditorSurface({
             <TimelineEditor
               layout="embedded"
               initialAssets={editorAssets}
-              runtimeNodes={runtimeNodes}
+              runtimeNodes={patchedRuntimeNodes}
+              renderCompositionInspector={renderCompositionInspector}
+              mgElementEditHandlers={mgElementEditHandlers ?? undefined}
               initialState={initialState}
               stateRef={editorStateRef}
               onStateChange={scheduleStatePersist}

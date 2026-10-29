@@ -1,5 +1,9 @@
 // Export all UI components
 export { Editor } from "./components/Editor";
+export type {
+  MgElementEditHandlers,
+  MgElementEditPatch,
+} from "./components/mgElementEdit";
 export type { TimelineAssetInsertRequest } from "./components/timeline/insertAssetRequest";
 export { AssetPanel } from "./components/AssetPanel";
 export { Timeline } from "./components/Timeline";
