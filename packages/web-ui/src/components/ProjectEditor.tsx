@@ -325,10 +325,15 @@ import DesktopAutoHideSidebar, {
 } from "./DesktopAutoHideSidebar";
 import ProjectWorkspaceNavigator, {
   type ProjectBrowserTab,
+  type ProjectMotionAsset,
   type ProjectTextAsset,
   type ProjectPluginView,
   type ProjectWorkspaceSurface,
 } from "./ProjectWorkspaceNavigator";
+import {
+  MgPreviewProvider,
+  type MgPreviewRequest,
+} from "./MgPreviewContext";
 import { ProjectBrowserSurfaces } from "./ProjectBrowserSurfaces";
 import {
   closeProjectBrowserTab,
@@ -1049,6 +1054,8 @@ export default function ProjectEditor({
   const [previewTextNodeId, setPreviewTextNodeId] = useState<string | null>(
     null,
   );
+  const [mgPreviewRequest, setMgPreviewRequest] =
+    useState<MgPreviewRequest | null>(null);
   const [isCanvasAssetDropActive, setIsCanvasAssetDropActive] = useState(false);
   const previousWorkspaceSurfaceRef = useRef(workspaceSurface);
   const activeCanvasIdRef = useRef(activeCanvasId);
@@ -1178,6 +1185,10 @@ export default function ProjectEditor({
         previous.browserId !== workspaceSurface.browserId) ||
       (previous.kind === "text-asset" &&
         workspaceSurface.kind === "text-asset" &&
+        (previous.nodeId !== workspaceSurface.nodeId ||
+          previous.canvasId !== workspaceSurface.canvasId)) ||
+      (previous.kind === "motion-asset" &&
+        workspaceSurface.kind === "motion-asset" &&
         (previous.nodeId !== workspaceSurface.nodeId ||
           previous.canvasId !== workspaceSurface.canvasId));
     if (changed) transientUiStore.dismiss();
@@ -1717,12 +1728,12 @@ export default function ProjectEditor({
     useState(false);
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
   const shouldReserveCopilotSpace =
-    !nativeAgent && workspaceSurface.kind !== "canvas" && !isSidebarCollapsed;
+    !nativeAgent && workspaceSurface.kind !== "canvas" && workspaceSurface.kind !== "motion-asset" && !isSidebarCollapsed;
   const copilotWorkspaceRight = shouldReserveCopilotSpace
     ? sidebarWidth + COPILOT_PANEL_GUTTER_PX * 2
     : 0;
   const copilotHeaderInset =
-    !nativeAgent && isSidebarCollapsed && workspaceSurface.kind !== "canvas"
+    !nativeAgent && isSidebarCollapsed && workspaceSurface.kind !== "canvas" && workspaceSurface.kind !== "motion-asset"
       ? 40
       : 0;
   const handleCopilotWidthPreview = useCallback(
@@ -4363,6 +4374,53 @@ export default function ProjectEditor({
       left.label.localeCompare(right.label),
     );
   }, [activeCanvasId, loroSync.doc, nodes]);
+  const projectMotionAssets = useMemo<ProjectMotionAsset[]>(() => {
+    const byId = new Map<string, ProjectMotionAsset>();
+    const ingest = (
+      id: string,
+      type: unknown,
+      canvasId: string,
+      data: Record<string, unknown> | undefined,
+    ) => {
+      if (type !== "remotion-component" && type !== "html-motion") return;
+      const label =
+        typeof data?.label === "string" && data.label.trim()
+          ? data.label.trim()
+          : type === "html-motion"
+            ? "HTML Motion"
+            : "Remotion Component";
+      byId.set(id, {
+        id,
+        canvasId,
+        label,
+        nodeType: type,
+      });
+    };
+    if (loroSync.doc) {
+      for (const [id, value] of loroSync.doc.getMap("nodes").entries()) {
+        if (!value || typeof value !== "object") continue;
+        const raw = value as {
+          type?: unknown;
+          canvasId?: unknown;
+          data?: Record<string, unknown>;
+        };
+        ingest(
+          id,
+          raw.type,
+          typeof raw.canvasId === "string" && raw.canvasId
+            ? raw.canvasId
+            : activeCanvasId,
+          raw.data,
+        );
+      }
+    }
+    for (const node of nodes) {
+      ingest(node.id, node.type, activeCanvasId, node.data as Record<string, unknown>);
+    }
+    return [...byId.values()].sort((left, right) =>
+      left.label.localeCompare(right.label),
+    );
+  }, [activeCanvasId, loroSync.doc, nodes]);
   const projectPluginViews = useMemo<ProjectPluginViewRecord[]>(() => {
     if (!loroSync.doc) return [];
     return new Canvas(loroSync.doc, () => {}, DEFAULT_CANVAS_ID)
@@ -4430,12 +4488,14 @@ export default function ProjectEditor({
       activeCanvasId,
       activeSurface:
         workspaceSurface.kind === "text-asset" ||
+        workspaceSurface.kind === "motion-asset" ||
         workspaceSurface.kind === "browser" ||
         workspaceSurface.kind === "plugin-view"
           ? {
               kind: "canvas",
               canvasId:
                 workspaceSurface.kind === "text-asset" ||
+                workspaceSurface.kind === "motion-asset" ||
                 workspaceSurface.kind === "plugin-view"
                   ? workspaceSurface.canvasId
                   : activeCanvasId,
@@ -4481,6 +4541,7 @@ export default function ProjectEditor({
     if (
       workspaceSurface.kind === "canvas" ||
       workspaceSurface.kind === "text-asset" ||
+      workspaceSurface.kind === "motion-asset" ||
       workspaceSurface.kind === "plugin-view"
     ) {
       const canvasId = workspaceSurface.canvasId;
@@ -5551,6 +5612,48 @@ export default function ProjectEditor({
       setWorkspaceSurface(surface);
     },
     [activateCanvasData, stopFollowingAgent],
+  );
+  const openProjectMotionAsset = useCallback(
+    (asset: ProjectMotionAsset) => {
+      stopFollowingAgent();
+      setPreviewTextNodeId(null);
+      activateCanvasData(asset.canvasId);
+      const surface: ProjectWorkspaceSurface = {
+        kind: "motion-asset",
+        nodeId: asset.id,
+        canvasId: asset.canvasId,
+        nodeType: asset.nodeType,
+      };
+      workspaceSurfaceRef.current = surface;
+      setWorkspaceSurface(surface);
+      setMgPreviewRequest((previous) => ({
+        nodeId: asset.id,
+        nonce: (previous?.nonce ?? 0) + 1,
+      }));
+    },
+    [activateCanvasData, stopFollowingAgent],
+  );
+  const createMotionAssetFromNavigator = useCallback(
+    async (type: "remotion-component" | "html-motion") => {
+      stopFollowingAgent();
+      const surface: ProjectWorkspaceSurface = {
+        kind: "canvas",
+        canvasId: activeCanvasIdRef.current,
+      };
+      workspaceSurfaceRef.current = surface;
+      setWorkspaceSurface(surface);
+      const nodeId = await addNode(type, {});
+      if (!nodeId) return;
+      const label =
+        type === "html-motion" ? "HTML Motion" : "Remotion Component";
+      openProjectMotionAsset({
+        id: nodeId,
+        canvasId: activeCanvasIdRef.current,
+        label,
+        nodeType: type,
+      });
+    },
+    [addNode, openProjectMotionAsset, stopFollowingAgent],
   );
   const openCanvasTextEditor = useCallback(
     (nodeId: string) => {
@@ -7242,6 +7345,12 @@ export default function ProjectEditor({
                             <MediaViewerProvider
                               onOpenAssetPreview={openProjectAssetPreview}
                             >
+                              <MgPreviewProvider
+                                externalRequest={mgPreviewRequest}
+                                onExternalRequestConsumed={() =>
+                                  setMgPreviewRequest(null)
+                                }
+                              >
                               <LayoutActionsProvider value={layoutActions}>
                                 <TextNodeEditorProvider
                                   onOpenNode={openCanvasTextPreview}
@@ -7495,6 +7604,7 @@ export default function ProjectEditor({
                                             }
                                             assets={allProjectAssets}
                                             textAssets={projectTextAssets}
+                                            motionAssets={projectMotionAssets}
                                             pluginViews={projectPluginViews}
                                             pluginViewDefinitions={
                                               executablePluginViews
@@ -7538,6 +7648,9 @@ export default function ProjectEditor({
                                             onSelectTextAsset={
                                               openProjectTextAsset
                                             }
+                                            onSelectMotionAsset={
+                                              openProjectMotionAsset
+                                            }
                                             onSelectBrowser={
                                               selectBrowserFromNavigator
                                             }
@@ -7572,6 +7685,16 @@ export default function ProjectEditor({
                                               attachDirectorStageFromNavigator
                                             }
                                             onAddAsset={openProjectAssetPicker}
+                                            onCreateRemotionComponent={() => {
+                                              void createMotionAssetFromNavigator(
+                                                "remotion-component",
+                                              );
+                                            }}
+                                            onCreateHtmlMotion={() => {
+                                              void createMotionAssetFromNavigator(
+                                                "html-motion",
+                                              );
+                                            }}
                                             onCreateBrowser={
                                               globalThis.__CLASH_DESKTOP__
                                                 ?.isDesktop
@@ -7630,6 +7753,8 @@ export default function ProjectEditor({
                                             workspaceSurface.kind !==
                                               "text-asset" &&
                                             workspaceSurface.kind !==
+                                              "motion-asset" &&
+                                            workspaceSurface.kind !==
                                               "browser" &&
                                             workspaceSurface.kind !==
                                               "plugin-view" ? (
@@ -7656,6 +7781,8 @@ export default function ProjectEditor({
                                             {!nativeAgent &&
                                             workspaceSurface.kind !==
                                               "canvas" &&
+                                            workspaceSurface.kind !==
+                                              "motion-asset" &&
                                             workspaceSurface.kind !==
                                               "text-asset" &&
                                             workspaceSurface.kind !==
@@ -8010,7 +8137,7 @@ export default function ProjectEditor({
                                               onDoubleClick={
                                                 openCreateMenuFromPane
                                               }
-                                              className={`absolute inset-0 z-0 ${workspaceSurface.kind === "canvas" ? "" : "hidden"} ${canvasMode === "hand" ? "[&_.react-flow__pane]:cursor-grab [&_.react-flow__pane:active]:cursor-grabbing" : ""}`}
+                                              className={`absolute inset-0 z-0 ${workspaceSurface.kind === "canvas" || workspaceSurface.kind === "motion-asset" ? "" : "hidden"} ${canvasMode === "hand" ? "[&_.react-flow__pane]:cursor-grab [&_.react-flow__pane:active]:cursor-grabbing" : ""}`}
                                             >
                                               {isCanvasAssetDropActive ? (
                                                 <div
@@ -8955,7 +9082,9 @@ export default function ProjectEditor({
                                                   }
                                                   collapsedLauncherPlacement={
                                                     workspaceSurface.kind ===
-                                                    "canvas"
+                                                      "canvas" ||
+                                                    workspaceSurface.kind ===
+                                                      "motion-asset"
                                                       ? "canvas"
                                                       : "header"
                                                   }
@@ -9051,6 +9180,7 @@ export default function ProjectEditor({
                                   </div>
                                 </TextNodeEditorProvider>
                               </LayoutActionsProvider>
+                              </MgPreviewProvider>
                             </MediaViewerProvider>
                           </VideoEditorProvider>
                         </DirectorStageProvider>

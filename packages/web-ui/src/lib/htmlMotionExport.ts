@@ -6,6 +6,8 @@
  * preview or export starts. No audio-master-clock dependency.
  */
 
+import { resolveHtmlMotionNodeContent } from "./htmlMotionElementEdit";
+
 export const HTML_MOTION_EXPORT_PARITY = {
   protocolPreview: "clash.preview-host.v1",
   protocolExport: "clash.timeline-render.v1",
@@ -56,8 +58,12 @@ function resolveHtmlSource(
 ): string | undefined {
   const node = nodes[sourceNodeId];
   if (!node || node.type !== "html-motion") return undefined;
-  const content = node.data?.content;
-  return typeof content === "string" && content.trim() ? content : undefined;
+  const data =
+    node.data && typeof node.data === "object"
+      ? (node.data as Record<string, unknown>)
+      : {};
+  const resolved = resolveHtmlMotionNodeContent(data, "");
+  return resolved.trim() ? resolved : undefined;
 }
 
 /**

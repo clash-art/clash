@@ -595,18 +595,20 @@ describe("visual language surfaces", () => {
       sourceMatches(projectSource, /COPILOT_COLLAPSED_RAIL_WIDTH_PX/),
       "must not reappear",
     ).toBe(false);
-    // The inset is 40px while the sidebar is collapsed off-canvas, 0 otherwise.
+    // The inset is 40px while the sidebar is collapsed off-canvas (and not on
+    // canvas / motion-asset fullscreen surfaces), 0 otherwise. motion-asset
+    // exclusion is optional in the pattern so older canvas-only form still matches.
     expect(
       sourceMatches(
         projectSource,
-        /isSidebarCollapsed && workspaceSurface\.kind !== "canvas" \? 40 : 0/,
+        /isSidebarCollapsed && workspaceSurface\.kind !== "canvas"(?: && workspaceSurface\.kind !== "motion-asset")? \? 40 : 0/,
       ),
       "mechanism missing",
     ).toBe(true);
     expect(
       sourceContains(
         projectSource,
-        'collapsedLauncherPlacement={workspaceSurface.kind === "canvas" ? "canvas" : "header"}',
+        'collapsedLauncherPlacement={workspaceSurface.kind === "canvas" || workspaceSurface.kind === "motion-asset" ? "canvas" : "header"}',
       ),
       "mechanism missing",
     ).toBe(true);

@@ -112,6 +112,92 @@ describe("ProjectWorkspaceNavigator", () => {
     ).toBeTruthy();
   });
 
+  it("lists Remotion and HTML Motion nodes in Assets and opens the motion preview surface", () => {
+    const remotionAsset = {
+      id: "remotion-lower",
+      canvasId: "main",
+      label: "Lower Third Remotion",
+      nodeType: "remotion-component" as const,
+    };
+    const htmlAsset = {
+      id: "html-bug",
+      canvasId: "main",
+      label: "Bug HTML Motion",
+      nodeType: "html-motion" as const,
+    };
+    const onSelectMotionAsset = vi.fn();
+
+    render(
+      <ProjectWorkspaceNavigator
+        canvases={[{ id: "main", name: "Main", position: 0 }]}
+        timelines={[]}
+        assets={[]}
+        motionAssets={[remotionAsset, htmlAsset]}
+        surface={{ kind: "canvas", canvasId: "main" }}
+        onSelectCanvas={vi.fn()}
+        onSelectTimeline={vi.fn()}
+        onSelectAsset={vi.fn()}
+        onSelectMotionAsset={onSelectMotionAsset}
+        onCreateCanvas={vi.fn()}
+        onRenameCanvas={vi.fn()}
+        onDeleteCanvas={vi.fn()}
+        onCreateTimeline={vi.fn()}
+        onAttachTimeline={vi.fn()}
+        onAddAsset={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("list", { name: "Project assets" })).toBeTruthy();
+    const remotionRow = screen.getByRole("tab", { name: remotionAsset.label });
+    expect(
+      remotionRow.querySelector('[data-project-motion-asset-icon="true"]'),
+    ).toBeTruthy();
+    fireEvent.click(remotionRow);
+    expect(onSelectMotionAsset).toHaveBeenCalledWith(remotionAsset);
+
+    const htmlRow = screen.getByRole("tab", { name: htmlAsset.label });
+    expect(
+      htmlRow.querySelector('[data-motion-node-type="html-motion"]'),
+    ).toBeTruthy();
+  });
+
+  it("marks an open Motion asset as the active project surface", () => {
+    const motionAsset = {
+      id: "remotion-greeting",
+      canvasId: "main",
+      label: "Greeting",
+      nodeType: "remotion-component" as const,
+    };
+
+    render(
+      <ProjectWorkspaceNavigator
+        canvases={[{ id: "main", name: "Main", position: 0 }]}
+        timelines={[]}
+        assets={[]}
+        motionAssets={[motionAsset]}
+        surface={{
+          kind: "motion-asset",
+          nodeId: motionAsset.id,
+          canvasId: motionAsset.canvasId,
+          nodeType: motionAsset.nodeType,
+        }}
+        onSelectCanvas={vi.fn()}
+        onSelectTimeline={vi.fn()}
+        onSelectAsset={vi.fn()}
+        onSelectMotionAsset={vi.fn()}
+        onCreateCanvas={vi.fn()}
+        onRenameCanvas={vi.fn()}
+        onDeleteCanvas={vi.fn()}
+        onCreateTimeline={vi.fn()}
+        onAttachTimeline={vi.fn()}
+        onAddAsset={vi.fn()}
+      />,
+    );
+
+    const row = screen.getByRole("tab", { name: motionAsset.label });
+    expect(row.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("lists Canvas text nodes in Assets and selects their first-class workspace page", () => {
     const textAsset = {
       id: "text-script",

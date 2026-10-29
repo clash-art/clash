@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import {
   Handle,
   Position,
@@ -6,14 +6,24 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { Code } from "@phosphor-icons/react";
+import { HtmlSceneSurface } from "@clash/remotion-components";
 
+import {
+  useMgPreviewOpenRequest,
+  useOptionalMgPreview,
+} from "../MgPreviewContext";
+import {
+  normalizeElementOverrides,
+  resolveHtmlMotionNodeContent,
+  type MgElementOverrides,
+} from "../../lib/htmlMotionElementEdit";
 import { calculateScaledDimensions } from "./assetNodeSizing";
 
 /**
  * Default HTML MG document. Production preview must host this in a sandboxed
  * cross-site iframe (allow-scripts, no allow-same-origin) — see
  * docs/spikes/mg-html-canvas-node-436.md and Hilo interactive hosting notes.
- * This Canvas node stores the document only; it does not introduce a clock.
+ * Open uses shared MgOpenSurface (Hilo-style stage+inspector); no audio-master-clock.
  */
 export const DEFAULT_HTML_MOTION_SOURCE = `<!doctype html>
 <html lang="en">
@@ -30,12 +40,25 @@ export const DEFAULT_HTML_MOTION_SOURCE = `<!doctype html>
         font-family: Inter, system-ui, sans-serif;
         display: grid;
         place-items: center;
+        overflow: hidden;
       }
-      h1 { font-size: 48px; font-weight: 600; margin: 0; }
+      h1 {
+        margin: 0;
+        font-size: 48px;
+        font-weight: 600;
+        transform: translate(0px, 0px);
+        cursor: grab;
+        user-select: none;
+      }
     </style>
   </head>
   <body>
-    <h1>Edit this HTML Motion document</h1>
+    <h1
+      data-mg-id="title"
+      data-mg-editable="text,position"
+      data-mg-x="0"
+      data-mg-y="0"
+    >Edit this HTML Motion document</h1>
   </body>
 </html>
 `;
@@ -64,21 +87,86 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 function documentValue(data: Record<string, unknown>, id: string) {
+  const elementOverrides: MgElementOverrides = normalizeElementOverrides(
+    data.elementOverrides,
+  );
+  const baseContent =
+    typeof data.content === "string" && data.content.trim()
+      ? data.content
+      : DEFAULT_HTML_MOTION_SOURCE;
   return {
     label: typeof data.label === "string" ? data.label : "HTML Motion",
     documentId:
       typeof data.documentId === "string" && data.documentId.trim()
         ? data.documentId.trim()
         : id,
-    source:
-      typeof data.content === "string" && data.content.trim()
-        ? data.content
-        : DEFAULT_HTML_MOTION_SOURCE,
+    /** Raw base/template HTML (node `content`). */
+    baseContent,
+    /** Derived HTML for in-node preview / open stage (content + overrides). */
+    source: resolveHtmlMotionNodeContent(data, DEFAULT_HTML_MOTION_SOURCE),
+    elementOverrides,
     width: positiveInteger(data.compositionWidth, 1920),
     height: positiveInteger(data.compositionHeight, 1080),
     fps: positiveInteger(data.fps, 30),
     durationInFrames: positiveInteger(data.durationInFrames, 120),
   };
+}
+
+/** Miniaturized in-node paint — frame 0 only, pointer-events none (drag surface). */
+function HtmlMotionInNodePreview({
+  source,
+  label,
+  sourceNodeId,
+  width,
+  height,
+  fps,
+  durationInFrames,
+  previewWidth,
+  previewHeight,
+}: {
+  source: string;
+  label: string;
+  sourceNodeId: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationInFrames: number;
+  previewWidth: number;
+  previewHeight: number;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [source]);
+
+  return (
+    <div
+      data-testid="html-motion-preview"
+      className="pointer-events-none relative shrink-0 select-none overflow-hidden bg-neutral-900"
+      style={{ width: previewWidth, height: previewHeight }}
+    >
+      {failed ? (
+        <div className="flex h-full w-full items-center justify-center px-3 text-center text-xs text-neutral-400">
+          HTML Motion
+          <br />
+          {width}×{height} · {fps}fps
+        </div>
+      ) : (
+        <HtmlSceneSurface
+          source={source}
+          frame={0}
+          fps={fps}
+          durationInFrames={durationInFrames}
+          title={label}
+          sourceNodeId={sourceNodeId}
+          className="h-full w-full"
+          style={{ width: "100%", height: "100%", border: 0 }}
+          onCapacityError={() => setFailed(true)}
+        />
+      )}
+    </div>
+  );
 }
 
 const HtmlMotionNode = ({
@@ -88,11 +176,40 @@ const HtmlMotionNode = ({
   width,
   height,
 }: NodeProps<Node<Record<string, unknown>>>) => {
+  const mg = useOptionalMgPreview();
   const persisted = documentValue(data, id);
   const dimensions = calculateHtmlMotionNodeDimensions(
     persisted.width,
     persisted.height,
   );
+
+  const openPreview = useCallback(() => {
+    mg?.openMgPreview({
+      nodeId: id,
+      kind: "html-motion",
+      label: persisted.label,
+      // Open surface treats source as base HTML and applies elementOverrides.
+      source: persisted.baseContent,
+      elementOverrides: persisted.elementOverrides,
+      width: persisted.width,
+      height: persisted.height,
+      fps: persisted.fps,
+      durationInFrames: persisted.durationInFrames,
+      documentId: persisted.documentId,
+    });
+  }, [
+    id,
+    mg,
+    persisted.baseContent,
+    persisted.documentId,
+    persisted.durationInFrames,
+    persisted.elementOverrides,
+    persisted.fps,
+    persisted.height,
+    persisted.label,
+    persisted.width,
+  ]);
+  useMgPreviewOpenRequest(id, openPreview);
 
   return (
     <div
@@ -104,28 +221,26 @@ const HtmlMotionNode = ({
         width: width ?? dimensions.width,
         height: height ?? dimensions.height,
       }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        openPreview();
+      }}
     >
       <div className="flex h-11 items-center gap-2 border-b border-neutral-800 px-3">
         <Code size={16} className="shrink-0 text-cyan-300" />
         <span className="truncate text-sm font-medium">{persisted.label}</span>
       </div>
-      <div
-        data-testid="html-motion-preview"
-        className="flex items-center justify-center bg-neutral-900 text-center text-xs text-neutral-400"
-        style={{
-          width: dimensions.preview.width,
-          height: dimensions.preview.height,
-        }}
-      >
-        HTML Motion source
-        <br />
-        {persisted.width}×{persisted.height} · {persisted.fps}fps ·{" "}
-        {persisted.durationInFrames}f
-        <br />
-        <span className="text-neutral-500">
-          Live iframe preview ships with the isolation host
-        </span>
-      </div>
+      <HtmlMotionInNodePreview
+        source={persisted.source}
+        label={persisted.label}
+        sourceNodeId={id}
+        width={persisted.width}
+        height={persisted.height}
+        fps={persisted.fps}
+        durationInFrames={persisted.durationInFrames}
+        previewWidth={dimensions.preview.width}
+        previewHeight={dimensions.preview.height}
+      />
       <Handle type="source" position={Position.Right} />
       <Handle type="target" position={Position.Left} />
     </div>

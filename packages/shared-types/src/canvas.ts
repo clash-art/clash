@@ -176,6 +176,24 @@ z.object({
    * Timeline live reference). Defaults to the Canvas node id when omitted.
    */
   documentId: z.string().min(1).optional(),
+  /**
+   * MG element edit SoT (HTML + Remotion): map of `data-mg-id` ->
+   * `{ text?, x?, y? }`. Absolute overrides. HTML applies onto base `content`
+   * and may write derived HTML back on checkpoint; Remotion applies via
+   * `componentProps.mgElementOverrides` without rewriting TSX content.
+   */
+  elementOverrides: z
+    .record(
+      z.string().min(1),
+      z
+        .object({
+          text: z.string().max(8192).optional(),
+          x: z.number().finite().optional(),
+          y: z.number().finite().optional(),
+        })
+        .strict(),
+    )
+    .optional(),
   /** Product-scaffold preview/render width for remotion-component / html-motion. */
   compositionWidth: z.number().int().positive().optional(),
   /** Product-scaffold preview/render height for remotion-component / html-motion. */

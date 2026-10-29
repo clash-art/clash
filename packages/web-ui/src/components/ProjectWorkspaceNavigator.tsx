@@ -5,7 +5,9 @@ import {
   ChatCenteredDots,
   Cube,
   DotsThree,
+  Code,
   FilmSlate,
+  FilmStrip,
   GlobeSimple,
   Image as ImageIcon,
   Images,
@@ -86,6 +88,12 @@ export type ProjectWorkspaceSurface =
   | { kind: "director-stage"; stageId: string }
   | { kind: "text-asset"; nodeId: string; canvasId: string }
   | {
+      kind: "motion-asset";
+      nodeId: string;
+      canvasId: string;
+      nodeType: "remotion-component" | "html-motion";
+    }
+  | {
       kind: "asset";
       assetId: string;
       startMs?: number;
@@ -102,6 +110,13 @@ export interface ProjectTextAsset {
   id: string;
   canvasId: string;
   label: string;
+}
+
+export interface ProjectMotionAsset {
+  id: string;
+  canvasId: string;
+  label: string;
+  nodeType: "remotion-component" | "html-motion";
 }
 
 export interface ProjectPluginView {
@@ -122,6 +137,7 @@ interface ProjectWorkspaceNavigatorProps {
   directorStages?: ProjectDirectorStage[];
   assets: ResolvedAsset[];
   textAssets?: ProjectTextAsset[];
+  motionAssets?: ProjectMotionAsset[];
   pluginViews?: ProjectPluginView[];
   pluginViewDefinitions?: ExecutablePluginViewDefinition[];
   globalAssets?: ResolvedAsset[];
@@ -133,6 +149,7 @@ interface ProjectWorkspaceNavigatorProps {
   onSelectDirectorStage?: (stageId: string) => void;
   onSelectAsset: (assetId: string, startMs?: number) => void;
   onSelectTextAsset?: (asset: ProjectTextAsset) => void;
+  onSelectMotionAsset?: (asset: ProjectMotionAsset) => void;
   onSelectBrowser?: (browserId: string) => void;
   onCreateCanvas: () => void;
   onCreatePluginView?: (definition: ExecutablePluginViewDefinition) => void;
@@ -145,6 +162,8 @@ interface ProjectWorkspaceNavigatorProps {
   onCreateDirectorStage?: () => void;
   onAttachDirectorStage?: (stage: ProjectDirectorStage) => void;
   onAddAsset: () => void;
+  onCreateRemotionComponent?: () => void;
+  onCreateHtmlMotion?: () => void;
   onCreateBrowser?: () => void;
   onCloseBrowser?: (browserId: string) => void;
   onAddGlobalAsset?: (assetId: string) => void | Promise<void>;
@@ -340,6 +359,12 @@ type ProjectSearchResult =
       id: string;
       label: string;
       searchText: string;
+    }
+  | {
+      kind: "motion-asset";
+      id: string;
+      label: string;
+      searchText: string;
     };
 
 function rowClass(active: boolean): string {
@@ -382,6 +407,10 @@ function textAssetTabId(nodeId: string): string {
   return `project-text-asset-${nodeId}`;
 }
 
+function motionAssetTabId(nodeId: string): string {
+  return `project-motion-asset-${nodeId}`;
+}
+
 function selectedTabId(surface: ProjectWorkspaceSurface): string {
   if (surface.kind === "canvas") return canvasTabId(surface.canvasId);
   if (surface.kind === "plugin-view") return pluginViewTabId(surface.nodeId);
@@ -390,6 +419,7 @@ function selectedTabId(surface: ProjectWorkspaceSurface): string {
   if (surface.kind === "director-stage")
     return directorStageTabId(surface.stageId);
   if (surface.kind === "text-asset") return textAssetTabId(surface.nodeId);
+  if (surface.kind === "motion-asset") return motionAssetTabId(surface.nodeId);
   return assetTabId(surface.assetId);
 }
 
@@ -489,6 +519,7 @@ export default function ProjectWorkspaceNavigator({
   directorStages = [],
   assets,
   textAssets = [],
+  motionAssets = [],
   pluginViews = [],
   pluginViewDefinitions = [],
   globalAssets = [],
@@ -500,6 +531,7 @@ export default function ProjectWorkspaceNavigator({
   onSelectDirectorStage,
   onSelectAsset,
   onSelectTextAsset,
+  onSelectMotionAsset,
   onSelectBrowser,
   onCreateCanvas,
   onCreatePluginView,
@@ -512,6 +544,8 @@ export default function ProjectWorkspaceNavigator({
   onCreateDirectorStage,
   onAttachDirectorStage,
   onAddAsset,
+  onCreateRemotionComponent,
+  onCreateHtmlMotion,
   onCreateBrowser,
   onCloseBrowser,
   onAddGlobalAsset,
@@ -600,6 +634,12 @@ export default function ProjectWorkspaceNavigator({
         label: asset.label,
         searchText: `${asset.label} text script document asset ${asset.canvasId}`,
       })),
+      ...motionAssets.map((asset) => ({
+        kind: "motion-asset" as const,
+        id: asset.id,
+        label: asset.label,
+        searchText: `${asset.label} motion graphics mg remotion html ${asset.nodeType} asset ${asset.canvasId}`,
+      })),
     ];
 
     if (!normalizedQuery) return results;
@@ -609,6 +649,7 @@ export default function ProjectWorkspaceNavigator({
     browsers,
     canvases,
     directorStages,
+    motionAssets,
     pluginViews,
     searchQuery,
     textAssets,
@@ -643,6 +684,10 @@ export default function ProjectWorkspaceNavigator({
         const textAsset = textAssets.find((candidate) => candidate.id === id);
         if (textAsset) onSelectTextAsset?.(textAsset);
       }
+      if (kind === "motion-asset") {
+        const motionAsset = motionAssets.find((candidate) => candidate.id === id);
+        if (motionAsset) onSelectMotionAsset?.(motionAsset);
+      }
       closeSearch();
     },
     [
@@ -652,8 +697,10 @@ export default function ProjectWorkspaceNavigator({
       onSelectPluginView,
       onSelectBrowser,
       onSelectDirectorStage,
+      onSelectMotionAsset,
       onSelectTextAsset,
       onSelectTimeline,
+      motionAssets,
       pluginViews,
       textAssets,
       searchResults,
@@ -833,7 +880,14 @@ export default function ProjectWorkspaceNavigator({
     const textAsset = textAssets.find(
       (candidate) => textAssetTabId(candidate.id) === tabId,
     );
-    if (textAsset) onSelectTextAsset?.(textAsset);
+    if (textAsset) {
+      onSelectTextAsset?.(textAsset);
+      return;
+    }
+    const motionAsset = motionAssets.find(
+      (candidate) => motionAssetTabId(candidate.id) === tabId,
+    );
+    if (motionAsset) onSelectMotionAsset?.(motionAsset);
   };
 
   const searchButton = (
@@ -1377,11 +1431,23 @@ export default function ProjectWorkspaceNavigator({
                     <Images className="h-4 w-4 text-stone-500" />
                     Add from Global Assets
                   </DropdownMenuItem>
+                  {onCreateRemotionComponent ? (
+                    <DropdownMenuItem onSelect={onCreateRemotionComponent}>
+                      <FilmStrip className="h-4 w-4 text-stone-500" />
+                      Remotion Component
+                    </DropdownMenuItem>
+                  ) : null}
+                  {onCreateHtmlMotion ? (
+                    <DropdownMenuItem onSelect={onCreateHtmlMotion}>
+                      <Code className="h-4 w-4 text-stone-500" />
+                      HTML Motion
+                    </DropdownMenuItem>
+                  ) : null}
                 </DropdownMenuContent>
               </DropdownMenu>
             }
           >
-            {activeAssets.length > 0 || textAssets.length > 0 ? (
+            {activeAssets.length > 0 || textAssets.length > 0 || motionAssets.length > 0 ? (
               <ul aria-label="Project assets" className="space-y-0">
                 {textAssets.map((asset) => {
                   const active =
@@ -1424,6 +1490,67 @@ export default function ProjectWorkspaceNavigator({
                                   )?.name ?? asset.canvasId,
                                 objectId: asset.id,
                                 objectType: "canvas-text",
+                                objectLabel: asset.label,
+                                objectPath: `canvases/${asset.canvasId}/nodes/${asset.id}`,
+                                capabilities: ["read", "modify"],
+                              })
+                          : undefined
+                      }
+                      actions={[]}
+                    >
+                      <li
+                        data-agent-annotation-object-id={asset.id}
+                        className="group/menu-item relative min-w-0"
+                      >
+                        {tab}
+                      </li>
+                    </SidebarItemContextMenu>
+                  );
+                })}
+                {motionAssets.map((asset) => {
+                  const active =
+                    surface.kind === "motion-asset" &&
+                    surface.nodeId === asset.id;
+                  const MotionIcon =
+                    asset.nodeType === "html-motion" ? Code : FilmStrip;
+                  const tab = (
+                    <NavigatorTab
+                      id={motionAssetTabId(asset.id)}
+                      aria-label={asset.label}
+                      title={asset.label}
+                      className={rowClass(active)}
+                    >
+                      <MotionIcon
+                        data-project-motion-asset-icon="true"
+                        data-motion-node-type={asset.nodeType}
+                        className={
+                          active
+                            ? "h-3.5 w-3.5 shrink-0 text-brand"
+                            : "h-3.5 w-3.5 shrink-0 text-stone-400"
+                        }
+                        weight={active ? "bold" : "regular"}
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {asset.label}
+                      </span>
+                    </NavigatorTab>
+                  );
+                  return (
+                    <SidebarItemContextMenu
+                      key={`motion-${asset.id}`}
+                      label={asset.label}
+                      onAnnotate={
+                        onAnnotate
+                          ? () =>
+                              onAnnotate({
+                                surface: "canvas",
+                                surfaceId: asset.canvasId,
+                                surfaceLabel:
+                                  canvases.find(
+                                    (canvas) => canvas.id === asset.canvasId,
+                                  )?.name ?? asset.canvasId,
+                                objectId: asset.id,
+                                objectType: asset.nodeType,
                                 objectLabel: asset.label,
                                 objectPath: `canvases/${asset.canvasId}/nodes/${asset.id}`,
                                 capabilities: ["read", "modify"],
@@ -1720,25 +1847,33 @@ export default function ProjectWorkspaceNavigator({
                     ? "Asset"
                     : result.kind === "plugin-view"
                       ? "View"
-                    : result.kind === "canvas"
-                      ? "Canvas"
-                      : result.kind === "browser"
-                        ? "Browser"
-                        : result.kind === "director-stage"
-                          ? "Director Stage"
-                          : "Timeline";
+                      : result.kind === "canvas"
+                        ? "Canvas"
+                        : result.kind === "browser"
+                          ? "Browser"
+                          : result.kind === "director-stage"
+                            ? "Director Stage"
+                            : result.kind === "text-asset"
+                              ? "Text"
+                              : result.kind === "motion-asset"
+                                ? "Motion"
+                                : "Timeline";
                 const ResultIcon =
                   result.kind === "asset"
                     ? ImageIcon
                     : result.kind === "plugin-view"
                       ? Shapes
-                    : result.kind === "canvas"
-                      ? CanvasIcon
-                      : result.kind === "browser"
-                        ? GlobeSimple
-                        : result.kind === "director-stage"
-                          ? Cube
-                          : FilmSlate;
+                      : result.kind === "canvas"
+                        ? CanvasIcon
+                        : result.kind === "browser"
+                          ? GlobeSimple
+                          : result.kind === "director-stage"
+                            ? Cube
+                            : result.kind === "text-asset"
+                              ? TextT
+                              : result.kind === "motion-asset"
+                                ? FilmStrip
+                                : FilmSlate;
                 return (
                   <ComboboxItem
                     key={value}

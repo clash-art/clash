@@ -10,8 +10,11 @@ import {
   HTML_SCENE_DOCUMENT_PROTOCOL,
   HTML_SCENE_SANDBOX,
   createHtmlSceneBlobUrl,
+  isHtmlSceneDocOutbound,
   validateHtmlDocumentCapacity,
   wrapHtmlDocumentForPreview,
+  type HtmlSceneElementEditEvent,
+  type HtmlSceneElementSelectEvent,
 } from "./htmlSandbox";
 
 export type HtmlSceneSurfaceProps = {
@@ -26,6 +29,15 @@ export type HtmlSceneSurfaceProps = {
   className?: string;
   /** When capacity fails, render this instead of an iframe. */
   onCapacityError?: (reason: string) => void;
+  /**
+   * When true, inject Hilo-lite element edit bridge (select / drag position /
+   * dblclick text) into the sandboxed document.
+   */
+  elementEdit?: boolean;
+  /** Composition width for drag scale (defaults to 1920). */
+  sceneWidth?: number;
+  onElementEdit?: (event: HtmlSceneElementEditEvent) => void;
+  onElementSelect?: (event: HtmlSceneElementSelectEvent) => void;
 };
 
 export const HtmlSceneSurface: React.FC<HtmlSceneSurfaceProps> = React.memo(
@@ -40,11 +52,19 @@ export const HtmlSceneSurface: React.FC<HtmlSceneSurfaceProps> = React.memo(
     style,
     className,
     onCapacityError,
+    elementEdit = false,
+    sceneWidth = 1920,
+    onElementEdit,
+    onElementSelect,
   }) {
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const revokeRef = useRef<(() => void) | null>(null);
     const capacityErrorRef = useRef(onCapacityError);
     capacityErrorRef.current = onCapacityError;
+    const onElementEditRef = useRef(onElementEdit);
+    onElementEditRef.current = onElementEdit;
+    const onElementSelectRef = useRef(onElementSelect);
+    onElementSelectRef.current = onElementSelect;
 
     useEffect(() => {
       const iframe = iframeRef.current;
@@ -57,7 +77,10 @@ export const HtmlSceneSurface: React.FC<HtmlSceneSurfaceProps> = React.memo(
         return;
       }
 
-      const wrapped = wrapHtmlDocumentForPreview(source);
+      const wrapped = wrapHtmlDocumentForPreview(source, {
+        elementEdit,
+        sceneWidth,
+      });
       const handle = createHtmlSceneBlobUrl(wrapped);
       revokeRef.current?.();
       revokeRef.current = handle.revoke;
@@ -70,7 +93,7 @@ export const HtmlSceneSurface: React.FC<HtmlSceneSurfaceProps> = React.memo(
           revokeRef.current = null;
         }
       };
-    }, [source]);
+    }, [source, elementEdit, sceneWidth]);
 
     useEffect(() => {
       const win = iframeRef.current?.contentWindow;
@@ -91,6 +114,20 @@ export const HtmlSceneSurface: React.FC<HtmlSceneSurfaceProps> = React.memo(
       }
     }, [frame, fps, durationInFrames]);
 
+    useEffect(() => {
+      if (!elementEdit) return;
+      const onMessage = (event: MessageEvent) => {
+        if (!isHtmlSceneDocOutbound(event.data)) return;
+        if (event.data.type === "element-edit") {
+          onElementEditRef.current?.(event.data);
+        } else if (event.data.type === "element-select") {
+          onElementSelectRef.current?.(event.data);
+        }
+      };
+      window.addEventListener("message", onMessage);
+      return () => window.removeEventListener("message", onMessage);
+    }, [elementEdit]);
+
     return (
       <iframe
         ref={iframeRef}
@@ -100,6 +137,7 @@ export const HtmlSceneSurface: React.FC<HtmlSceneSurfaceProps> = React.memo(
         data-html-scene-source-node-id={sourceNodeId}
         data-composition-item-id={compositionItemId}
         data-composition-runtime="html"
+        data-html-scene-element-edit={elementEdit ? "true" : undefined}
         style={{
           width: "100%",
           height: "100%",
