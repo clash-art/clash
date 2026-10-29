@@ -568,7 +568,7 @@ describe("ChatInput", () => {
       /@container clash-chat-composer \(max-width:\s*32rem\)\s*\{[\s\S]*?\.clash-session-permission-label[\s\S]*?display:\s*none;/,
     );
     expect(globalCss).toMatch(
-      /@container clash-chat-composer \(max-width:\s*32rem\)\s*\{[\s\S]*?\.clash-composer-footer-chip > span\.min-w-0\.flex-1\.truncate/,
+      /@container clash-chat-composer \(max-width:\s*32rem\)\s*\{[\s\S]*?\.clash-chat-input-toolbar-start \.clash-composer-footer-chip > span\.min-w-0\.flex-1\.truncate/,
     );
     expect(globalCss).not.toMatch(
       /@container clash-chat-composer \(max-width:\s*22rem\)/,

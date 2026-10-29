@@ -118,12 +118,12 @@
       "wrangler": "4.151.0",
       "miniflare": "5.20261012.0-beta",
       "esbuild@^0.28.0": "0.28.2",
-      "@openma/common": "github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3"
+      "@openma/common": "github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc"
     }
   },
   "dependencies": {
     "@cloudflare/containers": "^0.2.0",
-    "@openma/common": "github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3",
+    "@openma/common": "github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc",
     "better-auth": "^1.4.6",
     "better-auth-cloudflare": "^0.2.9",
     "zod": "^4.6.7"

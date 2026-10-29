@@ -24,7 +24,7 @@ overrides:
   wrangler: 4.151.0
   miniflare: 5.20261012.0-beta
   esbuild@^0.28.0: 0.28.2
-  '@openma/common': github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
+  '@openma/common': github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
 
 importers:
 
@@ -34,8 +34,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.4
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       better-auth:
         specifier: ^1.4.6
         version: 1.6.23(@opentelemetry/api@1.9.1)(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3))
@@ -332,8 +332,8 @@ importers:
         specifier: 7.11.2
         version: 7.11.2
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@remotion/bundler':
         specifier: 4.0.536
         version: 4.0.536(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -473,8 +473,8 @@ importers:
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.27)
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -727,8 +727,8 @@ importers:
         specifier: ^7.17.2
         version: 7.21.2
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -1103,8 +1103,8 @@ importers:
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.5)
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -1427,8 +1427,8 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -1744,8 +1744,8 @@ importers:
         specifier: ^7.17.2
         version: 7.21.2
       '@openma/common':
-        specifier: github:openma-ai/openma-common#fcddb1ed8ddea19ed434555049ec3de4604367b3
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: github:openma-ai/openma-common#c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -5432,8 +5432,8 @@ packages:
   '@open-draft/until@3.0.1':
     resolution: {integrity: sha512-s7/9ELP4aP9YZtW7RJaa0Xf3RISaRH9+EFN18FtykJYRHGNrl8f9ymvoNXzjhrjmftFvkQudtuDU9RYhk0xs3A==}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3':
-    resolution: {gitHosted: true, integrity: sha512-34Dx7KQfgbwyaNvgz0Oh2EUYtOg/YZxM9did5yETvGeUu4h1jZLthLBdIA1jO9tgRCTBn5Bmt/WZRzi+W4SSJQ==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3}
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc':
+    resolution: {gitHosted: true, integrity: sha512-OPydXTCWy8WS2jF5XymmJm4/3hKwoLiJ93/7+afYngB51f1QW0D9bTlU8jTCl5/lwiBkdIeVCVEXA944BFP9Yw==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc}
     version: 0.13.0
     engines: {node: '>=20'}
     peerDependencies:
@@ -16856,7 +16856,7 @@ snapshots:
 
   '@open-draft/until@3.0.1': {}
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/fcddb1ed8ddea19ed434555049ec3de4604367b3(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/c1ba57d1ef6ca1906b3c2f3dc990f3c6e6ac33bc(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@agentclientprotocol/sdk': 1.3.0(zod@4.6.7)
       '@radix-ui/react-collapsible': 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
