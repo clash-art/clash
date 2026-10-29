@@ -5837,36 +5837,38 @@ button[data-chat-turn-disclosure-trigger]:disabled .activity-disclosure-chevron 
     gap: 0.125rem;
   }
 
-  /* Effort subtitle can drop first; keep permission / config labels (Backchat homage). */
+  /* Effort subtitle drops; icon-only chip labels come from
+     @openma/common @container openma-composer (max-width: 32rem). */
   .clash-session-config-effort {
     display: none;
   }
 
   .clash-session-permission-trigger,
-  .clash-inline-session-config-trigger {
-    gap: 0.25rem;
-    padding-inline: 0.375rem;
+  .clash-inline-session-config-trigger,
+  .clash-session-config-trigger {
+    gap: 0.125rem;
+    padding-inline: 0.25rem;
   }
 
   .clash-session-state-tag {
     gap: 0.125rem;
     padding-inline: 0.375rem 0.125rem;
   }
-}
 
-/* Icon-only collapse only when the composer is truly narrow. */
-@container clash-chat-composer (max-width: 22rem) {
+  /* Host-only labels (Plan/Goal tags) that are not .openma-composer-chip. */
   .clash-session-permission-label,
-  .clash-inline-session-config-trigger > span:not([data-control-icon]),
   .clash-inline-session-config-label,
-  .clash-session-state-tag-label {
+  .clash-session-state-tag-label,
+  .clash-session-config-summary {
     display: none;
   }
 
-  .clash-session-permission-trigger,
-  .clash-inline-session-config-trigger {
-    gap: 0.125rem;
-    padding-inline: 0.25rem;
+  /* SelectMenu wraps triggerLabel in span.min-w-0.flex-1.truncate; common
+     hides that under .openma-composer-chip. Mirror for any host chip that
+     missed the shared class. */
+  .clash-composer-footer-chip > span.min-w-0.flex-1.truncate,
+  .clash-inline-session-config-trigger > span:not([data-control-icon]):not([data-session-config-status-slot]) {
+    display: none;
   }
 }
 

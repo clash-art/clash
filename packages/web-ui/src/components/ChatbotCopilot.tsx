@@ -4940,7 +4940,7 @@ export function HarnessPermissionSelector({
         </span>
       }
       triggerLabel={
-        <span className="clash-session-permission-label truncate">
+        <span className="clash-session-permission-label openma-composer-chip-label truncate">
           {selectedMode.label}
         </span>
       }
