@@ -8010,13 +8010,21 @@ export default function ProjectEditor({
                                                 }
                                                 runtimeNodes={assetRelationGraph.nodes
                                                   .filter(
-                                                    (node) =>
+                                                    (
+                                                      node,
+                                                    ): node is (typeof assetRelationGraph.nodes)[number] & {
+                                                      type:
+                                                        | "remotion-component"
+                                                        | "html-motion";
+                                                    } =>
                                                       node.type ===
-                                                      "remotion-component",
+                                                        "remotion-component" ||
+                                                      node.type ===
+                                                        "html-motion",
                                                   )
                                                   .map((node) => ({
                                                     id: node.id,
-                                                    type: "remotion-component",
+                                                    type: node.type,
                                                     data: node.data as Record<
                                                       string,
                                                       unknown

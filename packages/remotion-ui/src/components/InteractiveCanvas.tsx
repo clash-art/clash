@@ -21,6 +21,7 @@ import {
   panFromMinimapPoint,
   shouldShowCanvasMinimap,
 } from "./canvas/minimap";
+import type { MgElementEditHandlers } from "./mgElementEdit";
 import { calculateRms, type StereoAudioLevels } from "./previewAudioMeter";
 import {
   PLAYER_STALL_TIMEOUT_MS,
@@ -68,6 +69,8 @@ interface InteractiveCanvasProps {
    * Player remains the time authority.
    */
   paintSurface?: React.ReactNode;
+  /** Optional in-place MG element edit bridge for the selected composition. */
+  mgElementEditHandlers?: MgElementEditHandlers;
 }
 
 type CapturableMediaElement = HTMLMediaElement & {
@@ -136,6 +139,7 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   onTransformStart,
   onTransformEnd,
   paintSurface,
+  mgElementEditHandlers,
 }) => {
   const playerRef = useRef<PlayerRef>(null);
   // Parents pass fresh callbacks; read them through refs so the Player
@@ -376,8 +380,16 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
       itemsDomMapRef,
       onMediaError: handleMediaError,
       mediaEpoch,
+      mgElementEditHandlers,
     }),
-    [tracks, allNodesMap, selectedItemId, handleMediaError, mediaEpoch],
+    [
+      tracks,
+      allNodesMap,
+      selectedItemId,
+      handleMediaError,
+      mediaEpoch,
+      mgElementEditHandlers,
+    ],
   );
 
   // The Player drives its own clock. Keep its element identity stable so the
