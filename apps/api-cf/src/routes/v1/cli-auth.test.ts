@@ -368,4 +368,24 @@ describe("CLI OAuth authorization code flow", () => {
     );
     expect(jsonExchange.status).toBe(415);
   });
+
+  it.each([
+    ["no credential", {}],
+    [
+      "an unknown access token",
+      { authorization: `Bearer clsh_${"0".repeat(40)}` },
+    ],
+    ["another credential type", { authorization: "Bearer sk_gw_token" }],
+    ["a caller-supplied identity", { "x-user-id": "user-1" }],
+  ])("refuses to revoke with %s", async (_label, headers) => {
+    const response = await makeApp().request(
+      "/api/v1/cli-auth/token",
+      { method: "DELETE", headers },
+      makeEnv(new MemoryD1()),
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toMatchObject({ error: "invalid_token" });
+  });
 });

@@ -14,6 +14,27 @@ import {
 
 const CLI_CLIENT_ID = "clash-cli";
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_REVOKE_TIMEOUT_MS = 5 * 1000;
+
+/**
+ * The server issued an access token that this machine could not store. The
+ * message carries the save failure and whether the token still needs a manual
+ * revoke, so the user is never left with an invisible valid credential.
+ */
+export class CliLoginSaveError extends Error {
+  readonly code = "AUTH_CREDENTIAL_SAVE_FAILED";
+  readonly tokenRevoked: boolean;
+
+  constructor(accessToken: string, tokenRevoked: boolean, cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const outcome = tokenRevoked
+      ? "The new API token was revoked; fix the problem and run `clash auth login` again."
+      : `The new API token could not be revoked and stays valid: delete the "Clash CLI" token ${accessToken.slice(0, 13)}... in Settings.`;
+    super(`AUTH_CREDENTIAL_SAVE_FAILED: ${message} ${outcome}`, { cause });
+    this.name = "CliLoginSaveError";
+    this.tokenRevoked = tokenRevoked;
+  }
+}
 
 export function redactApiKeyForDisplay(apiKey: string): string {
   const token = apiKey.trim();
@@ -260,10 +281,36 @@ async function exchangeAuthorizationCode(options: {
   return accessToken;
 }
 
+async function revokeAccessToken(options: {
+  serverUrl: string;
+  accessToken: string;
+  timeoutMs: number;
+  fetchImpl: typeof fetch;
+}): Promise<boolean> {
+  const tokenUrl = new URL(
+    "/api/v1/cli-auth/token",
+    `${normalizeHttpOrigin(options.serverUrl, "Clash API URL")}/`,
+  );
+  try {
+    const response = await options.fetchImpl(tokenUrl.toString(), {
+      method: "DELETE",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${options.accessToken}`,
+      },
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export type CliLoginOptions = {
   serverUrl?: string;
   browserOrigin?: string;
   timeoutMs?: number;
+  revokeTimeoutMs?: number;
   openBrowser?: (url: string) => Promise<void>;
   fetchImpl?: typeof fetch;
   loadConfig?: () => ClashConfig;
@@ -321,7 +368,17 @@ export async function runCliLogin(
       verifier,
       fetchImpl,
     });
-    writeConfig({ ...readConfig(), apiKey: accessToken });
+    try {
+      writeConfig({ ...readConfig(), apiKey: accessToken });
+    } catch (error) {
+      const tokenRevoked = await revokeAccessToken({
+        serverUrl,
+        accessToken,
+        timeoutMs: options.revokeTimeoutMs ?? DEFAULT_REVOKE_TIMEOUT_MS,
+        fetchImpl,
+      });
+      throw new CliLoginSaveError(accessToken, tokenRevoked, error);
+    }
     return { accessToken, authorizationUrl };
   } finally {
     await callback.close();
