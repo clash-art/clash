@@ -11932,6 +11932,22 @@ const ForkPointBodySchema = z.object({
           run,
         });
       } catch (error) {
+        if (
+          error instanceof LocalGeneratorProductError &&
+          error.code === "ACTION_RUN_REQUEST_CONFLICT" &&
+          typeof (body as { idempotencyKey?: unknown }).idempotencyKey ===
+            "string"
+        ) {
+          // The key's Run was planned for another Timeline or revision.
+          return c.json(
+            {
+              error:
+                "This idempotency key was already used for a different render request.",
+              code: "IDEMPOTENCY_KEY_CONFLICT",
+            },
+            409,
+          );
+        }
         if (error instanceof LocalGeneratorProductError) {
           return c.json({ error: error.message, code: error.code }, 409);
         }

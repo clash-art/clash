@@ -5,7 +5,7 @@ import { projectLocalModelCopy } from "./local-model-copy-projection.js";
  */
 
 import { updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { LoroDoc } from "loro-crdt";
 import Ajv from "ajv";
 import {
@@ -461,6 +461,18 @@ export function handleCommandForTest(
   });
 }
 
+/** The Run a keyed `request_timeline_render` plans, scoped to project, actor and command. */
+function timelineRenderRunIdForKey(
+  projectId: unknown,
+  actorUserId: string | undefined,
+  key: string,
+): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(["request_timeline_render", projectId, actorUserId ?? null, key]))
+    .digest("hex");
+  return `timeline-render-${digest.slice(0, 32)}`;
+}
+
 function generatorSurfaceNotInstalled(): object {
   return {
     code: "GENERATOR_PROJECTION_SURFACE_NOT_INSTALLED",
@@ -678,7 +690,11 @@ function handleCommand(
         currentVersion: projectTimelineReadToken(current),
       });
       if (!guard.ok) return guardError(guard);
-      const actionRunId = context.generationId?.() ?? crypto.randomUUID();
+      // A retry with the same key plans the same Run, which the Generator
+      // product replays (or rejects when the key now names another request).
+      const actionRunId = typeof cmd.idempotencyKey === "string"
+        ? timelineRenderRunIdForKey(cmd.projectId, context.actorUserId, cmd.idempotencyKey)
+        : context.generationId?.() ?? crypto.randomUUID();
       const target = current.owner.kind === "canvas-action"
         ? { kind: "canvas", canvasId: current.owner.canvasId, actionNodeId: current.owner.actionNodeId }
         : { kind: "project-assets" };

@@ -1265,6 +1265,8 @@ export {
   PROJECT_ASSET_RENDER_CANVAS_ID,
   requestTimelineRender,
   requestTimelineRevisionRender,
+  findTimelineRenderByIdempotencyKey,
+  type TimelineRenderIdempotency,
   completeTimelineRenderNode,
   type TimelineRenderCompletion,
   TimelineExportProgressSchema,
