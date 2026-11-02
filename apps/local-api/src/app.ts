@@ -16,6 +16,7 @@ import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./loca
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
 import { LOCAL_OTLP_TRACES_PATH, readGeneratorRevision } from "@clash/shared-types";
+import type { ProjectRemoteStateMessage } from "@clash/shared-types";
 import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.js";
 import { commitProjectMutation } from "@clash/shared-types";
 import {
@@ -491,6 +492,8 @@ export interface LocalApiOptions {
   processProjectWork?: (projectId: string) => Promise<void>;
   /** Project durability/workflow state surfaced by `/health`; failures are coded, never log-only. */
   projectHealth?: () => LocalProjectHealthSummary;
+  /** Coded cloud link/snapshot state of the Project's open room, if any. */
+  projectRemoteState?: (projectId: string) => ProjectRemoteStateMessage | undefined;
   /** Long-lived Hosts use this to keep background warm-up off active request windows. */
   onRequestActivity?: (event: "start" | "end") => void;
   resolvePluginBinding?: (
@@ -10862,7 +10865,11 @@ const ForkPointBodySchema = z.object({
     const state = await db.load();
     const project = findActiveProject(state, projectId, userId);
     if (!project) return c.json({ error: "not found" }, 404);
-    return c.json(await readProjectStatus(projectId));
+    const remoteState = options.projectRemoteState?.(projectId);
+    return c.json({
+      ...(await readProjectStatus(projectId)),
+      ...(remoteState ? { remoteState } : {}),
+    });
   });
 
   app.get("/api/v1/projects/:projectId/cloud-admission", async (c) => {

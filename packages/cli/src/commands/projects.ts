@@ -150,6 +150,7 @@ export async function resolveProjectStatus(
           ) {
             status.collaboration = remote.collaboration;
             status.syncMode = remote.syncMode;
+            if (remote.remoteState) status.remoteState = remote.remoteState;
           }
         }
       }
@@ -236,6 +237,12 @@ projectsCommand
     console.log(`Source:       ${status.source}`);
     console.log(`Replica:      ${status.mode}`);
     console.log(`Sync:         ${status.syncMode}`);
+    if (status.remoteState) {
+      const { state, code, retryAt } = status.remoteState;
+      console.log(
+        `Cloud state:  ${state}${code ? ` (${code})` : ""}${retryAt ? `, next retry ${retryAt}` : ""}`,
+      );
+    }
     console.log(`Marker:       ${status.markerPath ?? "(none)"}`);
     console.log(`Clash home:   ${status.clashHome}`);
     console.log(`Workspace:    ${status.storage.workspace.root}`);

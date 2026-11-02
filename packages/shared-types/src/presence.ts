@@ -168,7 +168,8 @@ export type ProjectRemoteStateCode =
   | "CLOUD_LINK_HANDSHAKE_TIMEOUT"
   | "CLOUD_LINK_UNREACHABLE"
   | "CLOUD_LINK_START_FAILED"
-  | "CLOUD_LINK_ACTION_REQUIRED";
+  | "CLOUD_LINK_ACTION_REQUIRED"
+  | "CLOUD_LINK_NOT_ADMITTED";
 
 /**
  * Host → client: how the local Project room currently relates to its cloud replica.
@@ -224,7 +225,8 @@ export function isSidebandMessage(msg: unknown): msg is SidebandMessage {
         remote.code === "CLOUD_LINK_HANDSHAKE_TIMEOUT" ||
         remote.code === "CLOUD_LINK_UNREACHABLE" ||
         remote.code === "CLOUD_LINK_START_FAILED" ||
-        remote.code === "CLOUD_LINK_ACTION_REQUIRED") &&
+        remote.code === "CLOUD_LINK_ACTION_REQUIRED" ||
+        remote.code === "CLOUD_LINK_NOT_ADMITTED") &&
       (remote.message === undefined || typeof remote.message === "string") &&
       (remote.retryAt === undefined || typeof remote.retryAt === "string")
     );

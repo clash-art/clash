@@ -16,6 +16,12 @@ import {
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import type { ProjectCloudAdmission } from "@clash/shared-types";
 
+/** The Project lost its admission or account, so its link stops instead of retrying. */
+class CloudLinkNotAdmittedError extends Error {
+  override name = "CloudLinkNotAdmittedError";
+  readonly code = "CLOUD_LINK_NOT_ADMITTED" as const;
+}
+
 export type LocalSyncMode = "local-only" | "cloud-sync";
 export type RemoteLoroSource = "none" | "env" | "config";
 
@@ -434,7 +440,9 @@ export function createLocalSyncConfigStore(
           current.syncBaseUrl !== admission.syncBaseUrl ||
           !current.capabilities.canvas
         ) {
-          throw new Error("Project cloud admission was revoked or changed");
+          throw new CloudLinkNotAdmittedError(
+            "Project cloud admission was revoked or changed",
+          );
         }
       };
       const token = await accounts.resolveToken(admission.syncBaseUrl, {
@@ -449,7 +457,9 @@ export function createLocalSyncConfigStore(
             expectedUserId: admission.userId,
           })) !== token
         )
-          throw Error("Cloud account changed; reconnect this Project");
+          throw new CloudLinkNotAdmittedError(
+            "Cloud account changed; reconnect this Project",
+          );
       };
       const remote = createHttpRemoteLoroPersistence({
         baseUrl: admission.syncBaseUrl,
@@ -463,31 +473,66 @@ export function createLocalSyncConfigStore(
       return {
         ...remote,
         createLink(input) {
+          let closed = false;
+          const authorize = async () => {
+            await assertAdmitted();
+            await assertCredential();
+          };
+          // Stops for good: the room drops this link and the next local edit
+          // resolves admission again, so no timer outlives the admission.
+          const stop = async (error: unknown) => {
+            if (closed) return;
+            closed = true;
+            input.onState?.({
+              state: "stopped",
+              code:
+                error instanceof CloudLinkNotAdmittedError
+                  ? error.code
+                  : "CLOUD_LINK_UNREACHABLE",
+              message: error instanceof Error ? error.message : String(error),
+            });
+            await link.close();
+          };
+          const authorizeOrStop = async () => {
+            try {
+              await authorize();
+            } catch (error) {
+              if (error instanceof CloudLinkNotAdmittedError) await stop(error);
+              throw error;
+            }
+          };
           const link = remote.createLink!({
             ...input,
+            // stop() already published the coded state this close would replace.
+            onState: (state) => {
+              if (!closed) input.onState?.(state);
+            },
             commit: async (...args) => {
-              await assertAdmitted();
-              await assertCredential();
+              await authorizeOrStop();
               await input.commit(...args);
             },
+            beforeReconnect: authorizeOrStop,
           });
           return {
             start: async () => {
-              await assertAdmitted();
-              await assertCredential();
-              await link.start();
+              await authorize();
+              // The room may have closed during the check; a link started now
+              // would reconnect forever with nobody left to close it.
+              if (!closed) await link.start();
             },
             publish: async (update) => {
               try {
-                await assertAdmitted();
-                await assertCredential();
-                await link.publish(update);
+                await authorize();
+                if (!closed) await link.publish(update);
               } catch (error) {
-                await link.close();
+                await stop(error);
                 throw error;
               }
             },
-            close: () => link.close(),
+            close: () => {
+              closed = true;
+              return link.close();
+            },
           };
         },
       };

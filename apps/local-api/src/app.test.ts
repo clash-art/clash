@@ -12142,6 +12142,45 @@ describe("local API app", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("includes the room's coded cloud link error and next retry in project status", async () => {
+    const retryAt = "2026-11-02T00:00:30.000Z";
+    let linkDown = true;
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      projectRemoteState: (projectId) =>
+        linkDown
+          ? {
+              type: "project.remote-state",
+              projectId,
+              state: "unavailable",
+              code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+              retryAt,
+            }
+          : undefined,
+    });
+    const created = await app.request("/api/v1/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: "Link Status Project" }),
+      headers: { "content-type": "application/json" },
+    });
+    const project = (await created.json()) as { id: string };
+    const status = async () =>
+      (await (
+        await app.request(`/api/v1/projects/${project.id}/status`)
+      ).json()) as Record<string, unknown>;
+    expect(await status()).toMatchObject({
+      projectId: project.id,
+      remoteState: {
+        state: "unavailable",
+        code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+        retryAt,
+      },
+    });
+    linkDown = false;
+    expect(await status()).not.toHaveProperty("remoteState");
+  });
+
   it("keeps cloud-sync project status pending until all sync capabilities are ready", async () => {
     const app = createLocalApiApp({
       dataDir,

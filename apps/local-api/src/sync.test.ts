@@ -3943,6 +3943,237 @@ describe("LocalLoroRoom", () => {
     await room.close();
   });
 
+  it("shows a cloud link start that throws synchronously on the room", async () => {
+    const projectId = "project/cloud-link-sync-throw";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const room = await LocalLoroRoom.open({
+        dataDir,
+        projectId,
+        remotePersistence: createHttpRemoteLoroPersistence({
+          baseUrl: "ftp://cloud.example",
+        }),
+        workflowProcessor: null,
+        remoteSnapshotRetryBaseMs: 60_000,
+      });
+      await vi.waitFor(() =>
+        expect(room.projectRemoteState()).toMatchObject({
+          state: "unavailable",
+          code: "CLOUD_LINK_START_FAILED",
+          message: expect.stringContaining("http(s) or ws(s)"),
+        }),
+      );
+      await room.close();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("shows a cloud link that cannot be created on the room", async () => {
+    const projectId = "project/cloud-link-create-throw";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const room = await LocalLoroRoom.open({
+        dataDir,
+        projectId,
+        remotePersistence: {
+          loadSnapshot: vi.fn(async () => null),
+          appendUpdate: vi.fn(async () => {}),
+          createLink: () => {
+            throw new Error("link factory failed");
+          },
+        },
+        workflowProcessor: null,
+      });
+      await vi.waitFor(() =>
+        expect(room.projectRemoteState()).toMatchObject({
+          code: "CLOUD_LINK_START_FAILED",
+          message: expect.stringContaining("link factory failed"),
+        }),
+      );
+      await room.close();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("exposes the coded link state and next retry time as the room's status", async () => {
+    let reportLink: ((state: CloudReplicaLinkState) => void) | undefined;
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-link-status",
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => null),
+        appendUpdate: vi.fn(async () => {}),
+        createLink: ({ onState }) => {
+          reportLink = onState;
+          return {
+            start: async () => {},
+            publish: async () => {},
+            close: async () => {},
+          };
+        },
+      },
+      workflowProcessor: null,
+    });
+    await vi.waitFor(() => expect(reportLink).toBeTypeOf("function"));
+    expect(room.projectRemoteState()).toBeUndefined();
+    const retryAt = new Date(Date.now() + 4_000).toISOString();
+    reportLink?.({
+      state: "retrying",
+      code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+      retryAt,
+    });
+    expect(room.projectRemoteState()).toMatchObject({
+      state: "unavailable",
+      code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+      retryAt,
+    });
+    reportLink?.({ state: "connected" });
+    expect(room.projectRemoteState()).toBeUndefined();
+    await room.close();
+  });
+
+  it("drops a link that stopped itself and attaches a new one on the next edit", async () => {
+    const links: Array<{
+      onState?: (state: CloudReplicaLinkState) => void;
+      publish: ReturnType<typeof vi.fn>;
+    }> = [];
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-link-readmitted",
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => null),
+        appendUpdate: vi.fn(async () => {}),
+        createLink: ({ onState }) => {
+          const publish = vi.fn(async () => {});
+          links.push({ onState, publish });
+          return { start: async () => {}, publish, close: async () => {} };
+        },
+      },
+      workflowProcessor: null,
+    });
+    await vi.waitFor(() => expect(links).toHaveLength(1));
+    links[0]!.onState?.({
+      state: "stopped",
+      code: "CLOUD_LINK_NOT_ADMITTED",
+      message: "Project cloud admission was revoked or changed",
+    });
+    expect(room.projectRemoteState()).toMatchObject({
+      state: "unavailable",
+      code: "CLOUD_LINK_NOT_ADMITTED",
+    });
+    expect(room.projectRemoteState()?.retryAt).toBeUndefined();
+
+    const edit = () =>
+      room.mutateProject((doc) => {
+        doc.getMap("nodes").set(`node-${Math.random()}`, {
+          type: "text",
+          data: { label: "After re-admission" },
+        });
+        return { value: undefined };
+      });
+    await edit();
+    await vi.waitFor(() => expect(links).toHaveLength(2));
+    await vi.waitFor(() => expect(links[1]!.publish).toHaveBeenCalled());
+    expect(links[0]!.publish).not.toHaveBeenCalled();
+    links[1]!.onState?.({ state: "connecting" });
+    expect(room.projectRemoteState()).toBeUndefined();
+    await room.close();
+  });
+
+  it("keeps an action-required link attached so edits do not retry a refused credential", async () => {
+    const createLink = vi.fn(
+      ({ onState }: { onState?: (state: CloudReplicaLinkState) => void }) => {
+        queueMicrotask(() =>
+          onState?.({
+            state: "stopped",
+            code: "CLOUD_LINK_ACTION_REQUIRED",
+            message: "Cloud refused the sync connection (HTTP 401)",
+          }),
+        );
+        return {
+          start: async () => {},
+          publish: async () => {},
+          close: async () => {},
+        };
+      },
+    );
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-link-action-required",
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => null),
+        appendUpdate: vi.fn(async () => {}),
+        createLink,
+      },
+      workflowProcessor: null,
+    });
+    await vi.waitFor(() =>
+      expect(room.projectRemoteState()?.code).toBe("CLOUD_LINK_ACTION_REQUIRED"),
+    );
+    await room.mutateProject((doc) => {
+      doc.getMap("nodes").set("node-after-refusal", {
+        type: "text",
+        data: { label: "Local edit" },
+      });
+      return { value: undefined };
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(createLink).toHaveBeenCalledTimes(1);
+    await room.close();
+  });
+
+  it("does not let a replaced link's late start failure mark its successor", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let failFirstStart: (error: Error) => void = () => {};
+    const links: Array<{ onState?: (state: CloudReplicaLinkState) => void }> = [];
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-link-stale-start",
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => null),
+        appendUpdate: vi.fn(async () => {}),
+        createLink: ({ onState }) => {
+          links.push({ onState });
+          return {
+            start: () =>
+              links.length === 1
+                ? new Promise<void>((_resolve, reject) => {
+                    failFirstStart = reject;
+                  })
+                : Promise.resolve(),
+            publish: async () => {},
+            close: async () => {},
+          };
+        },
+      },
+      workflowProcessor: null,
+    });
+    try {
+      await vi.waitFor(() => expect(links).toHaveLength(1));
+      links[0]!.onState?.({
+        state: "stopped",
+        code: "CLOUD_LINK_NOT_ADMITTED",
+      });
+      await room.mutateProject((doc) => {
+        doc.getMap("nodes").set("node-replacement", {
+          type: "text",
+          data: { label: "Local edit" },
+        });
+        return { value: undefined };
+      });
+      await vi.waitFor(() => expect(links).toHaveLength(2));
+      links[1]!.onState?.({ state: "connected" });
+      failFirstStart(new Error("late failure"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(room.projectRemoteState()).toBeUndefined();
+    } finally {
+      await room.close();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("keeps a snapshot import failure over a connected cloud link", async () => {
     const projectId = "project/cloud-combined-state";
     let reportLink: ((state: CloudReplicaLinkState) => void) | undefined;

@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LocalWorkflowProcessor } from "./local-processor.js";
 import {
+  LoroCloudReplicaLink,
+  type ReplicaLinkSocket,
+} from "./loro/cloud-replica-link.js";
+import {
   LocalLoroRoomHub,
+  type RemoteLoroPersistence,
   type RemoteLoroPersistenceSource,
 } from "./sync.js";
 
@@ -127,6 +132,92 @@ describe("LocalLoroRoomHub idle eviction", () => {
       }
     },
   );
+});
+
+describe("LocalLoroRoomHub cloud link lifetime", () => {
+  // A real link in its retry loop: every socket fails as soon as it is created.
+  function retryingRemote(sockets: { count: number }): RemoteLoroPersistence {
+    return {
+      loadSnapshot: async () => null,
+      appendUpdate: async () => {},
+      createLink: ({ projectId, doc, commit, onState }) =>
+        new LoroCloudReplicaLink({
+          baseUrl: "https://cloud.example",
+          projectId,
+          doc,
+          commit: (batchId, updates) => commit(batchId, updates),
+          onState,
+          onError: () => {},
+          reconnectBaseMs: 5,
+          reconnectMaxMs: 5,
+          random: () => 1,
+          createSocket: () => {
+            sockets.count += 1;
+            const listeners = new Map<string, (...args: any[]) => void>();
+            const socket: ReplicaLinkSocket = {
+              readyState: 3,
+              on(event, listener) {
+                listeners.set(event, listener);
+                if (event === "close") {
+                  queueMicrotask(() => listener(1006));
+                }
+                return socket;
+              },
+              send() {},
+              close() {},
+            };
+            return socket;
+          },
+        }),
+    };
+  }
+
+  it("ends the reconnect loop and the reported state when an idle room is evicted", async () => {
+    const sockets = { count: 0 };
+    const hub = evictionHub(() => retryingRemote(sockets));
+    try {
+      await hub.room("project");
+      await vi.waitFor(() => expect(sockets.count).toBeGreaterThan(1));
+      expect(hub.projectRemoteState("project")).toMatchObject({
+        state: "unavailable",
+        code: "CLOUD_LINK_UNREACHABLE",
+        retryAt: expect.any(String),
+      });
+
+      await expect(
+        hub.evictIdleRooms({ idleTimeoutMs: 0 }),
+      ).resolves.toEqual({ evicted: ["project"], failures: [] });
+      const attempts = sockets.count;
+      await settleRealIo();
+      expect(sockets.count).toBe(attempts);
+      expect(hub.projectRemoteState("project")).toBeUndefined();
+    } finally {
+      await hub.close();
+    }
+  });
+
+  it("reports nothing for a Project that resolves to no cloud transport", async () => {
+    const resolve = vi.fn(async () => undefined);
+    const hub = evictionHub(resolve);
+    try {
+      await hub.room("project");
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
+      await settleRealIo();
+      expect(hub.projectRemoteState("project")).toBeUndefined();
+    } finally {
+      await hub.close();
+    }
+  });
+
+  it("does not open a room just to answer a status read", async () => {
+    const hub = evictionHub();
+    try {
+      expect(hub.projectRemoteState("project")).toBeUndefined();
+      expect(hub.roomCount()).toBe(0);
+    } finally {
+      await hub.close();
+    }
+  });
 });
 
 describe("LocalLoroRoomHub cancelled idle eviction", () => {

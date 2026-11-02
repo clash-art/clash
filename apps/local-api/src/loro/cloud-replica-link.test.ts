@@ -1,3 +1,11 @@
+import { createServer as createHttpServer } from "node:http";
+import {
+  createServer as createTcpServer,
+  type AddressInfo,
+  type Server,
+  type Socket,
+} from "node:net";
+import type { Duplex } from "node:stream";
 import { hostname } from "node:os";
 import { LoroDoc } from "loro-crdt";
 import {
@@ -9,7 +17,10 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CLOUD_REPLICA_RECONNECT_MAX_MS,
   LoroCloudReplicaLink,
+  cloudReplicaReconnectDelay,
+  type CloudReplicaLinkState,
   type ReplicaLinkSocket,
 } from "./cloud-replica-link.js";
 
@@ -366,6 +377,278 @@ describe("LoroCloudReplicaLink", () => {
         await link.close();
       } finally {
         vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("reconnect jitter", () => {
+    it("scales the delay by the random draw below a ceiling that stops at the cap", () => {
+      const ceiling = (failures: number) =>
+        cloudReplicaReconnectDelay(failures, { random: () => 1 });
+      expect(ceiling(1)).toBeGreaterThan(ceiling(0));
+      expect(ceiling(100)).toBe(CLOUD_REPLICA_RECONNECT_MAX_MS);
+      expect(cloudReplicaReconnectDelay(100, { random: () => 0.5 })).toBe(
+        CLOUD_REPLICA_RECONNECT_MAX_MS / 2,
+      );
+      expect(
+        cloudReplicaReconnectDelay(100, { random: () => 0 }),
+      ).toBeGreaterThan(0);
+    });
+  });
+
+  describe("reconnect gate", () => {
+    function gatedLink(beforeReconnect: () => Promise<void>) {
+      const states: CloudReplicaLinkState[] = [];
+      const createSocket = vi.fn(() => new FakeSocket());
+      const link = new LoroCloudReplicaLink({
+        baseUrl: "https://cloud.example/",
+        projectId: "project-gate",
+        doc: () => new LoroDoc(),
+        createSocket,
+        commit: async () => {},
+        onError: () => {},
+        onState: (state) => states.push(state),
+        beforeReconnect,
+        reconnectBaseMs: 100,
+        reconnectMaxMs: 100,
+        random: () => 1,
+      });
+      return { link, states, createSocket };
+    }
+
+    it("leaves no attempt or timer once the gate closes the link", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const { link, createSocket } = gatedLink(async () => {
+          await link.close();
+        });
+        createSocket.mockImplementation(() => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        });
+        link.start();
+        sockets[0]!.emit("close", 1006);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(createSocket).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("retries with a coded state when the gate fails while the link is open", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const gate = vi
+          .fn<() => Promise<void>>()
+          .mockRejectedValueOnce(new Error("config store busy"))
+          .mockResolvedValue(undefined);
+        const { link, states, createSocket } = gatedLink(gate);
+        createSocket.mockImplementation(() => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        });
+        link.start();
+        sockets[0]!.emit("close", 1006);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(createSocket).toHaveBeenCalledTimes(1);
+        expect(states.at(-1)).toMatchObject({
+          state: "retrying",
+          code: "CLOUD_LINK_UNREACHABLE",
+          message: "config store busy",
+          retryAt: expect.any(String),
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(createSocket).toHaveBeenCalledTimes(2);
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ignores a gate from before a restart instead of connecting twice", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        let releaseGate = () => {};
+        const { link, createSocket } = gatedLink(
+          () =>
+            new Promise<void>((resolve) => {
+              releaseGate = resolve;
+            }),
+        );
+        createSocket.mockImplementation(() => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        });
+        link.start();
+        sockets[0]!.emit("close", 1006);
+        await vi.advanceTimersByTimeAsync(100);
+        await link.close();
+        link.start();
+        expect(createSocket).toHaveBeenCalledTimes(2);
+        releaseGate();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(createSocket).toHaveBeenCalledTimes(2);
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps retrying when reading the document throws during a reconnect", async () => {
+      vi.useFakeTimers();
+      try {
+        const states: CloudReplicaLinkState[] = [];
+        const sockets: FakeSocket[] = [];
+        const doc = vi
+          .fn<() => LoroDoc>()
+          .mockImplementationOnce(() => new LoroDoc())
+          .mockImplementationOnce(() => {
+            throw new Error("document unavailable");
+          })
+          .mockImplementation(() => new LoroDoc());
+        const link = new LoroCloudReplicaLink({
+          baseUrl: "https://cloud.example/",
+          projectId: "project-doc",
+          doc,
+          createSocket: () => {
+            const socket = new FakeSocket();
+            sockets.push(socket);
+            return socket;
+          },
+          commit: async () => {},
+          onError: () => {},
+          onState: (state) => states.push(state),
+          reconnectBaseMs: 100,
+          reconnectMaxMs: 100,
+          random: () => 1,
+        });
+        link.start();
+        sockets[0]!.emit("close", 1006);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(states.at(-1)).toMatchObject({
+          state: "retrying",
+          code: "CLOUD_LINK_UNREACHABLE",
+          message: "document unavailable",
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(sockets).toHaveLength(2);
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("throws from start() on an unusable URL and leaves nothing running", async () => {
+    vi.useFakeTimers();
+    try {
+      const link = new LoroCloudReplicaLink({
+        baseUrl: "ftp://cloud.example/",
+        projectId: "project-url",
+        doc: () => new LoroDoc(),
+        commit: async () => {},
+      });
+      expect(() => link.start()).toThrow(TypeError);
+      expect(vi.getTimerCount()).toBe(0);
+      // The failed start did not leave it marked as running.
+      expect(() => link.start()).toThrow(TypeError);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe("against a blackholed endpoint", () => {
+    const listening = (server: Server) =>
+      new Promise<number>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () =>
+          resolve((server.address() as AddressInfo).port),
+        );
+      });
+    function linkTo(port: number) {
+      const states: CloudReplicaLinkState[] = [];
+      const onError = vi.fn();
+      const link = new LoroCloudReplicaLink({
+        baseUrl: `http://127.0.0.1:${port}`,
+        projectId: "project-blackhole",
+        doc: () => new LoroDoc(),
+        commit: async () => {},
+        onError,
+        onState: (state) => states.push(state),
+        handshakeTimeoutMs: 100,
+        // Long enough that one attempt is observed on its own.
+        reconnectBaseMs: 60_000,
+        reconnectMaxMs: 60_000,
+        random: () => 1,
+      });
+      return { link, states, onError };
+    }
+
+    it("gives up during discovery when connections are accepted but never answered", async () => {
+      const held = new Set<Socket>();
+      const server = createTcpServer((socket) => {
+        held.add(socket);
+        socket.on("error", () => {});
+      });
+      const port = await listening(server);
+      const { link, states, onError } = linkTo(port);
+      try {
+        const startedAt = Date.now();
+        link.start();
+        await vi.waitFor(() =>
+          expect(states.at(-1)).toMatchObject({
+            state: "retrying",
+            code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+            attempt: 1,
+            retryAt: expect.any(String),
+          }),
+        );
+        expect(Date.now() - startedAt).toBeLessThan(5_000);
+        expect(onError).toHaveBeenCalledTimes(1);
+      } finally {
+        await link.close();
+        for (const socket of held) socket.destroy();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
+    it("gives up the WebSocket upgrade when the server never answers it", async () => {
+      const server = createHttpServer((_request, response) => {
+        // Discovery: this cloud only speaks the WebSocket protocol.
+        response.writeHead(404).end();
+      });
+      const held = new Set<Duplex>();
+      server.on("upgrade", (_request, socket) => {
+        held.add(socket);
+        socket.on("error", () => {});
+      });
+      const port = await listening(server);
+      const { link, states, onError } = linkTo(port);
+      try {
+        link.start();
+        await vi.waitFor(() =>
+          expect(states.at(-1)).toMatchObject({
+            state: "retrying",
+            code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+            attempt: 1,
+          }),
+        );
+        // Let the transport finish aborting; that is cleanup, not a second failure.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(states.filter((state) => state.state === "retrying")).toHaveLength(1);
+      } finally {
+        await link.close();
+        for (const socket of held) socket.destroy();
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
       }
     });
   });
