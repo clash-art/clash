@@ -1,5 +1,7 @@
 import { Hono, type Context } from "hono";
 import type { Env } from "../../config";
+import { getApiTokenIdentity } from "../../services/api-token";
+import { revokeApiToken } from "../../services/settings-d1";
 
 export const cliAuthRoutes = new Hono<{ Bindings: Env }>();
 
@@ -302,4 +304,23 @@ cliAuthRoutes.post("/token", async (c) => {
 
   noStoreHeaders(c);
   return c.json({ access_token: accessToken, token_type: "Bearer" });
+});
+
+// The access token is the only handle a CLI holds on its token row, so the
+// credential revokes itself. A client that cannot persist a token it was just
+// issued uses this instead of leaving it valid and unreachable.
+cliAuthRoutes.delete("/token", async (c) => {
+  noStoreHeaders(c);
+  const token = await getApiTokenIdentity(c.req.raw, c.env);
+  if (!token) {
+    return c.json(
+      {
+        error: "invalid_token",
+        error_description: "A valid bearer access token is required.",
+      },
+      401,
+    );
+  }
+  await revokeApiToken(c.env, token.userId, token.id);
+  return c.body(null, 204);
 });

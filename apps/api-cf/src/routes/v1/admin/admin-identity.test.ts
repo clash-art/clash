@@ -228,7 +228,8 @@ describe("isolation, enforced by the server for every route", () => {
     // The web gateway asks api-cf to fail closed on /api/v1/* (except two public endpoints).
     const required = { "x-clash-require-identity": "1" };
     const routes = concrete(v1Routes.routes, "/api/v1").filter(
-      ([, path]) => !path.startsWith("/api/v1/admin") && path !== "/api/v1/cloud" && path !== "/api/v1/cli-auth/token",
+      ([method, path]) =>
+        !path.startsWith("/api/v1/admin") && path !== "/api/v1/cloud" && !(method === "POST" && path === "/api/v1/cli-auth/token"),
     );
     expect(routes.length).toBeGreaterThan(30);
     for (const [method, path] of routes) {

@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as authModule from "./auth";
-import { loadConfig } from "../lib/config";
+import { configFilePath, credentialsFilePath, loadConfig } from "../lib/config";
 
 type LoginResult = { accessToken: string; authorizationUrl: string };
 type AuthExports = {
@@ -194,6 +194,164 @@ test("CLI login saves the credential on a fresh CLASH_HOME", async () => {
 
     assert.equal(result.accessToken, accessToken);
     assert.deepEqual(loadConfig(), { apiKey: accessToken });
+  } finally {
+    if (originalClashHome === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = originalClashHome;
+  }
+});
+
+const MINTED_TOKEN = "clsh_0123456789abcdef0123456789abcdef01234567";
+const PREVIOUS_TOKEN = "clsh_ffffffffffffffffffffffffffffffffffffffff";
+
+async function completeAuthorization(target: string): Promise<void> {
+  const authorization = new URL(target);
+  const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+  callback.searchParams.set("code", "one_time_code");
+  callback.searchParams.set("state", authorization.searchParams.get("state")!);
+  assert.equal((await fetch(callback)).status, 200);
+}
+
+/** The mint succeeds; `revoke` decides how the server answers DELETE. */
+function fakeTokenServer(revoke: (init: RequestInit) => Promise<Response>) {
+  const revocations: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = (async (
+    input: string | URL | Request,
+    init: RequestInit = {},
+  ) => {
+    if (init.method === "DELETE") {
+      revocations.push({ url: String(input), init });
+      return revoke(init);
+    }
+    return new Response(
+      JSON.stringify({ access_token: MINTED_TOKEN, token_type: "Bearer" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  return { fetchImpl, revocations };
+}
+
+/** Runs against a real CLASH_HOME whose config.yaml cannot be updated. */
+async function loginWithUnsavableConfig(
+  fetchImpl: typeof fetch,
+  revokeTimeoutMs?: number,
+): Promise<authModule.CliLoginSaveError> {
+  const originalClashHome = process.env.CLASH_HOME;
+  process.env.CLASH_HOME = await mkdtemp(join(tmpdir(), "clash-cli-auth-"));
+  try {
+    await writeFile(configFilePath(), "server: [unterminated\n", "utf8");
+    await writeFile(
+      credentialsFilePath(),
+      JSON.stringify({ cliApiKey: PREVIOUS_TOKEN }),
+      "utf8",
+    );
+    let failure: unknown;
+    await authModule
+      .runCliLogin({
+        serverUrl: "https://api.clash.art",
+        browserOrigin: "https://clash.art",
+        timeoutMs: 5_000,
+        ...(revokeTimeoutMs === undefined ? {} : { revokeTimeoutMs }),
+        fetchImpl,
+        log: () => {},
+        openBrowser: completeAuthorization,
+      })
+      .catch((error: unknown) => {
+        failure = error;
+      });
+    assert.ok(failure instanceof authModule.CliLoginSaveError);
+    assert.equal(failure.code, "AUTH_CREDENTIAL_SAVE_FAILED");
+    assert.match(failure.message, /Cannot update config\.yaml/);
+    assert.ok(!failure.message.includes(MINTED_TOKEN));
+    // The failed login leaves the previous credential and the user's file alone.
+    assert.equal(loadConfig().apiKey, PREVIOUS_TOKEN);
+    assert.equal(
+      await readFile(configFilePath(), "utf8"),
+      "server: [unterminated\n",
+    );
+    return failure;
+  } finally {
+    if (originalClashHome === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = originalClashHome;
+  }
+}
+
+test("CLI login revokes the minted token when saving the credential fails", async () => {
+  const server = fakeTokenServer(
+    async () => new Response(null, { status: 204 }),
+  );
+
+  const failure = await loginWithUnsavableConfig(server.fetchImpl);
+
+  assert.equal(failure.tokenRevoked, true);
+  assert.match(failure.message, /was revoked/);
+  assert.equal(server.revocations.length, 1);
+  assert.equal(
+    server.revocations[0].url,
+    "https://api.clash.art/api/v1/cli-auth/token",
+  );
+  assert.equal(
+    new Headers(server.revocations[0].init.headers).get("authorization"),
+    `Bearer ${MINTED_TOKEN}`,
+  );
+});
+
+test("CLI login still reports the save failure when the server refuses to revoke", async () => {
+  const server = fakeTokenServer(
+    async () => new Response(null, { status: 500 }),
+  );
+
+  const failure = await loginWithUnsavableConfig(server.fetchImpl);
+
+  assert.equal(failure.tokenRevoked, false);
+  assert.match(failure.message, /stays valid/);
+  assert.match(failure.message, /clsh_01234567\.\.\./);
+});
+
+test("CLI login still reports the save failure when revocation cannot reach the server", async () => {
+  const server = fakeTokenServer(async () => {
+    throw new TypeError("fetch failed");
+  });
+
+  const failure = await loginWithUnsavableConfig(server.fetchImpl);
+
+  assert.equal(failure.tokenRevoked, false);
+  assert.match(failure.message, /stays valid/);
+});
+
+test("CLI login does not wait forever for a server that never answers the revocation", async () => {
+  const server = fakeTokenServer(
+    (init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () =>
+          reject(init.signal!.reason),
+        );
+      }),
+  );
+
+  const failure = await loginWithUnsavableConfig(server.fetchImpl, 10);
+
+  assert.equal(failure.tokenRevoked, false);
+  assert.equal(server.revocations.length, 1);
+});
+
+test("CLI login never revokes a token it saved", async () => {
+  const originalClashHome = process.env.CLASH_HOME;
+  process.env.CLASH_HOME = await mkdtemp(join(tmpdir(), "clash-cli-auth-"));
+  const server = fakeTokenServer(
+    async () => new Response(null, { status: 204 }),
+  );
+  try {
+    await authModule.runCliLogin({
+      serverUrl: "https://api.clash.art",
+      browserOrigin: "https://clash.art",
+      timeoutMs: 5_000,
+      fetchImpl: server.fetchImpl,
+      log: () => {},
+      openBrowser: completeAuthorization,
+    });
+
+    assert.equal(loadConfig().apiKey, MINTED_TOKEN);
+    assert.equal(server.revocations.length, 0);
   } finally {
     if (originalClashHome === undefined) delete process.env.CLASH_HOME;
     else process.env.CLASH_HOME = originalClashHome;

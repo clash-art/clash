@@ -150,6 +150,26 @@ describe("cloud browser login gateway", () => {
     expect(received?.headers.has("x-user-id")).toBe(false);
     expect(received?.headers.get("x-clash-require-identity")).toBe("1");
   });
+  it("keeps access token revocation behind identity, unlike the public exchange", async () => {
+    const env = gatewayEnv();
+    let received: Request | undefined;
+    env.API_CF = {
+      fetch: async (request) => {
+        received = request;
+        return new Response(null, { status: 204 });
+      },
+    };
+    const response = await worker.fetch(
+      new Request("https://clash.test/api/v1/cli-auth/token", {
+        method: "DELETE",
+        headers: { "x-user-id": "forged" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(204);
+    expect(received?.headers.has("x-user-id")).toBe(false);
+    expect(received?.headers.get("x-clash-require-identity")).toBe("1");
+  });
 });
 
 describe("provider OAuth web callback gateway", () => {
