@@ -4577,15 +4577,23 @@ async function assertEnvironmentResumeLockMatches(input: {
   if (input.backend.kind !== "native-local") {
     // The remote worker's executables and platform cannot be re-observed here.
     // What can be compared is the placement claim and the selected subject.
-    const claim = await input.backend.runtimeClaim();
     const prior = priorLock as {
+      executionIntent?: string;
       resolvedEnvironment?: { runtime?: { kind?: string; backend?: unknown } };
       clash?: { subject?: BenchmarkSubjectRecord };
     };
+    // A blocked Attempt was never placed on a backend (older blocked locks
+    // even record the dispatcher host's native-local runtime), and the run
+    // manifest already pins the selected backend kinds.
+    const claim =
+      prior.executionIntent === "blocked-no-run"
+        ? undefined
+        : await input.backend.runtimeClaim();
     if (
-      prior.resolvedEnvironment?.runtime?.kind !== claim.kind ||
-      sha256Json(prior.resolvedEnvironment.runtime.backend) !==
-        sha256Json(claim)
+      claim &&
+      (prior.resolvedEnvironment?.runtime?.kind !== claim.kind ||
+        sha256Json(prior.resolvedEnvironment.runtime.backend) !==
+          sha256Json(claim))
     ) {
       throw new Error(
         `Cannot resume case '${input.benchmark.id}': the execution backend differs from the completed attempt`,
@@ -5123,6 +5131,7 @@ async function createBlockedCaseReport(input: {
   suiteRoot: string;
   caseRoot: string;
   attempt: number;
+  runtime?: BenchmarkRuntimeClaim;
   subject?: BenchmarkLockSubject;
   adoptCaseRoot?: boolean;
 }): Promise<BenchmarkCaseReport> {
@@ -5143,6 +5152,7 @@ async function createBlockedCaseReport(input: {
         ? { qualityReviewer: input.qualityReviewer }
         : {}),
       executionIntent: "blocked-no-run",
+      ...(input.runtime ? { runtime: input.runtime } : {}),
       ...(input.subject ? { subject: input.subject } : {}),
     });
   }
@@ -5532,6 +5542,7 @@ export async function executeBenchmarkAttempt(
             suiteRoot,
             caseRoot,
             attempt: nextAttempt,
+            ...(input.runtime ? { runtime: input.runtime } : {}),
             ...(input.subject ? { subject: input.subject } : {}),
             ...(input.adoptCaseRoot ? { adoptCaseRoot: true } : {}),
           })
@@ -5986,13 +5997,21 @@ async function runBenchmarkSuiteInProcessScope(
         ...(input.subject ? { subject: input.subject } : {}),
       };
       // A preflight-blocked case runs no Agent, so there is nothing to place:
-      // the dispatcher records the not-run Attempt itself on every backend.
+      // the dispatcher records the not-run Attempt itself on every backend,
+      // under the selected backend's claim as a dispatched Attempt would be.
       // Otherwise a backend reports Agent and product outcomes through the
       // Attempt. If it cannot even place the work, that is an infrastructure
       // failure and is still sealed as an Attempt instead of aborting the batch.
       const completion =
         benchmark.execution?.preflight?.status === "blocked"
-          ? await executeBenchmarkAttempt(dispatch)
+          ? await backend.runtimeClaim().then(
+              (runtime) => executeBenchmarkAttempt({ ...dispatch, runtime }),
+              (error: unknown) =>
+                executeBenchmarkAttempt({
+                  ...dispatch,
+                  dispatchFailure: error,
+                }),
+            )
           : await backend.runAttempt(dispatch).catch((error) =>
               executeBenchmarkAttempt({
                 ...dispatch,

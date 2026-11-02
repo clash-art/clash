@@ -120,14 +120,17 @@ function blockedEnvironmentCase(id: string): ArtifactBenchmarkCase {
   });
 }
 
+const containerClaim: BenchmarkRuntimeClaim = {
+  kind: "container",
+  engine: { name: "docker", version: "0.0.0" },
+  image: { id: `sha256:${"0".repeat(64)}` },
+  network: "none",
+};
+
 /** A remote-kind backend that runs the Attempt in process under its claim. */
-function containerClaimBackend(): ExecutionBackend {
-  const claim: BenchmarkRuntimeClaim = {
-    kind: "container",
-    engine: { name: "docker", version: "0.0.0" },
-    image: { id: `sha256:${"0".repeat(64)}` },
-    network: "none",
-  };
+function containerClaimBackend(
+  claim: BenchmarkRuntimeClaim = containerClaim,
+): ExecutionBackend {
   return {
     kind: "container",
     maxConcurrency: 1,
@@ -135,6 +138,31 @@ function containerClaimBackend(): ExecutionBackend {
     runAttempt: (dispatch) =>
       executeBenchmarkAttempt({ ...dispatch, runtime: claim }),
   };
+}
+
+/** Keep only a case's `started` ledger entries, as if the runner stopped mid-Attempt. */
+async function interruptCase(
+  outputRoot: string,
+  runId: string,
+  caseId: string,
+): Promise<void> {
+  const progressPath = join(outputRoot, runId, "suite-progress.json");
+  const progress = await readRunProgress(outputRoot, runId);
+  await writeFile(
+    progressPath,
+    `${JSON.stringify(
+      {
+        ...progress,
+        status: "in-progress",
+        attempts: progress.attempts.filter(
+          (entry) => entry.caseId !== caseId || entry.event === "started",
+        ),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
 }
 
 type TestRunProgress = {
@@ -387,6 +415,91 @@ describe("benchmark batch recovery", () => {
     await expect(
       runBenchmarkSuite({ ...original, resume: true }),
     ).resolves.toMatchObject({ resumed: true });
+  });
+
+  it("seals a blocked Environment case under a remote backend's claim and resumes it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-bench-blocked-remote-"));
+    const suiteRoot = join(root, "suite");
+    const outputRoot = join(root, "runs");
+    await mkdir(suiteRoot);
+    const common = {
+      suite: suite([
+        blockedEnvironmentCase("blocked-environment"),
+        benchmarkCase("normal-case"),
+      ]),
+      suiteRoot,
+      outputRoot,
+      runId: "blocked-remote",
+      agent: successfulAgent(),
+      backends: [containerClaimBackend()],
+    };
+    await runBenchmarkSuite(common);
+    const progress = await readRunProgress(outputRoot, "blocked-remote");
+    const blocked = progress.attempts.find(
+      ({ caseId, event }) =>
+        caseId === "blocked-environment" && event === "completed",
+    );
+    const lock = JSON.parse(
+      await readFile(
+        join(
+          outputRoot,
+          "blocked-remote",
+          blocked!.caseRoot as string,
+          "environment-lock.json",
+        ),
+        "utf8",
+      ),
+    ) as { resolvedEnvironment: { runtime: Record<string, unknown> } };
+    expect(lock.resolvedEnvironment.runtime).toMatchObject({
+      kind: "container",
+      backend: containerClaim,
+    });
+
+    await interruptCase(outputRoot, "blocked-remote", "normal-case");
+    const resumed = await runBenchmarkSuite({ ...common, resume: true });
+    expect(resumed).toMatchObject({ resumed: true });
+    expect(resumed.cases).toMatchObject([
+      { id: "blocked-environment", status: "blocked", attempt: 1 },
+      { id: "normal-case", status: "pass" },
+    ]);
+  });
+
+  it("resumes a blocked Environment case whose lock predates the backend claim", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-bench-blocked-legacy-"));
+    const suiteRoot = join(root, "suite");
+    const outputRoot = join(root, "runs");
+    await mkdir(suiteRoot);
+    const common = {
+      suite: suite([
+        blockedEnvironmentCase("blocked-environment"),
+        benchmarkCase("normal-case"),
+      ]),
+      suiteRoot,
+      outputRoot,
+      runId: "blocked-legacy",
+      agent: successfulAgent(),
+    };
+    // Earlier runners sealed blocked Attempts with the dispatcher host's
+    // native-local runtime whatever the selected backend was.
+    await runBenchmarkSuite({
+      ...common,
+      backends: [containerClaimBackend({ kind: "native-local" })],
+    });
+    await interruptCase(outputRoot, "blocked-legacy", "normal-case");
+
+    await expect(
+      runBenchmarkSuite({
+        ...common,
+        backends: [containerClaimBackend()],
+        resume: true,
+      }),
+    ).resolves.toMatchObject({
+      resumed: true,
+      cases: [
+        { id: "blocked-environment", status: "blocked", attempt: 1 },
+        { id: "normal-case", status: "pass" },
+      ],
+    });
   });
 
   it("refuses to resume a run manifest that does not record its Agent", async () => {
