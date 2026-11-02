@@ -12,20 +12,16 @@ import {
 } from "@clash/asset-sdk";
 import {
   ACTION_ASSET_BINDING_AUTHORITY_VERSION,
-  Canvas,
   actionAssetBindingAuthorityVersion,
   createActionAssetBinding,
   createProjectAsset,
   ensureActionAssetBinding,
   listActionAssetBindings,
   listActionAssetReferences,
-  listProjectCanvases,
-  listProjectDirectorStages,
   listProjectAssets,
-  listProjectTimelines,
   markActionAssetBindingAuthority,
   markProjectAssetAuthority,
-  planLegacyActionAssetBindingMaterialization,
+  planLegacyActionAssetBindingMaterializationForDoc,
   projectAssetAuthorityVersion,
   projectAssetMutationReadTokenFromDoc,
   ProjectAssetMetadataSchema,
@@ -546,14 +542,7 @@ function actionAssetBindingPlanForDoc(
   doc: import("loro-crdt").LoroDoc,
   projectAssetIds: readonly string[],
 ) {
-  return planLegacyActionAssetBindingMaterialization({
-    projectAssetIds,
-    canvasNodes: listProjectCanvases(doc).flatMap((canvas) =>
-      new Canvas(doc, () => undefined, canvas.id).listNodes(),
-    ),
-    timelines: listProjectTimelines(doc),
-    directorStages: listProjectDirectorStages(doc),
-  });
+  return planLegacyActionAssetBindingMaterializationForDoc(doc, projectAssetIds);
 }
 
 function assertActionAssetBindingPlan(

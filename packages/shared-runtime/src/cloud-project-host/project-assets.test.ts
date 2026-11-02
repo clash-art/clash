@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { LoroDoc } from "loro-crdt";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  ACTION_TYPE,
+  buildPendingAssetNode,
   createActionAssetBinding,
   projectAssetMutationReadTokenFromDoc,
   readProjectAsset,
@@ -303,6 +305,35 @@ describe("cloud Project Asset document logic", () => {
         ok: false,
         status: 409,
         body: { code: "ASSET_IN_USE", references: [{ id: "in" }] },
+      });
+      expect(readProjectAsset(doc, "asset:a")?.lifecycle.state).toBe("active");
+    });
+
+    it("refuses an Asset a legacy pending Action uses on the implicit default Canvas (#239)", async () => {
+      await importAsset("asset:a", resource("r1", "a"));
+      const pending = buildPendingAssetNode({
+        nodeId: "pending",
+        prompt: "Animate it",
+        modelId: "gpt-image-2",
+        modelParams: {},
+        actionType: ACTION_TYPE.ImageGen,
+        referenceImageAssetIds: ["asset:a"],
+      });
+      // Pre-registry legacy shape: no `canvases` entry and no node canvasId.
+      doc.getMap("nodes").set("pending", {
+        type: pending.type,
+        position: { x: 0, y: 0 },
+        data: { ...pending.data, status: "generating" },
+      });
+      expect(trash(observed())).toMatchObject({
+        ok: false,
+        status: 409,
+        body: {
+          code: "ASSET_IN_USE",
+          references: [
+            { owner: { kind: "draft", actionId: "node:pending" }, direction: "input" },
+          ],
+        },
       });
       expect(readProjectAsset(doc, "asset:a")?.lifecycle.state).toBe("active");
     });
