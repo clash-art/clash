@@ -148,6 +148,47 @@ export function removeTimelineMaskKeyframes(
   return Object.keys(remaining).length > 0 ? remaining : undefined;
 }
 
+export type TimelineKeyframeRetimeResult =
+  | { ok: true; frame: number; keyframes: TimelineItemKeyframes | undefined }
+  | {
+    ok: false;
+    code: "KEYFRAME_RETIME_COLLISION";
+    frame: number;
+    channels: TimelineKeyframeChannel[];
+  };
+
+/**
+ * Moves every channel's keyframe at `fromFrame` to `toFrame` together, keeping
+ * the target inside the clip (`0 … durationInFrames - 1`). A channel that
+ * already holds a keyframe at the target refuses the whole move rather than
+ * silently replacing that keyframe.
+ */
+export function retimeTimelineKeyframes(
+  keyframes: TimelineItemKeyframes | undefined,
+  fromFrame: number,
+  toFrame: number,
+  durationInFrames: number,
+): TimelineKeyframeRetimeResult {
+  const frame = Math.max(0, Math.min(Math.max(0, durationInFrames - 1), Math.round(toFrame)));
+  if (!keyframes || frame === fromFrame) return { ok: true, frame, keyframes };
+  const channels = Object.keys(keyframes) as TimelineKeyframeChannel[];
+  const moving = channels.filter((channel) =>
+    channelKeyframes(keyframes, channel).some((keyframe) => keyframe.frame === fromFrame));
+  const collisions = moving.filter((channel) =>
+    channelKeyframes(keyframes, channel).some((keyframe) => keyframe.frame === frame));
+  if (collisions.length > 0) {
+    return { ok: false, code: "KEYFRAME_RETIME_COLLISION", frame, channels: collisions };
+  }
+  if (moving.length === 0) return { ok: true, frame, keyframes };
+  const next = { ...keyframes } as Record<string, unknown>;
+  for (const channel of moving) {
+    next[channel] = channelKeyframes(keyframes, channel)
+      .map((keyframe) => keyframe.frame === fromFrame ? { ...keyframe, frame } : keyframe)
+      .sort((left, right) => left.frame - right.frame);
+  }
+  return { ok: true, frame, keyframes: next as TimelineItemKeyframes };
+}
+
 export type AdjacentTimelineKeyframes = {
   previousFrame: number | null;
   hasCurrent: boolean;

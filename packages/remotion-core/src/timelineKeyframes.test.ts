@@ -7,6 +7,7 @@ import {
   findAdjacentTimelineKeyframes,
   removeTimelineKeyframe,
   removeTimelineMaskKeyframes,
+  retimeTimelineKeyframes,
   rippleDeleteTimelineKeyframes,
   sampleTimelineKeyframes,
   sliceTimelineKeyframes,
@@ -265,5 +266,65 @@ describe("Timeline keyframe slicing", () => {
         { frame: 15, value: 40, interpolation: "linear" },
       ],
     });
+  });
+});
+
+describe("Timeline keyframe retiming", () => {
+  const keyframes: TimelineItemKeyframes = {
+    position: [
+      { frame: 0, value: [0, 0], interpolation: "linear" },
+      { frame: 30, value: [100, 0], interpolation: "hold" },
+    ],
+    scale: [{ frame: 30, value: [2, 2], interpolation: "linear" }],
+    opacity: [{ frame: 45, value: 0.5, interpolation: "hold" }],
+  };
+
+  it("moves every channel at the source frame together and keeps the others", () => {
+    expect(retimeTimelineKeyframes(keyframes, 30, 20, 61)).toEqual({
+      ok: true,
+      frame: 20,
+      keyframes: {
+        position: [
+          keyframes.position![0],
+          { ...keyframes.position![1], frame: 20 },
+        ],
+        scale: [{ ...keyframes.scale![0], frame: 20 }],
+        opacity: keyframes.opacity,
+      },
+    });
+  });
+
+  it("keeps a channel sorted when a keyframe passes its neighbour", () => {
+    const retimed = retimeTimelineKeyframes(keyframes, 0, 40, 61);
+
+    expect(retimed.ok && retimed.keyframes?.position?.map((keyframe) => keyframe.frame))
+      .toEqual([30, 40]);
+  });
+
+  it("joins a frame held only by other channels", () => {
+    const retimed = retimeTimelineKeyframes(keyframes, 45, 30, 61);
+
+    expect(retimed.ok && retimed.keyframes?.opacity?.[0]?.frame).toBe(30);
+    expect(retimed.ok && retimed.keyframes?.position).toBe(keyframes.position);
+  });
+
+  it("clamps the target to whole frames inside the clip", () => {
+    expect(retimeTimelineKeyframes(keyframes, 45, 500, 61)).toMatchObject({ ok: true, frame: 60 });
+    expect(retimeTimelineKeyframes(keyframes, 45, -12, 61)).toMatchObject({ ok: true, frame: 0 });
+    expect(retimeTimelineKeyframes(keyframes, 45, 50.4, 61)).toMatchObject({ ok: true, frame: 50 });
+  });
+
+  it("refuses a target where a moved channel already has a keyframe", () => {
+    expect(retimeTimelineKeyframes(keyframes, 0, 30, 61)).toEqual({
+      ok: false,
+      code: "KEYFRAME_RETIME_COLLISION",
+      frame: 30,
+      channels: ["position"],
+    });
+  });
+
+  it("returns the same keyframes when the clamped target is the source", () => {
+    expect(retimeTimelineKeyframes(keyframes, 30, 30, 61)).toEqual({ ok: true, frame: 30, keyframes });
+    expect(retimeTimelineKeyframes(keyframes, 0, -5, 61)).toEqual({ ok: true, frame: 0, keyframes });
   });
 });
