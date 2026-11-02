@@ -1980,6 +1980,10 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       await projectCloudSync?.schedule(projectId);
     },
     onProjectChanged: async projectId => { await projectCloudSync?.invalidate(projectId); },
+    resourcePrefetch: {
+      availability: resourceId => projectCloudSync?.resourceAvailability(resourceId),
+      prefetch: async (projectId, input) => { await projectCloudSync?.prefetch(projectId, input); },
+    },
     audioConfig,
     ...(hostTelemetry ? { hostTelemetry } : {}),
     mediaAnalysisConfig,
@@ -2230,6 +2234,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     async (projectId, error) => {
       await projectCloudSync?.reportMirrorFailure(projectId, error);
     },
+    { prefetchResources: projectId => { void projectCloudSync?.prefetch(projectId); } },
   );
   const cloudSyncMetadata = createLocalMetadataStore(options.dataDir);
   projectCloudSync = createLocalProjectCloudSync({

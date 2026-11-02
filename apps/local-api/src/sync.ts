@@ -97,7 +97,18 @@ export interface LocalSyncOptions {
   remoteSnapshotRetryBaseMs?: number;
   /** Cap for the exponential background retry delay. */
   remoteSnapshotRetryMaxMs?: number;
+  /**
+   * Queue background download of missing Resource bytes. Called on open and
+   * after a cloud merge; an all-local Project returns without work.
+   */
+  prefetchResources?: (projectId: string) => void;
 }
+
+/** Host store condition that blocks cloud Resource downloads for a Project. */
+export type ProjectResourceStoreState = {
+  code: "LOCAL_STORE_DISK_FULL";
+  message: string;
+};
 
 export interface RemoteLoroPersistence {
   loadSnapshot?(projectId: string, signal?: AbortSignal): Promise<Uint8Array | null>;
@@ -782,6 +793,8 @@ export class LocalLoroRoom {
   private snapshotState: ProjectRemoteStateMessage | undefined;
   /** Last transport state reported by the cloud replica link. */
   private cloudLinkState: CloudReplicaLinkState | undefined;
+  /** A full store volume blocking cloud Resource downloads. */
+  private resourceStoreState: ProjectRemoteStateMessage | undefined;
   /** Combined state published to peers: the worse of snapshot and link. */
   private remoteState: ProjectRemoteStateMessage | undefined;
   private remoteSyncTimer: ReturnType<typeof setTimeout> | undefined;
@@ -809,6 +822,7 @@ export class LocalLoroRoom {
     private readonly remoteSnapshotTimeoutMs = PROJECT_REMOTE_SNAPSHOT_TIMEOUT_MS,
     private readonly remoteSnapshotRetryBaseMs = PROJECT_REMOTE_SNAPSHOT_RETRY_BASE_MS,
     private readonly remoteSnapshotRetryMaxMs = PROJECT_REMOTE_SNAPSHOT_RETRY_MAX_MS,
+    private readonly prefetchResources?: (projectId: string) => void,
   ) {
     this.checkpointedDoc = this.replica.read((state) => state);
     this.remoteSyncRetryMs = this.remoteSnapshotRetryBaseMs;
@@ -833,6 +847,7 @@ export class LocalLoroRoom {
       options.remoteSnapshotTimeoutMs,
       options.remoteSnapshotRetryBaseMs,
       options.remoteSnapshotRetryMaxMs,
+      options.prefetchResources,
     );
     room.updateLogBytes = await loaded.store.updateLogSize(options.projectId);
     if (loaded.workspaceRepaired) await room.saveSnapshot();
@@ -853,6 +868,8 @@ export class LocalLoroRoom {
       this.openBackgroundImmediate = undefined;
       if (this.closed) return;
       this.startRemoteSnapshotSync(0);
+      // Missing cloud bytes start downloading now, not on the next sync poll.
+      this.requestResourcePrefetch();
       // Same pass the room used to await, including Project Asset
       // materialization; only its latency moved off the open path.
       void this.processPendingWork().catch((error) =>
@@ -860,6 +877,29 @@ export class LocalLoroRoom {
       );
     });
     this.openBackgroundImmediate.unref?.();
+  }
+
+  private requestResourcePrefetch(): void {
+    if (this.closed || !this.prefetchResources) return;
+    try {
+      this.prefetchResources(this.projectId);
+    } catch (error) {
+      console.warn("[local-sync] resource prefetch request failed", error);
+    }
+  }
+
+  /** Project-level coded store state, published on `project.remote-state`. */
+  setResourceStoreState(state: ProjectResourceStoreState | undefined): void {
+    this.resourceStoreState = state
+      ? {
+          type: "project.remote-state",
+          projectId: this.projectId,
+          state: "unavailable",
+          code: state.code,
+          message: state.message,
+        }
+      : undefined;
+    this.publishRemoteState();
   }
 
   private startRemoteSnapshotSync(delayMs: number): void {
@@ -1047,9 +1087,13 @@ export class LocalLoroRoom {
             retryAt: link.retryAt,
           }
         : undefined;
+    // Unreadable cloud bytes still outrank everything; a full store volume
+    // outranks a transient transport state because it needs the user.
+    if (snapshot?.state === "import-failed") return snapshot;
+    if (this.resourceStoreState) return this.resourceStoreState;
     if (!snapshot) return transport;
     if (!transport) return snapshot;
-    return snapshot.state === "import-failed" ? snapshot : transport;
+    return transport;
   }
 
   private publishRemoteState(): void {
@@ -1592,6 +1636,8 @@ export class LocalLoroRoom {
         this.remoteLink?.publish(repairUpdate);
       }
     });
+    // Cloud updates can reference Resources this Host has not downloaded.
+    this.requestResourcePrefetch();
     if (options?.awaitPendingWork === false) {
       this.schedulePendingWork();
       return;
@@ -2541,6 +2587,12 @@ export class LocalLoroRoomHub {
   private readonly idleSweepTimer: ReturnType<typeof setInterval>;
   private closed = false;
   private closePromise: Promise<void> | undefined;
+  private readonly prefetchResources?: (projectId: string) => void;
+  /** Survives room eviction so a reopened room shows the same store state. */
+  private readonly resourceStoreStates = new Map<
+    string,
+    ProjectResourceStoreState
+  >();
 
   constructor(
     private readonly dataDir: string,
@@ -2556,8 +2608,10 @@ export class LocalLoroRoomHub {
       idleTimeoutMs?: number;
       maxRooms?: number;
       sweepIntervalMs?: number;
+      prefetchResources?: (projectId: string) => void;
     } = {},
   ) {
+    this.prefetchResources = options.prefetchResources;
     this.replicaStore = new FileReplicaStore(join(dataDir, "projects"));
     this.idleTimeoutMs = Math.max(0, options.idleTimeoutMs ?? 60_000);
     this.maxRooms = Math.max(1, options.maxRooms ?? 8);
@@ -2572,6 +2626,16 @@ export class LocalLoroRoomHub {
       });
     }, sweepIntervalMs);
     this.idleSweepTimer.unref?.();
+  }
+
+  /** Publish (or clear) a Project's coded store state to its open room. */
+  reportResourceStoreState(
+    projectId: string,
+    state: ProjectResourceStoreState | undefined,
+  ): void {
+    if (state) this.resourceStoreStates.set(projectId, state);
+    else this.resourceStoreStates.delete(projectId);
+    this.checkpointReadableRooms.get(projectId)?.setResourceStoreState(state);
   }
 
   async room(projectId: string): Promise<LocalLoroRoom> {
@@ -2607,9 +2671,12 @@ export class LocalLoroRoomHub {
             upgradeProject: this.upgradeProject,
             onProjectCommitted: this.onProjectCommitted,
             onRemoteMirrorFailure: this.onRemoteMirrorFailure,
+            prefetchResources: this.prefetchResources,
           },
           (opened) => {
             this.checkpointReadableRooms.set(projectId, opened);
+            const storeState = this.resourceStoreStates.get(projectId);
+            if (storeState) opened.setResourceStoreState(storeState);
           },
         );
       })();

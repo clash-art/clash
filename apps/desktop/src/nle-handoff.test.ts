@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +13,7 @@ import {
   safeHandoffName,
 } from './nle-handoff';
 
+const HOST = 'http://127.0.0.1:4317';
 const roots: string[] = [];
 
 async function tempRoot(): Promise<string> {
@@ -154,6 +155,87 @@ describe('desktop NLE handoff', () => {
     })).rejects.toMatchObject({ code: 'NLE_HANDOFF_DOWNLOAD_FAILED' });
 
     expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it('copies local Host media from the Host store instead of downloading it over loopback', async () => {
+    const root = await tempRoot();
+    const store = await tempRoot();
+    const storeFile = join(store, 'original.mov');
+    await writeFile(storeFile, 'store-media-bytes');
+    const calls: string[] = [];
+    const documentPath = await materializeNleHandoff(root, {
+      target: 'premiere-pro',
+      timelineName: 'Launch',
+      revisionId: 'rev-7',
+      extension: 'otio',
+      content: 'media={{asset:0}}',
+      assets: [
+        { token: '{{asset:0}}', source: `${HOST}/api/v1/projects/p/assets/a/media`, filename: 'clip.mov' },
+      ],
+    }, {
+      localFileOrigin: HOST,
+      fetch: async (url) => {
+        calls.push(String(url));
+        return String(url).endsWith('/local-file')
+          ? Response.json({ path: storeFile, byteLength: 17 })
+          : new Response('the media route must not be used', { status: 500 });
+      },
+    });
+
+    const media = join(root, 'Launch-rev-7', 'media', '001-clip.mov');
+    expect(await readFile(documentPath, 'utf8')).toBe(
+      replaceAssetTokens('media={{asset:0}}', [{ token: '{{asset:0}}', path: media }]),
+    );
+    expect(await readFile(media, 'utf8')).toBe('store-media-bytes');
+    expect(calls).toEqual([`${HOST}/api/v1/projects/p/assets/a/local-file`]);
+    // The store file is untouched; the NLE gets its own copy.
+    expect(await readFile(storeFile, 'utf8')).toBe('store-media-bytes');
+  });
+
+  it('fails with NLE_HANDOFF_SOURCE_NOT_LOCAL while local Host bytes are still downloading, and publishes nothing', async () => {
+    const root = await tempRoot();
+    const calls: string[] = [];
+    await expect(materializeNleHandoff(root, {
+      target: 'premiere-pro',
+      timelineName: 'Launch',
+      revisionId: 'rev-7',
+      extension: 'otio',
+      content: 'media={{asset:0}}',
+      assets: [
+        { token: '{{asset:0}}', source: `${HOST}/api/v1/projects/p/assets/a/media`, filename: 'clip.mov' },
+      ],
+    }, {
+      localFileOrigin: HOST,
+      fetch: async (url) => {
+        calls.push(String(url));
+        return Response.json(
+          { code: 'LOCAL_RESOURCE_MISSING', error: 'still downloading' },
+          { status: 404 },
+        );
+      },
+    })).rejects.toMatchObject({ code: 'NLE_HANDOFF_SOURCE_NOT_LOCAL' });
+
+    expect(calls).toEqual([`${HOST}/api/v1/projects/p/assets/a/local-file`]);
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it('fails a local Host file that cannot be copied with NLE_HANDOFF_LOCAL_FILE_FAILED', async () => {
+    const root = await tempRoot();
+    await expect(materializeNleHandoff(root, {
+      target: 'premiere-pro',
+      timelineName: 'Launch',
+      revisionId: 'rev-7',
+      extension: 'otio',
+      content: 'media={{asset:0}}',
+      assets: [
+        { token: '{{asset:0}}', source: `${HOST}/api/v1/projects/p/assets/a/media`, filename: 'clip.mov' },
+      ],
+    }, {
+      localFileOrigin: HOST,
+      fetch: async () => Response.json({ path: join(root, 'gone.mov'), byteLength: 1 }),
+    })).rejects.toMatchObject({ code: 'NLE_HANDOFF_LOCAL_FILE_FAILED' });
+
     expect(await readdir(root)).toEqual([]);
   });
 

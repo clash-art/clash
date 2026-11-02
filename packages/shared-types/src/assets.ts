@@ -255,6 +255,11 @@ z.enum([
   "LOCAL_RESOURCE_UNREADABLE",
   "LOCAL_RESOURCE_SIZE_MISMATCH",
   "LOCAL_RESOURCE_DIGEST_MISMATCH",
+  // Background download of a cloud Resource into this Host's store.
+  "LOCAL_RESOURCE_DOWNLOAD_FAILED",
+  "LOCAL_RESOURCE_DOWNLOAD_INTEGRITY",
+  "LOCAL_RESOURCE_REMOTE_MISSING",
+  "LOCAL_STORE_DISK_FULL",
 ])
 ), (real) => { LocalResourceErrorCodeSchema = real; });
 export type LocalResourceErrorCode = z.infer<

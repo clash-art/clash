@@ -120,7 +120,13 @@ export type ResourceRegistryResolution =
       createdAt?: number;
     }
   | { status: "ready"; resource: Resource; createdAt?: number }
-  | { status: "unavailable"; error?: string }
+  /** Bytes are queued or in flight from the cloud into this Host's store. */
+  | { status: "downloading"; progress?: number }
+  | {
+      status: "unavailable";
+      error?: string;
+      errorCode?: LocalResourceErrorCode;
+    }
   | { status: "failed"; error: string; errorCode?: LocalResourceErrorCode };
 
 export interface ResourceRegistryPort {
@@ -350,6 +356,17 @@ export async function resolveProjectAsset(
         "RESOURCE_CONTRACT_VIOLATION",
       );
     }
+    case "downloading":
+      return parseResolved(
+        {
+          ...base,
+          status: "downloading",
+          ...(registry.progress === undefined
+            ? {}
+            : { progress: registry.progress }),
+        },
+        "RESOURCE_CONTRACT_VIOLATION",
+      );
     case "unavailable":
     case "failed":
       return parseResolved(
@@ -357,7 +374,7 @@ export async function resolveProjectAsset(
           ...base,
           status: registry.status,
           ...(registry.error === undefined ? {} : { error: registry.error }),
-          ...(registry.status === "failed" && registry.errorCode !== undefined
+          ...(registry.errorCode !== undefined
             ? { errorCode: registry.errorCode }
             : {}),
         },
@@ -552,7 +569,8 @@ async function createEntry(
   if (resolution.status === "failed" || resolution.status === "unavailable") {
     throw registryFailure(entry, resolution);
   }
-  parseResource(resolution.resource, entry);
+  if (resolution.status !== "downloading")
+    parseResource(resolution.resource, entry);
   if (resolution.status !== "ready") {
     throw contractError(
       "RESOURCE_NOT_READY",

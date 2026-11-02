@@ -33,11 +33,12 @@ function bodyResponse(chunks: string[]): Response {
   }), { status: 200 });
 }
 
+/** Media on a remote Host: its bytes are not on this machine, so they stream. */
+const REMOTE_MEDIA = "https://host.example/api/v1/projects/p/assets/a/media";
+const LOCAL_MEDIA = "http://127.0.0.1:1234/api/v1/projects/p/assets/a/media";
+
 function streamFetch(chunks: string[]): TransferFetch {
-  return async (url) =>
-    url.endsWith("/local-file")
-      ? new Response("not a local asset", { status: 404 })
-      : bodyResponse(chunks);
+  return async () => bodyResponse(chunks);
 }
 
 describe("desktop Director camera video export", () => {
@@ -129,8 +130,61 @@ describe("desktop Director camera video export", () => {
         },
         { fetchImpl },
       ),
-    ).rejects.toMatchObject({ code: "DIRECTOR_VIDEO_EXPORT_DOWNLOAD_FAILED" });
+    ).rejects.toMatchObject({ code: "DIRECTOR_VIDEO_EXPORT_LOCAL_FILE_FAILED" });
 
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("fails fast with SOURCE_NOT_LOCAL while the local Host is still downloading the bytes, without streaming them", async () => {
+    const root = await tempRoot();
+    const target = join(root, "camera.webm");
+    const calls: string[] = [];
+    const fetchImpl: TransferFetch = async (url) => {
+      calls.push(url);
+      return Response.json(
+        {
+          code: "LOCAL_RESOURCE_MISSING",
+          error: "Resource r is still downloading to this Host (40%).",
+        },
+        { status: 404 },
+      );
+    };
+
+    const failure = exportDirectorVideoToFile(
+      { targetPath: target, sourceUrl: LOCAL_MEDIA },
+      { fetchImpl, localFileOrigin: "http://127.0.0.1:1234" },
+    );
+    await expect(failure).rejects.toMatchObject({
+      code: "DIRECTOR_VIDEO_EXPORT_SOURCE_NOT_LOCAL",
+    });
+    await expect(failure).rejects.toThrow("still downloading");
+    expect(calls).toEqual([
+      "http://127.0.0.1:1234/api/v1/projects/p/assets/a/local-file",
+    ]);
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("fails an unreadable local Host file with LOCAL_FILE_FAILED instead of streaming the media route", async () => {
+    const root = await tempRoot();
+    const target = join(root, "camera.webm");
+    const calls: string[] = [];
+    const fetchImpl: TransferFetch = async (url) => {
+      calls.push(url);
+      return Response.json(
+        { code: "LOCAL_RESOURCE_UNREADABLE", error: "permission denied" },
+        { status: 503 },
+      );
+    };
+
+    await expect(
+      exportDirectorVideoToFile(
+        { targetPath: target, sourceUrl: LOCAL_MEDIA },
+        { fetchImpl, localFileOrigin: "http://127.0.0.1:1234" },
+      ),
+    ).rejects.toMatchObject({ code: "DIRECTOR_VIDEO_EXPORT_LOCAL_FILE_FAILED" });
+    expect(calls).toEqual([
+      "http://127.0.0.1:1234/api/v1/projects/p/assets/a/local-file",
+    ]);
     expect(await readdir(root)).toEqual([]);
   });
 
@@ -155,12 +209,12 @@ describe("desktop Director camera video export", () => {
     expect(calls).toEqual(["http://127.0.0.1:9/media"]);
   });
 
-  it("streams the published Host video when no local file is exposed", async () => {
+  it("streams the published video from a remote Host", async () => {
     const root = await tempRoot();
     const target = join(root, "camera.webm");
 
     const result = await exportDirectorVideoToFile(
-      { targetPath: target, sourceUrl: "http://127.0.0.1:9/media" },
+      { targetPath: target, sourceUrl: REMOTE_MEDIA },
       {
         fetchImpl: streamFetch(["webm-head", "-webm-body"]),
       },
@@ -177,13 +231,8 @@ describe("desktop Director camera video export", () => {
 
     await expect(
       exportDirectorVideoToFile(
-        { targetPath: target, sourceUrl: "http://127.0.0.1:9/media" },
-        {
-          fetchImpl: async (url) =>
-            url.endsWith("/local-file")
-              ? new Response("not local", { status: 404 })
-              : new Response("missing", { status: 404 }),
-        },
+        { targetPath: target, sourceUrl: REMOTE_MEDIA },
+        { fetchImpl: async () => new Response("missing", { status: 404 }) },
       ),
     ).rejects.toMatchObject({ code: "DIRECTOR_VIDEO_EXPORT_DOWNLOAD_FAILED" });
 
@@ -193,16 +242,14 @@ describe("desktop Director camera video export", () => {
   it("fails a stalled Host transfer inside the timeout and leaves no partial file", async () => {
     const root = await tempRoot();
     const target = join(root, "camera.webm");
-    const stalled: typeof fetch = (input, init) =>
-      String(input).endsWith("/local-file")
-        ? Promise.resolve(new Response("not local", { status: 404 }))
-        : new Promise((_resolve, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-          });
+    const stalled: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
 
     await expect(
       exportDirectorVideoToFile(
-        { targetPath: target, sourceUrl: "http://127.0.0.1:9/media" },
+        { targetPath: target, sourceUrl: REMOTE_MEDIA },
         { fetchImpl: stalled, timeoutMs: 10 },
       ),
     ).rejects.toMatchObject({ code: "DIRECTOR_VIDEO_EXPORT_DOWNLOAD_FAILED" });
@@ -223,13 +270,8 @@ describe("desktop Director camera video export", () => {
 
     await expect(
       exportDirectorVideoToFile(
-        { targetPath: target, sourceUrl: "http://127.0.0.1:9/media" },
-        {
-          fetchImpl: async (url) =>
-            url.endsWith("/local-file")
-              ? new Response("not local", { status: 404 })
-              : failingBody(),
-        },
+        { targetPath: target, sourceUrl: REMOTE_MEDIA },
+        { fetchImpl: async () => failingBody() },
       ),
     ).rejects.toMatchObject({ code: "DIRECTOR_VIDEO_EXPORT_DOWNLOAD_FAILED" });
 

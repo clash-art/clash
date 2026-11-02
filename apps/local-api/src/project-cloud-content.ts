@@ -27,7 +27,7 @@ interface CloudContentFile extends ContentTransferLimits {
   signal?: AbortSignal;
 }
 
-class CloudContentIntegrityError extends Error {
+export class CloudContentIntegrityError extends Error {
   constructor() {
     super("Cloud content integrity mismatch");
   }

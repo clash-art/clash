@@ -59,6 +59,7 @@ import {
   PROJECT_ASSET_IMPORT_STAGING_REMOVED,
   sweepLocalResourceStaging,
 } from "./local-resource-store.js";
+import type { LocalResourceAvailability } from "./local-resource-prefetch.js";
 import {
   LOCAL_BLOB_SWEEP_FAILED,
   sweepLocalBlobs,
@@ -489,6 +490,15 @@ export interface LocalApiOptions {
   /** Starts the project room after admission so the initial Loro replica can be mirrored. */
   ensureProjectSync?: (projectId: string) => Promise<void>;
   onProjectChanged?: (projectId: string) => Promise<void>;
+  /** Background download of cloud Resource bytes into this Host's store. */
+  resourcePrefetch?: {
+    availability(resourceId: string): LocalResourceAvailability | undefined;
+    /** Queue a Project's missing bytes, these visible Assets first. */
+    prefetch(
+      projectId: string,
+      input: { visibleAssetIds?: readonly string[] },
+    ): Promise<void>;
+  };
   providerOAuth?: Partial<Record<ProviderOAuthId, ProviderOAuthDriver>>;
   providerPluginExecutor?: ProviderPluginExecutor;
   /** Host policy for a complete durable Provider run. Defaults to 30 minutes. */
@@ -1869,6 +1879,13 @@ function validateProjectAssetImportFile(
   }
   return undefined;
 }
+
+/** Project Assets a client is showing; their cloud bytes download first. */
+const ProjectAssetPrefetchRequestSchema = z
+  .object({
+    assetIds: z.array(z.string().trim().min(1).max(512)).max(1000),
+  })
+  .strict();
 
 /**
  * Loopback import by path. The body names a file on this machine instead of
@@ -4200,6 +4217,17 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       onResourceEvent: ({ level, event, fields }) => {
         projectAssetImportLog[level](event, fields);
       },
+      ...(options.resourcePrefetch
+        ? {
+            resourceAvailability: (resourceId: string) =>
+              options.resourcePrefetch?.availability(resourceId),
+            onResourceMissing: (projectId: string, projectAssetId: string) => {
+              void options.resourcePrefetch
+                ?.prefetch(projectId, { visibleAssetIds: [projectAssetId] })
+                .catch(() => undefined);
+            },
+          }
+        : {}),
     });
     return projectAssetService;
   };
@@ -5668,6 +5696,29 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     } catch (error) {
       return localProjectAssetErrorResponse(error);
     }
+  });
+
+  // Visible-Asset hint: a client showing these Assets (canvas viewport, open
+  // Timeline, preview) asks the Host to download their cloud bytes first. A
+  // local-only Project accepts the hint and does nothing.
+  app.post("/api/v1/projects/:projectId/assets/prefetch", async (c) => {
+    const body = ProjectAssetPrefetchRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success) {
+      return c.json(
+        {
+          error: "Invalid Project Asset prefetch request",
+          code: "INVALID_PROJECT_ASSET_PREFETCH",
+          details: body.error.issues,
+        },
+        400,
+      );
+    }
+    await options.resourcePrefetch?.prefetch(c.req.param("projectId"), {
+      visibleAssetIds: body.data.assetIds,
+    });
+    return c.json({ accepted: body.data.assetIds.length }, 202);
   });
 
   app.post("/api/v1/projects/:projectId/assets/import-file", async (c) => {

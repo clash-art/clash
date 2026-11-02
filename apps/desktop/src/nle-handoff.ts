@@ -1,13 +1,19 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { CodedError, codedError } from './desktop-ipc';
-import { writeUrlToFile, type TransferFetch } from './file-transfer';
+import {
+  hostLocalFileUrl,
+  resolveHostLocalFile,
+  writeUrlToFile,
+  type TransferFetch,
+} from './file-transfer';
 
 const execFileAsync = promisify(execFile);
 
@@ -123,7 +129,37 @@ export const NLE_HANDOFF_DOWNLOAD_TIMEOUT_MS = 30_000;
 export type MaterializeNleHandoffOptions = {
   fetch?: TransferFetch;
   downloadTimeoutMs?: number;
+  /** Media on this Host origin is copied from the Host store, never downloaded. */
+  localFileOrigin?: string;
 };
+
+/**
+ * Copies one local Host Asset from the Host's immutable store into the
+ * handoff folder (an APFS clone where the volume supports it). The NLE gets a
+ * file it may relink or modify without touching the store.
+ */
+async function copyLocalHostAsset(
+  localFileUrl: string,
+  targetPath: string,
+  options: MaterializeNleHandoffOptions,
+): Promise<void> {
+  const sourcePath = await resolveHostLocalFile(localFileUrl, {
+    ...(options.fetch ? { fetchImpl: options.fetch } : {}),
+    timeoutMs: options.downloadTimeoutMs ?? NLE_HANDOFF_DOWNLOAD_TIMEOUT_MS,
+    notLocalCode: 'NLE_HANDOFF_SOURCE_NOT_LOCAL',
+    failedCode: 'NLE_HANDOFF_LOCAL_FILE_FAILED',
+    label: 'handoff media',
+  });
+  try {
+    await copyFile(sourcePath, targetPath, constants.COPYFILE_FICLONE);
+  } catch (error) {
+    throw codedError(
+      'NLE_HANDOFF_LOCAL_FILE_FAILED',
+      'Could not copy handoff media from the Host store.',
+      error,
+    );
+  }
+}
 
 async function downloadRemoteAsset(
   source: string,
@@ -165,7 +201,12 @@ export async function materializeNleHandoff(
         asset.source,
         uniqueFilename,
       );
-      if (isRemoteSource(asset.source)) {
+      const localFileUrl = isRemoteSource(asset.source)
+        ? hostLocalFileUrl(asset.source, options.localFileOrigin)
+        : undefined;
+      if (localFileUrl) {
+        await copyLocalHostAsset(localFileUrl, tempPath, options);
+      } else if (isRemoteSource(asset.source)) {
         await downloadRemoteAsset(asset.source, tempPath, options);
       }
       materialized.push({ token: asset.token, path: finalPath });

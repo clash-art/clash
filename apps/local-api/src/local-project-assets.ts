@@ -72,6 +72,7 @@ import {
   type LocalAssetInspectionService,
 } from "./local-asset-inspections.js";
 import type { LocalAssetInspectionFacts } from "./local-asset-inspections.js";
+import type { LocalResourceAvailability } from "./local-resource-prefetch.js";
 import type { LocalAssetRepresentationService } from "./local-asset-representations.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import {
@@ -572,6 +573,12 @@ export function createLocalProjectAssetService(options: {
   readReceiptVerifier?: AgentReadReceiptVerifier;
   /** Host log sink for Resource-store events such as an EXDEV copy fallback. */
   onResourceEvent?: (event: LocalResourceStoreEvent) => void;
+  /** Background download state of a Resource not yet installed on this Host. */
+  resourceAvailability?: (
+    resourceId: string,
+  ) => LocalResourceAvailability | undefined;
+  /** A byte read missed this Host's store; raise that Resource's download priority. */
+  onResourceMissing?: (projectId: string, projectAssetId: string) => void;
 }): LocalProjectAssetService {
   const projectsRoot = `${options.dataDir}/projects`;
   const fileReplicas = new FileReplicaStore(projectsRoot);
@@ -727,6 +734,20 @@ export function createLocalProjectAssetService(options: {
     },
   };
 
+  /** Prefetch state wins over the bare missing state while bytes are on their way. */
+  function downloadResolution(resourceId: string) {
+    const download = options.resourceAvailability?.(resourceId);
+    if (download?.status === "downloading")
+      return { status: "downloading" as const, progress: download.progress };
+    if (download?.status === "failed")
+      return {
+        status: "failed" as const,
+        error: download.error,
+        errorCode: download.errorCode,
+      };
+    return undefined;
+  }
+
   const resolverPorts: AssetResolverPorts = {
     registry: {
       async resolve({ entry }) {
@@ -752,12 +773,20 @@ export function createLocalProjectAssetService(options: {
                   ...(contentType ? { contentType } : {}),
                 },
               }
-            : {
+            : (downloadResolution(entry.source.resourceId) ?? {
                 status: "unavailable" as const,
                 error:
                   "Immutable Resource bytes are not installed on this Host.",
-              };
+                errorCode: "LOCAL_RESOURCE_MISSING" as const,
+              });
         } catch (error) {
+          if (
+            error instanceof LocalResourceError &&
+            error.code === "LOCAL_RESOURCE_MISSING"
+          ) {
+            const download = downloadResolution(entry.source.resourceId);
+            if (download) return download;
+          }
           return {
             status: "failed" as const,
             error: error instanceof Error ? error.message : String(error),
@@ -1414,8 +1443,38 @@ export function createLocalProjectAssetService(options: {
     });
     const cached = projections.get(key);
     if (cached) return cached;
-    const projection = await resources.resolve(entry.source.resourceId);
-    if (!projection || projection.resource.kind !== entry.kind) {
+    const missing = (): LocalResourceError => {
+      // A read is waiting on these bytes: move them to the front of the queue.
+      options.onResourceMissing?.(projectId, entry.id);
+      const download = options.resourceAvailability?.(entry.source.resourceId);
+      if (download?.status === "failed")
+        return new LocalResourceError(
+          download.errorCode,
+          download.error.startsWith(`${download.errorCode}: `)
+            ? download.error.slice(download.errorCode.length + 2)
+            : download.error,
+          { resourceId: entry.source.resourceId },
+        );
+      return new LocalResourceError(
+        "LOCAL_RESOURCE_MISSING",
+        download?.status === "downloading"
+          ? `Resource ${entry.source.resourceId} is still downloading to this Host (${Math.round(download.progress * 100)}%).`
+          : `Resource ${entry.source.resourceId} is not installed on this Host.`,
+        { resourceId: entry.source.resourceId },
+      );
+    };
+    const projection = await resources
+      .resolve(entry.source.resourceId)
+      .catch((error: unknown) => {
+        if (
+          error instanceof LocalResourceError &&
+          error.code === "LOCAL_RESOURCE_MISSING"
+        )
+          throw missing();
+        throw error;
+      });
+    if (!projection) throw missing();
+    if (projection.resource.kind !== entry.kind) {
       throw new LocalProjectAssetMigrationError(
         "RESOURCE_DIGEST_UNAVAILABLE",
         `Resource ${entry.source.resourceId} is not installed on this Host.`,
