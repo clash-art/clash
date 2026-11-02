@@ -16,15 +16,11 @@ import {
   projectAssetMutationReadTokenFromDoc,
   readProjectAsset,
   ACTION_ASSET_BINDING_AUTHORITY_VERSION,
-  Canvas,
   actionAssetBindingAuthorityVersion,
   createActionAssetBinding,
   listActionAssetBindings,
-  listProjectCanvases,
-  listProjectDirectorStages,
-  listProjectTimelines,
   markActionAssetBindingAuthority,
-  planLegacyActionAssetBindingMaterialization,
+  planLegacyActionAssetBindingMaterializationForDoc,
   restoreProjectAsset,
   trashProjectAssetIfUnreferenced,
   validateAgentReadProof,
@@ -387,16 +383,12 @@ export function ensureActionAssetBindingAuthority(
       ok: false,
       error: `Unsupported Action Asset binding authority version ${version}.`,
     };
-  const plan = planLegacyActionAssetBindingMaterialization({
-    projectAssetIds: listProjectAssets(doc, { projectId })
+  const plan = planLegacyActionAssetBindingMaterializationForDoc(
+    doc,
+    listProjectAssets(doc, { projectId })
       .filter((entry) => entry.lifecycle.state === "active")
       .map((entry) => entry.id),
-    canvasNodes: listProjectCanvases(doc).flatMap((canvas) =>
-      new Canvas(doc, () => undefined, canvas.id).listNodes(),
-    ),
-    timelines: listProjectTimelines(doc),
-    directorStages: listProjectDirectorStages(doc),
-  });
+  );
   if (plan.conflicts.length > 0)
     return { ok: false, error: plan.conflicts[0]!.message };
   const existing = new Set(listActionAssetBindings(doc).map((b) => b.id));

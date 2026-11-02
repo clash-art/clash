@@ -1,7 +1,17 @@
+import type { LoroDoc } from "loro-crdt";
 import type { ActionAssetBinding, ActionBindingOwner } from "./assets.js";
 import type { CanvasNode } from "./canvas.js";
-import type { ProjectDirectorStage } from "./director-stage.js";
-import type { ProjectTimeline } from "./project-workspace.js";
+import { Canvas } from "./canvas-ops.js";
+import {
+  listProjectDirectorStages,
+  type ProjectDirectorStage,
+} from "./director-stage.js";
+import {
+  DEFAULT_CANVAS_ID,
+  listProjectCanvases,
+  listProjectTimelines,
+  type ProjectTimeline,
+} from "./project-workspace.js";
 import { canvasActionAssetInputs } from "./canvas-action-asset-inputs.js";
 
 export type LegacyActionAssetBindingConflictCode =
@@ -326,4 +336,28 @@ export function planLegacyActionAssetBindingMaterialization(
         left.projectAssetId.localeCompare(right.projectAssetId),
     ),
   };
+}
+
+/**
+ * Plans the cutover for every Action a Project document holds. Legacy Projects
+ * predate the Canvas registry: their nodes live on the implicit default Canvas
+ * with no `canvases` entry, so it is always read. Otherwise its Actions, a
+ * pending one included, would get no binding and their Assets could be trashed.
+ */
+export function planLegacyActionAssetBindingMaterializationForDoc(
+  doc: LoroDoc,
+  projectAssetIds: readonly string[],
+): LegacyActionAssetBindingMaterializationPlan {
+  const canvasIds = new Set([
+    DEFAULT_CANVAS_ID,
+    ...listProjectCanvases(doc).map((canvas) => canvas.id),
+  ]);
+  return planLegacyActionAssetBindingMaterialization({
+    projectAssetIds,
+    canvasNodes: [...canvasIds].flatMap((canvasId) =>
+      new Canvas(doc, () => undefined, canvasId).listNodes(),
+    ),
+    timelines: listProjectTimelines(doc),
+    directorStages: listProjectDirectorStages(doc),
+  });
 }

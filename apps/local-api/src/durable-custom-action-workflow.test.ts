@@ -467,18 +467,28 @@ describe("durable executable custom Action", () => {
         }),
       }),
     ]);
+    // The node lives on the implicit default Canvas, so its authored input also
+    // keeps a draft binding beside the current run's frozen one.
     expect(
       listActionAssetReferences(recoveredDoc, "asset-replacement"),
-    ).toEqual([
-      expect.objectContaining({
-        direction: "input",
-        slot: "image:0",
-        projectAssetId: "asset-replacement",
-        owner: expect.objectContaining({
-          actionRunId: currentInvocation?.taskId,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          direction: "input",
+          slot: "image:0",
+          projectAssetId: "asset-replacement",
+          owner: { kind: "draft", actionId: "node:action-node" },
         }),
-      }),
-    ]);
+        expect.objectContaining({
+          direction: "input",
+          slot: "image:0",
+          projectAssetId: "asset-replacement",
+          owner: expect.objectContaining({
+            actionRunId: currentInvocation?.taskId,
+          }),
+        }),
+      ]),
+    );
     expect(recoveredDoc.getMap("nodes").get("action-node")).toMatchObject({
       data: {
         status: "completed",

@@ -12,20 +12,16 @@ import {
 } from "@clash/asset-sdk";
 import {
   ACTION_ASSET_BINDING_AUTHORITY_VERSION,
-  Canvas,
   actionAssetBindingAuthorityVersion,
   createActionAssetBinding,
   createProjectAsset,
   ensureActionAssetBinding,
   listActionAssetBindings,
   listActionAssetReferences,
-  listProjectCanvases,
-  listProjectDirectorStages,
   listProjectAssets,
-  listProjectTimelines,
   markActionAssetBindingAuthority,
   markProjectAssetAuthority,
-  planLegacyActionAssetBindingMaterialization,
+  planLegacyActionAssetBindingMaterializationForDoc,
   projectAssetAuthorityVersion,
   projectAssetMutationReadTokenFromDoc,
   ProjectAssetMetadataSchema,
@@ -546,14 +542,10 @@ function actionAssetBindingPlanForDoc(
   doc: import("loro-crdt").LoroDoc,
   projectAssetIds: readonly string[],
 ) {
-  return planLegacyActionAssetBindingMaterialization({
+  return planLegacyActionAssetBindingMaterializationForDoc(
+    doc,
     projectAssetIds,
-    canvasNodes: listProjectCanvases(doc).flatMap((canvas) =>
-      new Canvas(doc, () => undefined, canvas.id).listNodes(),
-    ),
-    timelines: listProjectTimelines(doc),
-    directorStages: listProjectDirectorStages(doc),
-  });
+  );
 }
 
 function assertActionAssetBindingPlan(
@@ -1226,10 +1218,14 @@ export function createLocalProjectAssetService(options: {
     ];
     const plan = actionAssetBindingPlanForDoc(doc, candidateIds);
     assertActionAssetBindingPlan(plan);
+    // A binding to a Project Asset the document already holds needs no legacy
+    // install; only metadata-backed candidates are pulled into the membership.
     return legacyEntries(
       projectId,
       legacy,
-      plan.bindings.map((binding) => binding.projectAssetId),
+      plan.bindings
+        .map((binding) => binding.projectAssetId)
+        .filter((id) => !existing.has(id)),
     );
   }
 
@@ -1385,8 +1381,7 @@ export function createLocalProjectAssetService(options: {
       // An empty unmigrated Project has nothing to migrate; treating it as
       // current keeps a brand-new Dashboard card from opening a room just to
       // publish an empty Asset container.
-      assetAuthorityCurrent:
-        assetAuthorityCurrent || entries.length === 0,
+      assetAuthorityCurrent: assetAuthorityCurrent || entries.length === 0,
       entries,
       coverAssetId: readProjectCoverAssetId(doc),
       preview: projectCanvasPreviewCacheEntryFromDoc(doc),
@@ -1398,9 +1393,7 @@ export function createLocalProjectAssetService(options: {
     entries: readonly ProjectAssetEntry[],
   ): Promise<ResolvedAsset[]> {
     const projectId = nonEmpty(projectIdInput, "projectId");
-    return Promise.all(
-      entries.map((entry) => resolveEntry(projectId, entry)),
-    );
+    return Promise.all(entries.map((entry) => resolveEntry(projectId, entry)));
   }
 
   async function projectionFromEntry(
@@ -1723,9 +1716,7 @@ export function createLocalProjectAssetService(options: {
       },
       resourceId,
     );
-    return decision.replay
-      ? existingResolved(projectId, projectAssetId)
-      : null;
+    return decision.replay ? existingResolved(projectId, projectAssetId) : null;
   }
 
   return {

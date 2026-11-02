@@ -1564,6 +1564,7 @@ export {
 
 export {
   planLegacyActionAssetBindingMaterialization,
+  planLegacyActionAssetBindingMaterializationForDoc,
   type LegacyActionAssetBindingConflictCode,
   type LegacyActionAssetBindingConflict,
   type LegacyActionAssetBindingMaterializationInput,

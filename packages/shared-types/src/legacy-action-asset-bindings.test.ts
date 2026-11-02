@@ -1,8 +1,19 @@
+import { LoroDoc } from "loro-crdt";
 import { describe, expect, it } from "vitest";
 
-import { CanvasNodeSchema } from "./canvas.js";
+import {
+  createActionAssetBinding,
+  markActionAssetBindingAuthority,
+  storedDraftActionAssetInputs,
+  trashProjectAssetIfUnreferenced,
+} from "./action-asset-bindings.js";
+import { ACTION_TYPE, buildPendingAssetNode, CanvasNodeSchema } from "./canvas.js";
 import { createDefaultDirectorStageState } from "./director-stage.js";
-import { planLegacyActionAssetBindingMaterialization } from "./legacy-action-asset-bindings.js";
+import {
+  planLegacyActionAssetBindingMaterialization,
+  planLegacyActionAssetBindingMaterializationForDoc,
+} from "./legacy-action-asset-bindings.js";
+import { createProjectAsset, readProjectAsset } from "./project-assets.js";
 import type { ProjectTimeline } from "./project-workspace.js";
 
 function node(
@@ -378,6 +389,69 @@ describe("legacy Action Asset binding materialization", () => {
         binding.projectAssetId.startsWith("builtin:"),
       ),
     ).toBe(false);
+  });
+
+  it("migrates a pending Action on a legacy implicit Canvas so trashing its Asset is refused (#239)", () => {
+    const doc = new LoroDoc();
+    expect(
+      createProjectAsset(doc, {
+        id: "asset-reference",
+        kind: "image",
+        source: { kind: "owned", resourceId: `sha256:${"a".repeat(64)}` },
+        lifecycle: { state: "active" },
+        metadata: { bytes: 1, contentType: "image/png" },
+      }).ok,
+    ).toBe(true);
+    // A legacy Project: no Canvas registry, no canvasId, a generation in flight.
+    const pending = buildPendingAssetNode({
+      nodeId: "pending",
+      prompt: "Animate it",
+      modelId: "gpt-image-2",
+      modelParams: {},
+      actionType: ACTION_TYPE.ImageGen,
+      referenceImageAssetIds: ["asset-reference"],
+    });
+    doc.getMap("nodes").set("pending", {
+      type: pending.type,
+      position: { x: 0, y: 0 },
+      data: { ...pending.data, status: "generating" },
+    });
+    expect(doc.getMap("canvases").size).toBe(0);
+
+    const plan = planLegacyActionAssetBindingMaterializationForDoc(doc, [
+      "asset-reference",
+    ]);
+    expect(plan.conflicts).toEqual([]);
+    for (const binding of plan.bindings) {
+      expect(createActionAssetBinding(doc, binding).ok).toBe(true);
+    }
+    expect(markActionAssetBindingAuthority(doc).ok).toBe(true);
+
+    expect(storedDraftActionAssetInputs(doc, "node:pending")).toEqual([
+      expect.objectContaining({ projectAssetId: "asset-reference" }),
+    ]);
+    expect(
+      trashProjectAssetIfUnreferenced(doc, {
+        id: "asset-reference",
+        deleteOperationId: "trash-1",
+        deletedAt: "2026-10-01T00:00:00.000Z",
+        purgeAfter: "2026-11-01T00:00:00.000Z",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: {
+        code: "ASSET_IN_USE",
+        references: [
+          expect.objectContaining({
+            owner: { kind: "draft", actionId: "node:pending" },
+            direction: "input",
+          }),
+        ],
+      },
+    });
+    expect(readProjectAsset(doc, "asset-reference")?.lifecycle.state).toBe(
+      "active",
+    );
   });
 
   it("reports missing identities and conflicting stable slots before cutover", () => {
