@@ -47,12 +47,17 @@ function downgradeResourceToPrePromotionRow(
   resourceId: string,
 ): void {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
+    DatabaseSync: new (
+      path: string,
+      options?: { timeout?: number },
+    ) => {
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), {
+    timeout: 5_000,
+  });
   try {
     database
       .prepare(
@@ -1020,6 +1025,51 @@ describe("Local Project Asset service", () => {
 
     await service.materialize("legacy-pending-project");
 
+    expect(listActionAssetReferences(doc, "reference")).toEqual([
+      expect.objectContaining({
+        owner: { kind: "draft", actionId: "node:pending" },
+        direction: "input",
+      }),
+    ]);
+  });
+
+  it("binds a default-Canvas Action to a Project Asset the unmarked doc already holds without a legacy row (#239)", async () => {
+    const doc = new LoroDoc();
+    expect(
+      createProjectAsset(doc, {
+        id: "reference",
+        kind: "image",
+        source: { kind: "owned", resourceId: `sha256:${"a".repeat(64)}` },
+        lifecycle: { state: "active" },
+        metadata: { bytes: 1, contentType: "image/png" },
+      }),
+    ).toMatchObject({ ok: true });
+    const pending = buildPendingAssetNode({
+      nodeId: "pending",
+      prompt: "Animate it",
+      modelId: "gpt-image-2",
+      modelParams: {},
+      actionType: ACTION_TYPE.ImageGen,
+      referenceImageAssetIds: ["reference"],
+    });
+    doc.getMap("nodes").set("pending", {
+      type: pending.type,
+      position: { x: 0, y: 0 },
+      data: { ...pending.data, status: "generating" },
+    });
+    const { dataDir } = await fixture();
+    const service = createLocalProjectAssetService({
+      dataDir,
+      projectionOrigin: "http://127.0.0.1:49152",
+      replica: {
+        inspect: async (_projectId, read) => read(doc),
+        mutate: async (_projectId, mutation) => (await mutation(doc)).value,
+      },
+    });
+
+    await service.materializeDoc("unmarked-project", doc);
+
+    expect(projectAssetAuthorityVersion(doc)).toBe(1);
     expect(listActionAssetReferences(doc, "reference")).toEqual([
       expect.objectContaining({
         owner: { kind: "draft", actionId: "node:pending" },
