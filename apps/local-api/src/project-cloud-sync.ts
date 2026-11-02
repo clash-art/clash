@@ -13,6 +13,7 @@ import {
   createProjectMetadataReplicator,
   metadataBodyBlobPath,
 } from "@clash/shared-runtime";
+import { createStructuredLogger } from "@clash/shared-runtime/logging";
 import { projectSyncContent } from "@clash/shared-types/project-sync-content";
 import {
   ResourceSchema,
@@ -48,6 +49,13 @@ import {
 } from "./project-cloud-content.js";
 import type { LocalAssetInspectionService } from "./local-asset-inspections.js";
 import type { LocalLoroRoomHub, RemoteLoroPersistence } from "./sync.js";
+
+const PROJECT_CLOUD_PULL_STAGING_DISCARD_FAILED =
+  "PROJECT_CLOUD_PULL_STAGING_DISCARD_FAILED";
+const projectCloudSyncLog = createStructuredLogger({
+  component: "local-api",
+  module: "project-cloud-sync",
+});
 
 class ProjectContentHttpError extends Error {
   constructor(readonly status: number) {
@@ -263,6 +271,43 @@ export function createLocalProjectCloudSync(
         options,
       );
     };
+    /**
+     * Seals staged download bytes under their replicated identity. A failed
+     * pull drops its staging name; bytes it already sealed have no reference
+     * yet, so the blob sweep reclaims them after the grace period.
+     */
+    const installPulled = async (
+      resource: Resource,
+      resourceId: string,
+    ): Promise<void> => {
+      try {
+        await assertCurrent();
+        const inspected = await options.inspection.finalize({
+          resourceId,
+          kind: resource.kind,
+          contentType: resource.contentType,
+        });
+        await resources.installReplica({
+          resource,
+          verifiedResourceId: inspected.source.resource.id,
+        });
+        // The download is sealed; its staging copy is no longer needed.
+        await resources.releaseStaged(resourceId);
+      } catch (error) {
+        await resources.discardStaged(resourceId).catch((discardError) => {
+          projectCloudSyncLog.error("project_cloud_sync.staging_discard_failed", {
+            code: PROJECT_CLOUD_PULL_STAGING_DISCARD_FAILED,
+            projectId,
+            resourceId,
+            message:
+              discardError instanceof Error
+                ? discardError.message
+                : String(discardError),
+          });
+        });
+        throw error;
+      }
+    };
     const bytes: ResourceByteStore = {
       async read(id) {
         const facts = await resources.readFacts(id);
@@ -273,16 +318,7 @@ export function createLocalProjectCloudSync(
       },
       async write({ resource, bytes }) {
         const staged = await resources.stage({ bytes });
-        const inspected = await options.inspection.finalize({
-          resourceId: staged.resourceId,
-          kind: resource.kind,
-          contentType: resource.contentType,
-        });
-        await resources.installReplica({
-          resource,
-          verifiedResourceId: inspected.source.resource.id,
-        });
-        await resources.releaseStaged(staged.resourceId);
+        await installPulled(resource, staged.resourceId);
       },
     };
     const coordinator = createProjectCloudSyncCoordinator({
@@ -542,18 +578,7 @@ export function createLocalProjectCloudSync(
                 maxByteLength: contentTransferMaxBytes(options.maxBytes),
                 expectedDigest: resource.digest.value,
               });
-              await assertCurrent();
-              const inspected = await options.inspection.finalize({
-                resourceId: staged.resourceId,
-                kind: resource.kind,
-                contentType: resource.contentType,
-              });
-              await resources.installReplica({
-                resource,
-                verifiedResourceId: inspected.source.resource.id,
-              });
-              // The download is sealed; its staging copy is no longer needed.
-              await resources.releaseStaged(staged.resourceId);
+              await installPulled(resource, staged.resourceId);
             }
           }
           for (const body of refs.documents) {

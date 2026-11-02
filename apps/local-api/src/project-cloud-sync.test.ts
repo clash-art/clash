@@ -618,7 +618,10 @@ it("shutdown interrupts a hanging content request without waiting for the networ
   expect((await f.admission())?.status).not.toBe("ready");
 });
 
-async function receiverFor(source: Awaited<ReturnType<typeof fixture>>) {
+async function receiverFor(
+  source: Awaited<ReturnType<typeof fixture>>,
+  afterSeal?: () => void,
+) {
   const dataDir = await mkdtemp(join(tmpdir(), "cloud-receiver-"));
   cleanup.push(async () => {
     await closeLocalSqliteClient();
@@ -647,10 +650,11 @@ async function receiverFor(source: Awaited<ReturnType<typeof fixture>>) {
     dataDir,
     rooms,
     inspection: {
-      finalize: async (input) => ({
-        source: await resources.seal(input),
-        facts: {} as any,
-      }),
+      finalize: async (input) => {
+        const sealed = await resources.seal(input);
+        afterSeal?.();
+        return { source: sealed, facts: {} as any };
+      },
     },
   });
   cleanup.push(() => receiver.close());
@@ -725,6 +729,35 @@ it("a download that fails verification leaves no bytes behind and a retry stores
   // attempt left no partial file and the retry left no staging file.
   expect(await filesUnder(dirname(dirname(local!.path)))).toEqual([
     local!.path,
+  ]);
+});
+
+it("a pull that fails after staging drops its staging bytes and a retry completes", async () => {
+  const source = await fixture();
+  const media = await source.addResource("fails-after-staging");
+  await source.service.schedule("project");
+  expect((await source.admission())?.status).toBe("ready");
+  await source.service.close();
+  await source.rooms.close();
+  let failing = true;
+  const { resources, receiver, admission } = await receiverFor(source, () => {
+    if (failing) throw new Error("inspection failed after sealing");
+  });
+  await receiver.schedule("project");
+  expect((await admission())?.status).toBe("failed");
+  await expect(
+    resources.resolveStaged(media.source.resource.id),
+  ).resolves.toBeUndefined();
+  const sealed = await resources.resolve(media.source.resource.id);
+  expect(await filesUnder(dirname(dirname(sealed!.path)))).toEqual([
+    sealed!.path,
+  ]);
+
+  failing = false;
+  await receiver.schedule("project");
+  expect((await admission())?.status).toBe("ready");
+  expect(await filesUnder(dirname(dirname(sealed!.path)))).toEqual([
+    sealed!.path,
   ]);
 });
 
