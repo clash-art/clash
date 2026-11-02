@@ -59,6 +59,11 @@ import {
   PROJECT_ASSET_IMPORT_STAGING_REMOVED,
   sweepLocalResourceStaging,
 } from "./local-resource-store.js";
+import {
+  LOCAL_BLOB_SWEEP_FAILED,
+  sweepLocalBlobs,
+  type LocalBlobSweepResult,
+} from "./local-blob-sweep.js";
 import { serveImmutableFileProjection } from "./immutable-file-projection.js";
 import {
   handleProjectCommand,
@@ -4016,6 +4021,14 @@ const projectAssetImportLog = createStructuredLogger({
   component: "local-api",
   module: "project-asset-import",
 });
+const localBlobLog = createStructuredLogger({
+  component: "local-api",
+  module: "local-blobs",
+});
+const PROJECT_PURGE_REPLICA_DELETE_FAILED =
+  "PROJECT_PURGE_REPLICA_DELETE_FAILED";
+const LOCAL_BLOB_SWEEP_FIRST_DELAY_MS = 10 * 60 * 1000;
+const LOCAL_BLOB_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Wait for work an app started after answering a request, such as the
@@ -4257,6 +4270,69 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   );
   localResourceStagingSweepTimer.unref?.();
   sweepLocalResourceStagingNow();
+  // Mark-and-sweep over sealed blobs reads every Project replica, so it runs
+  // rarely and not during startup. A purge sweeps at once; this pass reclaims
+  // failed imports and pulls past their grace period and retries failures.
+  const replicasPendingDelete = new Set<string>();
+  const runLocalBlobSweep = async (): Promise<LocalBlobSweepResult> => {
+    for (const projectId of [...replicasPendingDelete]) {
+      try {
+        // A later import may have reused this id; its replica is not garbage.
+        const state = await db.load();
+        if (!state.projects.some((project) => project.id === projectId)) {
+          await replicaStore.deleteReplica(projectId);
+        }
+        replicasPendingDelete.delete(projectId);
+      } catch (error) {
+        localBlobLog.error("local_blobs.replica_delete_failed", {
+          code: PROJECT_PURGE_REPLICA_DELETE_FAILED,
+          projectId,
+          errno: (error as NodeJS.ErrnoException | null)?.code,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    // A stale staging receipt pins its digest, so it goes first.
+    sweepLocalResourceStagingNow();
+    await localResourceStagingSweep;
+    const result = await sweepLocalBlobs({ dataDir: options.dataDir, clashRoot });
+    for (const failure of result.failed) {
+      localBlobLog.error("local_blobs.sweep_failed", { ...failure });
+    }
+    localBlobLog.info("local_blobs.swept", {
+      scanned: result.scanned,
+      deleted: result.deleted,
+      bytes: result.bytes,
+      failed: result.failed.length,
+    });
+    return result;
+  };
+  let localBlobSweepRunning: Promise<LocalBlobSweepResult> | undefined;
+  let localBlobSweepQueued: Promise<LocalBlobSweepResult> | undefined;
+  /** A caller needs a mark that started after its own purge, so one more may queue. */
+  const sweepLocalBlobsNow = (): Promise<LocalBlobSweepResult> => {
+    if (!localBlobSweepRunning) {
+      localBlobSweepRunning = runLocalBlobSweep().finally(() => {
+        localBlobSweepRunning = undefined;
+      });
+      return localBlobSweepRunning;
+    }
+    localBlobSweepQueued ??= localBlobSweepRunning.then(() => {
+      localBlobSweepQueued = undefined;
+      return sweepLocalBlobsNow();
+    });
+    return localBlobSweepQueued;
+  };
+  const localBlobSweepStartTimer = setTimeout(
+    () => void sweepLocalBlobsNow(),
+    LOCAL_BLOB_SWEEP_FIRST_DELAY_MS,
+  );
+  localBlobSweepStartTimer.unref?.();
+  const localBlobSweepTimer = setInterval(
+    () => void sweepLocalBlobsNow(),
+    LOCAL_BLOB_SWEEP_INTERVAL_MS,
+  );
+  localBlobSweepTimer.unref?.();
   let importSessionSecret: Promise<string> | undefined;
   const importSessionSecretAt = () =>
     (importSessionSecret ??= resolveProviderSecretKey(options.dataDir).then(
@@ -4811,7 +4887,11 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       : undefined;
   backgroundWorkDrains.set(app, async () => {
     clearInterval(importStagingSweepTimer);
+    clearTimeout(localBlobSweepStartTimer);
+    clearInterval(localBlobSweepTimer);
     await importStagingSweep;
+    await localBlobSweepQueued;
+    await localBlobSweepRunning;
     await projectMetadataReplication.idle();
   });
   const generatorProduct =
@@ -13023,7 +13103,12 @@ const ForkPointBodySchema = z.object({
       // Invalidate before deleting the replica so a failed deletion cannot
       // leave a materialized fact that describes the purged Project.
       replicaStore.invalidateProjectAssetCaches(projectId);
-      await replicaStore.deleteReplica(projectId);
+      let replicaDeleteError: unknown;
+      try {
+        await replicaStore.deleteReplica(projectId);
+      } catch (error) {
+        replicaDeleteError = error ?? new Error("Replica delete failed");
+      }
       const mutation = result.body.mutation as HostMutationRecord | undefined;
       if (mutation?.accepted === true) {
         await db.appendMutationAudit(
@@ -13034,7 +13119,48 @@ const ForkPointBodySchema = z.object({
           }),
         );
       }
-      return c.json({ ...result.body, replicaDeleted: true }, result.status);
+      if (replicaDeleteError !== undefined) {
+        // The metadata is gone, so this purge cannot be re-requested: the blob
+        // sweep retries the delete. Until then the replica pins its blobs.
+        replicasPendingDelete.add(projectId);
+        const errno = (replicaDeleteError as NodeJS.ErrnoException).code;
+        localBlobLog.error("local_blobs.replica_delete_failed", {
+          code: PROJECT_PURGE_REPLICA_DELETE_FAILED,
+          projectId,
+          errno,
+          message:
+            replicaDeleteError instanceof Error
+              ? replicaDeleteError.message
+              : String(replicaDeleteError),
+        });
+        return c.json(
+          {
+            ...result.body,
+            replicaDeleted: false,
+            code: PROJECT_PURGE_REPLICA_DELETE_FAILED,
+            error: `Project ${projectId} was purged but its local replica could not be deleted${errno ? ` (${errno})` : ""}. The Host retries the delete.`,
+          },
+          500,
+        );
+      }
+      const blobs = await sweepLocalBlobsNow();
+      return c.json(
+        {
+          ...result.body,
+          replicaDeleted: true,
+          // Failures name local paths, so those stay in the Host log.
+          blobs: {
+            scanned: blobs.scanned,
+            deleted: blobs.deleted,
+            bytes: blobs.bytes,
+            failed: blobs.failed.length,
+            ...(blobs.failed.length > 0
+              ? { code: LOCAL_BLOB_SWEEP_FAILED }
+              : {}),
+          },
+        },
+        result.status,
+      );
     }
     return c.json(result.body, result.status);
   });

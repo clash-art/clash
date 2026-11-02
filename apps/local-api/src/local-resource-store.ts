@@ -625,6 +625,31 @@ function sameFacts(
   );
 }
 
+const blobDigestLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Serializes sealing and sweeping of one content address inside the Host
+ * process. A seal checks its row, links its file and indexes it across several
+ * awaits; a sweep deleting the same digest in between would unlink bytes the
+ * seal just published.
+ */
+export async function withLocalBlobDigestLock<T>(
+  digest: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = blobDigestLocks.get(digest) ?? Promise.resolve();
+  const next = previous.then(task, task);
+  const settled = next.catch(() => undefined);
+  blobDigestLocks.set(digest, settled);
+  try {
+    return await next;
+  } finally {
+    if (blobDigestLocks.get(digest) === settled) {
+      blobDigestLocks.delete(digest);
+    }
+  }
+}
+
 export function createLocalResourceStore(options: {
   dataDir: string;
   clashRoot?: string;
@@ -810,7 +835,19 @@ export function createLocalResourceStore(options: {
     await chmod(input.targetPath, 0o444);
   }
 
-  async function sealResource(
+  function sealResource(
+    input: LocalResourceSealInput,
+    factsVerified: boolean,
+  ): Promise<LocalResourceProjection> {
+    const lockKey =
+      input.receipt?.digest ??
+      String(input.resourceId).trim().replace(/^sha256:/, "");
+    return withLocalBlobDigestLock(lockKey, () =>
+      sealResourceUnlocked(input, factsVerified),
+    );
+  }
+
+  async function sealResourceUnlocked(
     input: LocalResourceSealInput,
     factsVerified: boolean,
   ): Promise<LocalResourceProjection> {
