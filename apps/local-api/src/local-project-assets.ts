@@ -1558,17 +1558,29 @@ export function createLocalProjectAssetService(options: {
       );
     }
     if (input.duplicateContent === "reject" && !current) {
-      const existingProjectAssetIds = entries
-        .filter(
-          (entry) => entry.lifecycle.state === "active" && sameContent(entry),
-        )
-        .map((entry) => entry.id)
-        .sort();
+      const holders = (state: "active" | "trashed") =>
+        entries
+          .filter(
+            (entry) => entry.lifecycle.state === state && sameContent(entry),
+          )
+          .map((entry) => entry.id)
+          .sort();
+      const existingProjectAssetIds = holders("active");
       if (existingProjectAssetIds.length > 0) {
         throw new LocalProjectAssetMigrationError(
           "PROJECT_ASSET_DUPLICATE_CONTENT",
           `This content is already imported as Project Asset ${existingProjectAssetIds.join(", ")}. Nothing was imported as ${projectAssetId}.`,
           { projectAssetId, existingProjectAssetIds },
+        );
+      }
+      // A fresh id (every GUI drop mints one) never hits the same-id trash
+      // check above, so name the trashed holder: restoring it is the action.
+      const trashedProjectAssetIds = holders("trashed");
+      if (trashedProjectAssetIds.length > 0) {
+        throw new LocalProjectAssetMigrationError(
+          "PROJECT_ASSET_TRASHED",
+          `This content is already in the Project as Project Asset ${trashedProjectAssetIds.join(", ")}, which is in the trash. Nothing was imported as ${projectAssetId}: restore it instead.`,
+          { projectAssetId, existingProjectAssetIds: trashedProjectAssetIds },
         );
       }
     }

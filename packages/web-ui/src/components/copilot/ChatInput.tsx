@@ -21,7 +21,14 @@ import {
 import { lazy } from "react";
 import { useTranslation } from "react-i18next";
 import { useDropzone, type Accept } from "react-dropzone";
-import { importProjectAssetFile } from "@clash/web-ui/lib/hooks/useAsset";
+import {
+  getAsset,
+  importProjectAssetFile,
+  projectAssetImportConflict,
+  restoreProjectAsset,
+  type ProjectAssetImportConflict,
+} from "@clash/web-ui/lib/hooks/useAsset";
+import { projectAssetDisplayName } from "../../features/assets/projectAssetPresentation";
 import {
   getRuntimeCapabilities,
   runtimeApiUrl,
@@ -38,6 +45,7 @@ import {
 import type {
   AgentAnnotationDraft,
   CopilotProjectAssetReference,
+  ResolvedAsset,
 } from "@clash/shared-types";
 import type { MilkdownEditorHandle, MentionableNode } from "../MilkdownEditor";
 import { AgentAnnotationTray } from "./AgentAnnotationBlock";
@@ -277,6 +285,20 @@ const DROPZONE_ACCEPT = {
   "audio/*": [],
 } satisfies Accept;
 
+/** A file the Host refused because the Project already holds its bytes. */
+interface ImportConflictNotice extends ProjectAssetImportConflict {
+  id: number;
+  projectId: string;
+  file: File;
+  type: CopilotProjectAssetReference["kind"];
+  /** The holder's display name, or its id when it could not be read. */
+  label: string;
+  pending?: boolean;
+  error?: string;
+}
+
+type ImportConflictAction = "use" | "import" | "restore";
+
 // ─── Component ───────────────────────────────────────────────
 
 function ComposerInlineContent({
@@ -353,6 +375,31 @@ function ChatInputInner(
   );
 
   // ─── File upload → insert into editor on complete ──────────
+  const insertAsset = useCallback(
+    (
+      asset: ResolvedAsset,
+      name: string,
+      type: CopilotProjectAssetReference["kind"],
+    ) => {
+      if (!asset.url)
+        throw new Error("Imported Project Asset is not locally available");
+      const marker = projectAssetComposerMarker(asset.id);
+      let md: string;
+      if (type === "image") md = `![${name}](${asset.url} "${marker}")`;
+      else if (type === "video") md = `[🎬 ${name}](${asset.url} "${marker}")`;
+      else md = `[🔊 ${name}](${asset.url} "${marker}")`;
+      editorRef.current?.insertAtCursor(md + " ");
+    },
+    [],
+  );
+
+  // A drop that repeats bytes the Project already holds imports nothing; the
+  // user chooses between the existing Asset and an explicit second copy.
+  const [importConflicts, setImportConflicts] = useState<
+    ImportConflictNotice[]
+  >([]);
+  const importConflictSequence = useRef(0);
+
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
       const owningProjectId = projectId ?? (await ensureProjectId?.());
@@ -364,19 +411,35 @@ function ChatInputInner(
 
         setUploading((n) => n + 1);
         try {
-          let md: string;
           const asset = await importProjectAssetFile(owningProjectId, file, {
             kind: type,
+            duplicateContent: "reject",
           });
-          if (!asset.url)
-            throw new Error("Imported Project Asset is not locally available");
-          const marker = projectAssetComposerMarker(asset.id);
-          if (type === "image") md = `![${name}](${asset.url} "${marker}")`;
-          else if (type === "video")
-            md = `[🎬 ${name}](${asset.url} "${marker}")`;
-          else md = `[🔊 ${name}](${asset.url} "${marker}")`;
-          editorRef.current?.insertAtCursor(md + " ");
+          insertAsset(asset, name, type);
         } catch (err) {
+          const conflict = projectAssetImportConflict(err);
+          if (conflict) {
+            const holder = await getAsset(
+              owningProjectId,
+              conflict.projectAssetId,
+            ).catch(() => undefined);
+            importConflictSequence.current += 1;
+            const id = importConflictSequence.current;
+            setImportConflicts((current) => [
+              ...current,
+              {
+                ...conflict,
+                id,
+                projectId: owningProjectId,
+                file,
+                type,
+                label: holder
+                  ? projectAssetDisplayName(holder)
+                  : conflict.projectAssetId,
+              },
+            ]);
+            return;
+          }
           console.error("[ChatInput] upload failed:", err);
           editorRef.current?.insertAtCursor(
             t("copilot.chatInput.uploadFailed", { name }),
@@ -386,8 +449,56 @@ function ChatInputInner(
         }
       });
     },
-    [ensureProjectId, projectId, t],
+    [ensureProjectId, insertAsset, projectId, t],
   );
+
+  const resolveImportConflict = useCallback(
+    async (notice: ImportConflictNotice, action: ImportConflictAction) => {
+      setImportConflicts((current) =>
+        current.map((entry) =>
+          entry.id === notice.id
+            ? { ...entry, pending: true, error: undefined }
+            : entry,
+        ),
+      );
+      try {
+        if (action === "import") {
+          const asset = await importProjectAssetFile(
+            notice.projectId,
+            notice.file,
+            { kind: notice.type, duplicateContent: "allow" },
+          );
+          insertAsset(asset, notice.file.name, notice.type);
+        } else {
+          const asset =
+            action === "restore"
+              ? await restoreProjectAsset(
+                  notice.projectId,
+                  notice.projectAssetId,
+                )
+              : await getAsset(notice.projectId, notice.projectAssetId);
+          insertAsset(asset, projectAssetDisplayName(asset), notice.type);
+        }
+        setImportConflicts((current) =>
+          current.filter((entry) => entry.id !== notice.id),
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setImportConflicts((current) =>
+          current.map((entry) =>
+            entry.id === notice.id
+              ? { ...entry, pending: false, error: message }
+              : entry,
+          ),
+        );
+      }
+    },
+    [insertAsset],
+  );
+
+  const dismissImportConflict = useCallback((id: number) => {
+    setImportConflicts((current) => current.filter((entry) => entry.id !== id));
+  }, []);
 
   const actionLocked = isCreatingSession || disabled;
   const attachmentsEnabled = Boolean(
@@ -701,6 +812,77 @@ function ChatInputInner(
             </motion.div>
           )}
         </AnimatePresence>
+
+        {importConflicts.length > 0 ? (
+          <div
+            data-slot="composer-import-conflicts"
+            className="mb-2 flex flex-col gap-1.5"
+          >
+            {importConflicts.map((notice) => (
+              <InlineAlert
+                key={notice.id}
+                tone="warning"
+                data-import-conflict={notice.kind}
+                title={
+                  notice.kind === "trashed"
+                    ? t("copilot.chatInput.importConflict.trashed", {
+                        name: notice.file.name,
+                        asset: notice.label,
+                      })
+                    : t("copilot.chatInput.importConflict.duplicate", {
+                        name: notice.file.name,
+                        asset: notice.label,
+                      })
+                }
+                message={notice.error}
+                action={
+                  <span className="flex items-center gap-1">
+                    {notice.kind === "trashed" ? (
+                      <Button
+                        size="sm"
+                        disabled={notice.pending}
+                        onClick={() =>
+                          void resolveImportConflict(notice, "restore")
+                        }
+                      >
+                        {t("copilot.chatInput.importConflict.restore")}
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          size="sm"
+                          disabled={notice.pending}
+                          onClick={() =>
+                            void resolveImportConflict(notice, "use")
+                          }
+                        >
+                          {t("copilot.chatInput.importConflict.useExisting")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={notice.pending}
+                          onClick={() =>
+                            void resolveImportConflict(notice, "import")
+                          }
+                        >
+                          {t("copilot.chatInput.importConflict.importAnyway")}
+                        </Button>
+                      </>
+                    )}
+                    <IconButton
+                      label={t("copilot.chatInput.importConflict.dismiss")}
+                      icon={<X className="h-3.5 w-3.5" weight="bold" />}
+                      size="sm"
+                      disabled={notice.pending}
+                      onClick={() => dismissImportConflict(notice.id)}
+                      className="text-current opacity-60 hover:bg-black/5 hover:text-current hover:opacity-100"
+                    />
+                  </span>
+                }
+              />
+            ))}
+          </div>
+        ) : null}
 
         {/* Main input card */}
         <div

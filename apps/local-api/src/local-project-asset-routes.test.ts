@@ -1209,6 +1209,60 @@ describe("Project-scoped ResolvedAsset routes", () => {
     });
   });
 
+  it("names a trashed holder when the same bytes arrive under a fresh id and duplicates are rejected", async () => {
+    const { app } = await fixture();
+    const base = "http://127.0.0.1:49152/api/v1/projects/project-a/assets";
+    const request = (
+      projectAssetId: string,
+      extra: Record<string, string> = {},
+    ) => {
+      const form = new FormData();
+      form.set(
+        "file",
+        new File(["dropped image"], "hero.png", { type: "image/png" }),
+      );
+      form.set("kind", "image");
+      form.set("projectAssetId", projectAssetId);
+      for (const [key, value] of Object.entries(extra)) form.set(key, value);
+      return app.request(`${base}/import-file`, { method: "POST", body: form });
+    };
+    expect((await request("asset-first")).status).toBe(201);
+    const trashed = await app.request(
+      `${base}/asset-first`,
+      projectTrashRequest("delete:dropped"),
+    );
+    expect(trashed.status, await trashed.clone().text()).toBe(200);
+
+    // A GUI drop mints a new id every time, so the same-id trash check alone
+    // would let the second drop add a fresh copy beside the trashed one.
+    const dropped = await request("asset-second", {
+      duplicateContent: "reject",
+    });
+    expect(dropped.status, await dropped.clone().text()).toBe(409);
+    await expect(dropped.json()).resolves.toMatchObject({
+      code: "PROJECT_ASSET_TRASHED",
+      projectAssetId: "asset-second",
+      existingProjectAssetIds: ["asset-first"],
+    });
+    const listed = (await (await app.request(base)).json()) as {
+      assets: Array<{ id: string }>;
+    };
+    expect(listed.assets.map(({ id }) => id)).not.toContain("asset-second");
+
+    // An active copy wins over the trashed one: it is the Asset to use.
+    expect((await request("asset-copy")).status).toBe(201);
+    await expect(
+      (await request("asset-third", { duplicateContent: "reject" })).json(),
+    ).resolves.toMatchObject({
+      code: "PROJECT_ASSET_DUPLICATE_CONTENT",
+      existingProjectAssetIds: ["asset-copy"],
+    });
+    // Asking for a second copy is still possible.
+    expect(
+      (await request("asset-fourth", { duplicateContent: "allow" })).status,
+    ).toBe(201);
+  });
+
   it("publishes edit outputs as ResolvedAsset and records Action input/output bindings", async () => {
     const { app, dataDir } = await fixture();
     const importForm = new FormData();

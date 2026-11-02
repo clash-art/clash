@@ -252,20 +252,38 @@ export function projectAssetRecovery(
         ],
       };
     }
-    case "PROJECT_ASSET_TRASHED":
-      if (!requested) return undefined;
+    case "PROJECT_ASSET_TRASHED": {
+      // A fresh id whose bytes sit in the trash under another id names that
+      // holder; a re-import of the trashed id itself names nothing extra.
+      const holder = stringList(body.existingProjectAssetIds)[0];
+      const trashed = holder ?? requested;
+      if (!trashed) return undefined;
+      const elsewhere = holder !== undefined && holder !== requested;
       return {
         code,
-        problem: `Project Asset ${requested} already holds this content and is in the trash. Importing it again does not bring it back.`,
+        problem: elsewhere
+          ? `This file is already in the Project as Project Asset ${holder}, which is in the trash; nothing new was imported${requested ? ` as ${requested}` : ""}. Importing it again does not bring it back.`
+          : `Project Asset ${trashed} already holds this content and is in the trash. Importing it again does not bring it back.`,
         steps: [
           {
             why: "Read the trashed Asset",
             operation: "get",
-            assetId: requested,
+            assetId: trashed,
           },
-          { why: "then restore it", operation: "restore", assetId: requested },
+          { why: "then restore it", operation: "restore", assetId: trashed },
+          ...(elsewhere
+            ? ([
+                {
+                  why: "Only if a second independent Asset over the same bytes is intended",
+                  operation: "import",
+                  ...(requested ? { projectAssetId: requested } : {}),
+                  allowDuplicate: true,
+                },
+              ] satisfies ProjectAssetRecoveryStep[])
+            : []),
         ],
       };
+    }
     case "PROJECT_ASSET_ID_COLLISION":
       if (!requested) return undefined;
       return {

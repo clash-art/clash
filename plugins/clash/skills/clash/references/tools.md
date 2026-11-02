@@ -60,8 +60,9 @@ contract rather than guessing a spelling.
 Importing bytes the Project already holds under another ID fails with
 `PROJECT_ASSET_DUPLICATE_CONTENT` and names the existing Asset; use that Asset,
 or pass `allowDuplicate: true` (`--allow-duplicate`) only when a second
-independent Asset is intended. Re-importing a trashed Asset fails with
-`PROJECT_ASSET_TRASHED`: restore it instead. Asset errors state what went
+independent Asset is intended. Re-importing a trashed Asset, or bytes that only
+a trashed Asset holds, fails with `PROJECT_ASSET_TRASHED` and names it: restore
+it instead. Asset errors state what went
 wrong and list the exact next calls (`structuredContent.error.nextSteps` on
 MCP, a `Next:` block on the CLI); follow them rather than retrying variations.
 A trash result includes the restore call that undoes it.
