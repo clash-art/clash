@@ -115,6 +115,8 @@ export interface RemoteLoroPersistence {
     commit(batchId: string, updates: Uint8Array[]): Promise<void>;
     /** Optional transport-state observer implemented by the WebSocket link. */
     onState?(state: CloudReplicaLinkState): void;
+    /** Re-checks admission before each automatic reconnect. */
+    beforeReconnect?(): Promise<void>;
   }): ReplicaLinkPort<Uint8Array>;
 }
 
@@ -553,7 +555,7 @@ export function createHttpRemoteLoroPersistence(
       }
       await assertRemoteOk(response, "metadata save");
     },
-    createLink({ projectId, doc, commit, onState }) {
+    createLink({ projectId, doc, commit, onState, beforeReconnect }) {
       return new LoroCloudReplicaLink({
         baseUrl: options.baseUrl,
         projectId,
@@ -561,6 +563,7 @@ export function createHttpRemoteLoroPersistence(
         doc,
         commit,
         onState,
+        beforeReconnect,
       });
     },
   };
@@ -1960,6 +1963,11 @@ export class LocalLoroRoom {
     }
   }
 
+  /** Same coded state room clients receive; undefined when nothing is wrong. */
+  projectRemoteState(): ProjectRemoteStateMessage | undefined {
+    return this.remoteState && { ...this.remoteState };
+  }
+
   projectHealth(): LocalProjectHealthSummary {
     const failures: LocalProjectHealth[] = [];
     if (this.checkpointFailure) {
@@ -2432,15 +2440,7 @@ export class LocalLoroRoom {
     if (this.remoteLink || !remotePersistence?.createLink) {
       return this.remoteLink;
     }
-    const link = remotePersistence.createLink({
-      projectId: this.projectId,
-      doc: () => this.doc,
-      commit: (batchId, updates) => this.receiveCloudUpdates(batchId, updates),
-      onState: (state) => this.reportCloudLinkState(state),
-    });
-    this.remoteLink = link;
-    void Promise.resolve(link.start()).catch((error) => {
-      if (this.remoteLink === link) this.remoteLink = undefined;
+    const failStart = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       this.reportCloudLinkState({
         state: "stopped",
@@ -2449,13 +2449,40 @@ export class LocalLoroRoom {
       });
       console.error("[local-sync] failed to start cloud replica link", error);
       this.reportRemoteMirrorFailure(error);
-    });
+    };
+    let link: ReplicaLinkPort<Uint8Array>;
+    try {
+      link = remotePersistence.createLink({
+        projectId: this.projectId,
+        doc: () => this.doc,
+        commit: (batchId, updates) =>
+          this.receiveCloudUpdates(batchId, updates),
+        onState: (state) => this.reportCloudLinkState(state),
+      });
+    } catch (error) {
+      failStart(error);
+      return undefined;
+    }
+    this.remoteLink = link;
+    // The executor turns a synchronous start() throw into the same rejection.
+    void new Promise<void>((resolve) => resolve(link.start())).catch(
+      (error) => {
+        // Already stopped and replaced: its failure must not mark the new link.
+        if (this.remoteLink === link) failStart(error);
+      },
+    );
     return link;
   }
 
   private reportCloudLinkState(state: CloudReplicaLinkState): void {
     if (this.closed) return;
     this.cloudLinkState = state;
+    // A link that stopped by itself is finished: without this the room would
+    // keep publishing into it and never attach a replacement. An action-required
+    // link stays attached so each local edit does not retry a refused credential.
+    if (state.state === "stopped" && state.code !== "CLOUD_LINK_ACTION_REQUIRED") {
+      this.remoteLink = undefined;
+    }
     this.publishRemoteState();
   }
 
@@ -2893,6 +2920,11 @@ export class LocalLoroRoomHub {
       ...(failures[0]?.code ? { code: failures[0].code } : {}),
       failures,
     };
+  }
+
+  /** A Project without an open room has no link, and opening one here would start it. */
+  projectRemoteState(projectId: string): ProjectRemoteStateMessage | undefined {
+    return this.checkpointReadableRooms.get(projectId)?.projectRemoteState();
   }
 
   /** Live Project socket clients, across every open room. */

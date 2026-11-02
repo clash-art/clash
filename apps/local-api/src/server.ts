@@ -2056,6 +2056,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     },
     projectHealth: () =>
       roomHub?.projectHealth() ?? { ok: true, failures: [] },
+    projectRemoteState: (projectId) => roomHub?.projectRemoteState(projectId),
     generatorProjectAuthority: checkpointedProjectAuthority,
     documentProjectAuthority: checkpointedProjectAuthority,
     workspaceProjectAuthority: checkpointedProjectAuthority,

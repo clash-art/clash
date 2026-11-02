@@ -1,8 +1,12 @@
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { LoroDoc } from "loro-crdt";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CloudReplicaLinkState } from "./loro/cloud-replica-link";
 import { createLocalSyncConfigStore } from "./sync-config";
 import { createLocalMetadataStore } from "./local-metadata-store";
 import { createClashUserConfigStore } from "./user-config";
@@ -152,6 +156,163 @@ it("never resolves a global transport for an unadmitted Project or another repli
     admittedAt: "2026-09-04T00:00:00Z", updatedAt: "2026-09-04T00:00:00Z", lastError: null,
   });
   expect(await store.resolveRemotePersistence("private-project")).toBeUndefined();
+});
+
+describe("cloud link admission", () => {
+  let server: Server;
+  let requests = 0;
+  let baseUrl = "";
+
+  beforeEach(async () => {
+    requests = 0;
+    // Answers every discovery with 503, so the link is always in its retry loop.
+    server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(503).end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterEach(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  async function admittedLink() {
+    const { createCloudAccounts } = await import("./cloud-accounts.js");
+    const accounts = createCloudAccounts(dataDir);
+    await accounts.save(baseUrl, {
+      token: "test-token",
+      user: { id: "u", name: "User", email: "u@example.test" },
+    });
+    const metadataStore = createLocalMetadataStore(dataDir);
+    const admission = {
+      schemaVersion: 1 as const,
+      projectId: "p",
+      tenantId: "t",
+      userId: "u",
+      localReplicaId: await getLocalReplicaId(dataDir),
+      syncBaseUrl: baseUrl,
+      status: "ready" as const,
+      capabilities: { canvas: true, projectMetadata: true, resources: true },
+      admittedAt: null,
+      updatedAt: new Date().toISOString(),
+      lastError: null,
+    };
+    await metadataStore.upsertProjectCloudAdmission(admission);
+    const remote = await createLocalSyncConfigStore({
+      dataDir,
+      env: {},
+    }).resolveRemotePersistence("p");
+    const states: CloudReplicaLinkState[] = [];
+    const commit = vi.fn(async () => {});
+    const link = remote!.createLink!({
+      projectId: "p",
+      doc: () => new LoroDoc(),
+      commit,
+      onState: (state) => states.push(state),
+    });
+    const revoke = () =>
+      metadataStore.upsertProjectCloudAdmission({
+        ...admission,
+        status: "local-only",
+      });
+    return { accounts, link, states, revoke };
+  }
+
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 700));
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stops retrying with a coded state when admission is revoked offline", async () => {
+    const { link, states, revoke } = await admittedLink();
+    await link.start();
+    await vi.waitFor(() =>
+      expect(states.at(-1)).toMatchObject({
+        state: "retrying",
+        code: "CLOUD_LINK_UNREACHABLE",
+        retryAt: expect.any(String),
+      }),
+    );
+    await revoke();
+    await vi.waitFor(() =>
+      expect(states.at(-1)).toMatchObject({
+        state: "stopped",
+        code: "CLOUD_LINK_NOT_ADMITTED",
+        message: "Project cloud admission was revoked or changed",
+      }),
+    );
+    const attempts = requests;
+    await settled();
+    expect(requests).toBe(attempts);
+    expect(states.at(-1)?.code).toBe("CLOUD_LINK_NOT_ADMITTED");
+  });
+
+  it("stops retrying when the account signs out", async () => {
+    const { accounts, link, states } = await admittedLink();
+    await link.start();
+    await vi.waitFor(() =>
+      expect(states.at(-1)).toMatchObject({ state: "retrying" }),
+    );
+    await accounts.logout(baseUrl);
+    await vi.waitFor(() =>
+      expect(states.at(-1)).toMatchObject({
+        state: "stopped",
+        code: "CLOUD_LINK_NOT_ADMITTED",
+      }),
+    );
+    const attempts = requests;
+    await settled();
+    expect(requests).toBe(attempts);
+  });
+
+  it("stops with a coded state when a publish finds admission revoked", async () => {
+    const { link, states, revoke } = await admittedLink();
+    await link.start();
+    await revoke();
+    await expect(link.publish(new Uint8Array([1]))).rejects.toThrow(
+      "Project cloud admission was revoked or changed",
+    );
+    expect(states.at(-1)).toMatchObject({
+      state: "stopped",
+      code: "CLOUD_LINK_NOT_ADMITTED",
+    });
+    const attempts = requests;
+    await settled();
+    expect(requests).toBe(attempts);
+    // A later publish still rejects but does not report a second stop.
+    const reported = states.length;
+    await expect(link.publish(new Uint8Array([2]))).rejects.toThrow();
+    expect(states).toHaveLength(reported);
+  });
+
+  it("does not start a link that was closed during its admission check", async () => {
+    const { link, states } = await admittedLink();
+    const starting = link.start();
+    await link.close();
+    await starting;
+    await settled();
+    expect(requests).toBe(0);
+    expect(states.map((state) => state.state)).not.toContain("connecting");
+  });
+
+  it("fails start with a coded rejection when admission is already gone", async () => {
+    const { link, revoke } = await admittedLink();
+    await revoke();
+    await expect(link.start()).rejects.toMatchObject({
+      code: "CLOUD_LINK_NOT_ADMITTED",
+    });
+    expect(requests).toBe(0);
+  });
 });
 
 it('does not create a project transport after its cloud account signs out',async()=>{

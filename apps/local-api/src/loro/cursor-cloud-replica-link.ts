@@ -4,6 +4,7 @@ import { createReplicaStreamClient } from "@clash/replica/replica-stream-client"
 import { classifySyncError } from "@clash/shared-types";
 import {
   CloudReplicaLinkActionRequiredError,
+  cloudReplicaReconnectDelay,
   type CloudReplicaLinkState,
   type LoroCloudReplicaLinkOptions,
 } from "./cloud-replica-link.js";
@@ -19,6 +20,7 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   private cursor: string | null = null;
   private stopped = true;
   private retry: ReturnType<typeof setTimeout> | undefined;
+  private failures = 0;
   private uploads: Promise<void> = Promise.resolve();
   private client: ReturnType<typeof createReplicaStreamClient> | undefined;
   constructor(
@@ -28,8 +30,13 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   start() {
     if (!this.stopped) return;
     this.stopped = false;
+    this.failures = 0;
     this.state({ state: "connecting" });
-    this.connect();
+    try {
+      this.connect();
+    } catch (error) {
+      this.failed(error);
+    }
   }
   publish(update: Uint8Array) {
     const bytes = update.slice();
@@ -88,21 +95,36 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       error instanceof Error ? error : Error(String(error)),
     );
     this.options.onDisconnected?.();
-    this.state({
-      state: "retrying",
-      code: "CLOUD_LINK_UNREACHABLE",
-      message: error instanceof Error ? error.message : String(error),
-      retryAt: new Date(Date.now() + 1000).toISOString(),
-    });
     const old = this.client;
     this.client = undefined;
     void old?.close();
-    if (!this.retry)
-      this.retry = setTimeout(() => {
-        this.retry = undefined;
-        if (!this.stopped) this.connect();
-      }, 1000);
+    if (this.retry) return;
+    const delay = cloudReplicaReconnectDelay(this.failures, this.options);
+    this.failures += 1;
+    this.state({
+      state: "retrying",
+      // The SDK bounds connects itself and reports the expiry as code "timeout".
+      code:
+        (error as { code?: unknown } | null)?.code === "timeout"
+          ? "CLOUD_LINK_HANDSHAKE_TIMEOUT"
+          : "CLOUD_LINK_UNREACHABLE",
+      message: error instanceof Error ? error.message : String(error),
+      attempt: this.failures,
+      retryAt: new Date(Date.now() + delay).toISOString(),
+    });
+    this.retry = setTimeout(() => {
+      this.retry = undefined;
+      void this.reconnect();
+    }, delay);
     this.retry.unref();
+  }
+  private async reconnect() {
+    try {
+      await this.options.beforeReconnect?.();
+      if (!this.stopped) this.connect();
+    } catch (error) {
+      this.failed(error);
+    }
   }
   private connect() {
     // Re-export local durable state on a new connection to recover uploads lost while offline.
@@ -133,6 +155,7 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
           .append(this.id(local), local)
           .then(() => {
             if (this.client === client) {
+              this.failures = 0;
               this.options.onJoined?.();
             }
           })

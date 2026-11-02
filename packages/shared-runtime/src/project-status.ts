@@ -1,6 +1,7 @@
 import {
   ProjectCloudAdmissionSchema,
   type ProjectCloudAdmission,
+  type ProjectRemoteStateMessage,
 } from "@clash/shared-types";
 
 export type ProjectStatusSource = "explicit" | "marker" | "env";
@@ -400,6 +401,8 @@ export interface ProjectStatus {
   protectedPaths: string[];
   collaboration: ProjectStatusCollaboration;
   storage: ProjectStatusStorage;
+  /** Coded cloud link/snapshot problem of the Host's open room; absent when none. */
+  remoteState?: ProjectRemoteStateMessage;
 }
 
 export function buildProjectRecoveryPolicy(

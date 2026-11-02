@@ -26,6 +26,7 @@ export type ReplicaLinkSocketFactory = (
 ) => ReplicaLinkSocket;
 
 export const CLOUD_REPLICA_HANDSHAKE_TIMEOUT_MS = 10_000;
+export const CLOUD_REPLICA_DISCOVERY_TIMEOUT_MS = 5_000;
 export const CLOUD_REPLICA_RECONNECT_BASE_MS = 500;
 export const CLOUD_REPLICA_RECONNECT_MAX_MS = 30_000;
 
@@ -33,6 +34,7 @@ export type CloudReplicaLinkStatusCode =
   | "CLOUD_LINK_HANDSHAKE_TIMEOUT"
   | "CLOUD_LINK_UNREACHABLE"
   | "CLOUD_LINK_ACTION_REQUIRED"
+  | "CLOUD_LINK_NOT_ADMITTED"
   | "CLOUD_LINK_START_FAILED";
 
 /** Host-visible transport state; also returned to Web/desktop room clients. */
@@ -67,6 +69,12 @@ export interface LoroCloudReplicaLinkOptions {
   onActionRequired?(classification: SyncErrorClassification, error: Error): void;
   /** Transport state for the room; a failed start() is reported here too. */
   onState?(state: CloudReplicaLinkState): void;
+  /**
+   * Runs before every automatic reconnect. It may close the link (lost
+   * admission), which leaves no attempt and no timer behind; a rejection on a
+   * link that is still open counts as one more transient failure.
+   */
+  beforeReconnect?(): Promise<void>;
   /** Bound for the TCP + WebSocket upgrade handshake. Defaults to 10 s. */
   handshakeTimeoutMs?: number;
   /** Initial reconnect ceiling; full jitter picks a delay in [0, ceiling). */
@@ -105,6 +113,25 @@ function bytesFromRawData(data: RawData | Uint8Array): Uint8Array {
   return new Uint8Array(data as ArrayBuffer);
 }
 
+/**
+ * Full jitter: pick uniformly below an exponentially growing ceiling so many
+ * offline Hosts do not retry in lockstep and a permanent outage settles at the
+ * cap instead of hammering every few seconds forever.
+ */
+export function cloudReplicaReconnectDelay(
+  failures: number,
+  options: Pick<
+    LoroCloudReplicaLinkOptions,
+    "reconnectBaseMs" | "reconnectMaxMs" | "random"
+  >,
+): number {
+  const base = options.reconnectBaseMs ?? CLOUD_REPLICA_RECONNECT_BASE_MS;
+  const cap = options.reconnectMaxMs ?? CLOUD_REPLICA_RECONNECT_MAX_MS;
+  const ceiling = Math.min(cap, base * 2 ** Math.min(failures, 30));
+  const random = options.random ?? Math.random;
+  return Math.max(1, Math.floor(random() * ceiling));
+}
+
 /** Node transport adapter. Replica semantics remain in @clash/replica. */
 export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   private socket: ReplicaLinkSocket | undefined;
@@ -117,6 +144,8 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   private transport: "unknown" | "loro" | "cursor" = "unknown";
   private blocked: SyncErrorClassification | undefined;
   private handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Bumped by start() so a pre-reconnect check from an older run stays inert. */
+  private generation = 0;
 
   /** Set when the link stopped retrying because the user must act. */
   get actionRequired(): SyncErrorClassification | undefined {
@@ -130,8 +159,16 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     this.stopped = false;
     this.blocked = undefined;
     this.retry = 0;
+    this.generation += 1;
     this.emitState({ state: "connecting" });
-    this.connect();
+    try {
+      // Discovery runs detached, so a bad URL has to fail here to reach the caller.
+      cloudRoomUrl(this.options.baseUrl, this.options.projectId);
+      this.connect();
+    } catch (error) {
+      this.stopped = true;
+      throw error;
+    }
   }
 
   publish(update: Uint8Array): void {
@@ -164,6 +201,8 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       void this.discoverTransport();
       return;
     }
+    // Read before the socket exists: a socket without listeners cannot fail safely.
+    const doc = this.options.doc();
     const headers: Record<string, string> = this.options.token
       ? { authorization: `Bearer ${this.options.token}` }
       : {};
@@ -203,7 +242,7 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     this.handshakeTimer.unref?.();
     const session = new LoroProtocolClientSession({
       roomId: this.options.projectId,
-      doc: this.options.doc(),
+      doc,
       send: (frame) => {
         // A socket may leave OPEN after an update was durably imported but
         // before its ACK is sent. That is a transport disconnect, not an
@@ -242,10 +281,11 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     });
     let upgradeStatus: number | undefined;
     socket.on("error", (error: Error) => {
+      // Aborting the timed-out handshake makes the transport raise its own error.
+      if (handshakeTimedOut) return;
       const status = UPGRADE_STATUS.exec(error?.message ?? "")?.[1];
       if (status) upgradeStatus = Number(status);
       if (
-        !handshakeTimedOut &&
         /handshake (?:has )?timed out|handshake timeout/iu.test(
           error?.message ?? "",
         )
@@ -299,7 +339,15 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     url.pathname = `${url.pathname.replace(/\/+$/u, "")}/api/v1/projects/${encodeURIComponent(this.options.projectId)}/replica`;
     const controller = new AbortController();
     this.discovery = controller;
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeoutMs = Math.min(
+      CLOUD_REPLICA_DISCOVERY_TIMEOUT_MS,
+      this.options.handshakeTimeoutMs ?? CLOUD_REPLICA_HANDSHAKE_TIMEOUT_MS,
+    );
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const response = await fetch(url, {
         headers: this.options.token
@@ -335,10 +383,18 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       this.cursorLink.start();
     } catch (error) {
       if (!this.stopped && this.discovery === controller) {
-        const failure =
-          error instanceof Error ? error : Error(String(error));
+        // Discovery is the first step of a default connect, so a blackholed
+        // endpoint times out here before any WebSocket is opened.
+        const failure = timedOut
+          ? Error(`Cloud replica discovery timed out after ${timeoutMs} ms`)
+          : error instanceof Error
+            ? error
+            : Error(String(error));
         this.report(failure);
-        this.scheduleReconnect("CLOUD_LINK_UNREACHABLE", failure);
+        this.scheduleReconnect(
+          timedOut ? "CLOUD_LINK_HANDSHAKE_TIMEOUT" : "CLOUD_LINK_UNREACHABLE",
+          failure,
+        );
       }
     } finally {
       clearTimeout(timeout);
@@ -370,16 +426,7 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     error?: Error,
   ): void {
     if (this.stopped || this.reconnectTimer) return;
-    const base =
-      this.options.reconnectBaseMs ?? CLOUD_REPLICA_RECONNECT_BASE_MS;
-    const cap =
-      this.options.reconnectMaxMs ?? CLOUD_REPLICA_RECONNECT_MAX_MS;
-    // Full jitter: pick uniformly below an exponentially growing ceiling so
-    // many offline Hosts do not retry in lockstep and a permanent outage
-    // settles at the cap instead of hammering every 5 s forever.
-    const ceiling = Math.min(cap, base * 2 ** Math.min(this.retry, 30));
-    const random = this.options.random ?? Math.random;
-    const delay = Math.max(1, Math.floor(random() * ceiling));
+    const delay = cloudReplicaReconnectDelay(this.retry, this.options);
     this.retry += 1;
     const retryAt = new Date(Date.now() + delay).toISOString();
     this.emitState({
@@ -391,9 +438,23 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      this.connect();
+      void this.reconnect();
     }, delay);
     this.reconnectTimer.unref?.();
+  }
+
+  private async reconnect(): Promise<void> {
+    const generation = this.generation;
+    const superseded = () => this.stopped || generation !== this.generation;
+    try {
+      await this.options.beforeReconnect?.();
+      if (!superseded()) this.connect();
+    } catch (error) {
+      if (superseded()) return;
+      const failure = error instanceof Error ? error : Error(String(error));
+      this.report(failure);
+      this.scheduleReconnect("CLOUD_LINK_UNREACHABLE", failure);
+    }
   }
 
   private emitState(state: CloudReplicaLinkState): void {

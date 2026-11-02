@@ -9,7 +9,7 @@
   "key_files": {
     "file-replica-store.ts": "Atomic snapshot and framed update-log filesystem storage.",
     "replica-ports.ts": "File storage adapter for the portable ReplicaEngine.",
-    "cloud-replica-link.ts": "Reconnectable Node WebSocket adapter for official Loro protocol server-to-server sync.",
+    "cloud-replica-link.ts": "Reconnectable Node WebSocket adapter for official Loro protocol server-to-server sync. Bounded discovery and handshake, full-jitter backoff shared with the cursor link, coded onState, beforeReconnect admission gate.",
     "cloud-replication.chaos.test.ts": "Two durable local replicas and a restartable cloud core under loss, duplicate, reorder, partition, checkpoint, and restart faults.",
     "cursor-cloud-replica-link.ts": "Local Host SDK snapshot/log/SSE recovery and append. No cloud checkpoint computation, timers or upload. Offsets advance after commit; offline upload limit 8 MiB."
   }
