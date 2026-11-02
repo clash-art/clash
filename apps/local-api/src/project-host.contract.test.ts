@@ -104,6 +104,8 @@ describeProjectHostContract("local-api (desktop Host)", async () => {
       "catalog.generators": "supported",
       "catalog.views": "supported",
       "catalog.actions": "supported",
+      // Local plugins stream outputs through plugin-upload slot tokens.
+      "actions.remote-outputs": "unavailable",
       "timeline.list": "supported",
       "timeline.create": "supported",
       "timeline.update": "supported",

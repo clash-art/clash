@@ -13541,6 +13541,18 @@ const ForkPointBodySchema = z.object({
     if (!accepted) return c.json({ error: "unknown upload" }, 404);
     return c.json({ ok: true });
   });
+  // Remote plugins' run-scoped output grants are a cloud Host transport; local
+  // plugins stream through the slot tokens above. 501, never a 404.
+  app.all("/assets/plugin-output/*", (c) =>
+    c.json(
+      {
+        error:
+          "Remote plugin outputs are not uploaded to this Host; local plugins use plugin-upload slots.",
+        code: "COMMAND_UNAVAILABLE",
+      },
+      501,
+    ),
+  );
 
   app.post("/api/v1/director-model-generations", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as {

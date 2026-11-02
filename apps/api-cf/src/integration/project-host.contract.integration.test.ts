@@ -74,6 +74,7 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
       "catalog.generators": "supported",
       "catalog.views": "supported",
       "catalog.actions": "supported",
+      "actions.remote-outputs": "supported",
       "timeline.list": "supported",
       "timeline.create": "supported",
       "timeline.update": "supported",

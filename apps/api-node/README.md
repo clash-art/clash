@@ -416,7 +416,24 @@ commands and hosted agent runtime endpoints still need their actual adapters.
 Unsupported commands return an explicit error; they are not acknowledged as
 successful work.
 
+## Plugin Actions
+
+The Node adapter does not run plugin Actions. It has no executable binding
+resolution and no Action invoker, so it also has no remote plugin output path:
+the Cloudflare adapter's run-scoped upload sessions under
+`/assets/plugin-output/*` answer 501 `COMMAND_UNAVAILABLE` here. The shared
+Project Host contract declares `actions.remote-outputs` unavailable for Node.
+
+A pending custom Action node is never left pending. Each append's notification
+delivery in `worker:outbox` also checks the Project for unclaimed pending custom
+Action nodes. It fails them with `errorCode: "plugin_unavailable"` ("Plugin
+Actions are not available on this Host."), in a Project transaction appended
+like any other edit. A node another Host already claimed (`pendingTask`) is left
+to that Host. A failed check fails the delivery, and the outbox lease retries
+it.
+
 ## Timeline render
+
 
 Set `RENDER_SERVER_URL` to the apps/render-server origin (http(s) only, no
 credentials, path, query or fragment) on **both** the API server and

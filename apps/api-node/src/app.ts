@@ -12,6 +12,7 @@ import {
   PROJECT_MEDIA_URL_PREFIX,
 } from "./project-media-url.ts";
 import { mountContentUpload } from "./content-upload.ts";
+import { PLUGIN_ACTIONS_UNAVAILABLE_MESSAGE } from "./plugin-actions.ts";
 import type { UploadServicePorts } from "@clash/asset-sdk/upload-service";
 import type { MetadataServicePorts } from "@clash/metadata-service";
 import { mountMetadataService } from "./metadata-service.ts";
@@ -139,6 +140,18 @@ export function createNodeCloudApp(options: {
       }),
     );
   }
+  // Remote plugin output uploads (Cloudflare's run-scoped grants) exist only
+  // where plugin Actions run. Node runs none (plugin-actions.ts), so it says
+  // so with the contract's 501 instead of a 404.
+  app.all("/assets/plugin-output/*", (c) =>
+    c.json(
+      {
+        code: "COMMAND_UNAVAILABLE",
+        error: `${PLUGIN_ACTIONS_UNAVAILABLE_MESSAGE} Remote plugin outputs cannot be uploaded here.`,
+      },
+      501,
+    ),
+  );
   // Mounted before the generic /api auth + 8 MiB body limit: the upload
   // service authenticates itself and bounds bodies per part (8 MiB + control).
   if (options.contentUpload) mountContentUpload(app, options.contentUpload);

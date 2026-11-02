@@ -13,6 +13,10 @@ import { createHttpRenderServerPort } from "@clash/shared-runtime/render-server"
 import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
 import { sweepFsProjectAssetImportStaging } from "@clash/shared-runtime/fs-import-staging-sweep";
 import { createNodeTimelineRenderService } from "./timeline-render.ts";
+import {
+  createPluginActionSweep,
+  withPluginActionSweep,
+} from "./plugin-actions.ts";
 import { openPostgres } from "./postgres.ts";
 import {
   createPostgresNotificationPublisher,
@@ -131,12 +135,18 @@ if (
         ...(render ? { [NODE_GENERATION_OWNER]: render.coordinator } : {}),
       }),
     });
+    // Node runs no plugin Action: each append's delivery also fails any
+    // pending custom Action node with plugin_unavailable (#238).
+    const pluginActions = createPluginActionSweep(database.db);
     try {
       await tasks.start();
       await Promise.all([
         runOutboxWorker({
           outbox: createPostgresOutbox(database.db),
-          publisher: createPostgresNotificationPublisher(database.db),
+          publisher: withPluginActionSweep(
+            createPostgresNotificationPublisher(database.db),
+            pluginActions,
+          ),
           signal: stop.signal,
           // Queued work will retry.
           onError: (error) =>
@@ -164,6 +174,7 @@ if (
         }),
       ]);
     } finally {
+      pluginActions.close();
       await tasks.close();
       await database.close();
     }

@@ -8,6 +8,13 @@ export const PROJECT_HOST_CAPABILITIES = [
   "catalog.generators",
   "catalog.views",
   "catalog.actions",
+  /**
+   * Run-scoped output uploads for remote plugin Actions
+   * (`/assets/plugin-output/:grant`). Only a Host that runs remote plugin
+   * Actions issues the grants; one that runs no plugin Action fails a pending
+   * Action node `plugin_unavailable` and answers this route with 501.
+   */
+  "actions.remote-outputs",
   "timeline.list",
   "timeline.create",
   "timeline.update",
