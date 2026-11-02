@@ -14,6 +14,7 @@ import {
   resolveAudioFadeInFrames,
   resolveAudioFadeOutFrames,
   resolveAudioGainDb,
+  retimeTimelineKeyframes,
   useEditorDispatch,
   useEditorStaticState,
 } from '@clash/remotion-core';
@@ -57,6 +58,7 @@ import {
 import { createTimelineTextEditUpdates } from './textItemEditing';
 import { AudioFadeEnvelope } from './AudioFadeEnvelope';
 import { getTrackHeightForTrack } from './trackGeometry';
+import { emitTimelineNotice } from './timelineNotice';
 
 export type TimelineKeyframeMarker = {
   channels: Array<(typeof TIMELINE_KEYFRAME_CHANNELS)[number]>;
@@ -64,6 +66,17 @@ export type TimelineKeyframeMarker = {
   frame: number;
   leftPercent: number;
 };
+
+const toTimelineKeyframeMarker = (
+  frame: number,
+  channels: TimelineKeyframeMarker['channels'],
+  lastFrame: number,
+): TimelineKeyframeMarker => ({
+  channels,
+  edge: frame <= 0 ? 'start' : frame >= lastFrame ? 'end' : 'middle',
+  frame,
+  leftPercent: (frame / lastFrame) * 100,
+});
 
 export const getTimelineKeyframeMarkers = (item: Item): TimelineKeyframeMarker[] => {
   const lastFrame = Math.max(1, item.durationInFrames - 1);
@@ -82,12 +95,37 @@ export const getTimelineKeyframeMarkers = (item: Item): TimelineKeyframeMarker[]
 
   return [...channelsByFrame.entries()]
     .sort(([leftFrame], [rightFrame]) => leftFrame - rightFrame)
-    .map(([frame, channels]) => ({
-      channels,
-      edge: frame <= 0 ? 'start' : frame >= lastFrame ? 'end' : 'middle',
-      frame,
-      leftPercent: (frame / lastFrame) * 100,
-    }));
+    .map(([frame, channels]) => toTimelineKeyframeMarker(frame, channels, lastFrame));
+};
+
+/** Where a marker grabbed at `originFrame` lands after `deltaPixels`: whole frames inside the clip. */
+export const getTimelineKeyframeDragFrame = (
+  item: Pick<Item, 'durationInFrames'>,
+  pixelsPerFrame: number,
+  originFrame: number,
+  deltaPixels: number,
+): number => {
+  const lastFrame = Math.max(1, item.durationInFrames - 1);
+  // Markers span the clip width over `lastFrame` steps (see leftPercent).
+  const markerPixelsPerFrame = Math.max(
+    0.001,
+    frameToPixels(item.durationInFrames, pixelsPerFrame) / lastFrame,
+  );
+  const frame = originFrame + Math.round(deltaPixels / markerPixelsPerFrame);
+  return Math.max(0, Math.min(Math.max(0, item.durationInFrames - 1), frame));
+};
+
+export const formatKeyframeRetimeCollisionNotice = (
+  channels: readonly string[],
+  frame: number,
+): string => `[KEYFRAME_RETIME_COLLISION] ${channels.join(', ')} already ${channels.length === 1 ? 'has a keyframe' : 'have keyframes'} at frame ${frame}. Move or delete ${channels.length === 1 ? 'it' : 'them'} first.`;
+
+type TimelineKeyframeDrag = {
+  originFrame: number;
+  pointerId: number;
+  startClientX: number;
+  frame: number;
+  moved: boolean;
 };
 
 export type TimelineKeyframeMarkerLayout = {
@@ -226,6 +264,10 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
   const [hoveredResizeEdge, setHoveredResizeEdge] = useState<'left' | 'right' | null>(null);
   const [draggingFade, setDraggingFade] = useState<{ type: 'in' | 'out' } | null>(null);
   const [draggingVolumeDb, setDraggingVolumeDb] = useState<number | null>(null);
+  // The drag previews locally and commits once on release: one UPDATE_ITEM is
+  // one undo step and one save, however many frames the pointer crossed.
+  const [keyframeDrag, setKeyframeDrag] = useState<TimelineKeyframeDrag | null>(null);
+  const suppressKeyframeMarkerClickRef = React.useRef(false);
   const [isEditingText, setIsEditingText] = useState(false);
   const [tempText, setTempText] = useState('');
   const waveformContainerRef = React.useRef<HTMLDivElement | null>(null);
@@ -846,6 +888,41 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
     updateVolumeDb(db);
   };
 
+  const moveKeyframeFromPointer = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!keyframeDrag || keyframeDrag.pointerId !== event.pointerId) return;
+    const frame = getTimelineKeyframeDragFrame(
+      item,
+      pixelsPerFrame,
+      keyframeDrag.originFrame,
+      event.clientX - keyframeDrag.startClientX,
+    );
+    if (frame === keyframeDrag.frame) return;
+    setKeyframeDrag({ ...keyframeDrag, frame, moved: true });
+  };
+
+  const finishKeyframeDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!keyframeDrag || keyframeDrag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    setKeyframeDrag(null);
+    // A drag is not a click: the release must not also seek the playhead.
+    suppressKeyframeMarkerClickRef.current = keyframeDrag.moved;
+    if (keyframeDrag.frame === keyframeDrag.originFrame) return;
+    const retimed = retimeTimelineKeyframes(
+      item.keyframes,
+      keyframeDrag.originFrame,
+      keyframeDrag.frame,
+      item.durationInFrames,
+    );
+    if (!retimed.ok) {
+      emitTimelineNotice(formatKeyframeRetimeCollisionNotice(retimed.channels, retimed.frame));
+      return;
+    }
+    if (retimed.keyframes !== item.keyframes) {
+      onUpdate(item.id, { keyframes: retimed.keyframes });
+    }
+  };
+
   // Text editing handlers (use resolved type)
   const handleTextEdit = () => {
     if (resolvedItemType === 'text') {
@@ -1175,12 +1252,20 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
       {/* 内容裁剪容器结束 */}
 
       {isSelected && !isDragOverlay
-        ? getTimelineKeyframeMarkers(item).map((marker) => {
+        ? getTimelineKeyframeMarkers(item).map((storedMarker) => {
+          const isDraggingMarker = keyframeDrag?.originFrame === storedMarker.frame;
+          const marker = isDraggingMarker
+            ? toTimelineKeyframeMarker(
+              keyframeDrag.frame,
+              storedMarker.channels,
+              Math.max(1, item.durationInFrames - 1),
+            )
+            : storedMarker;
           const layout = getTimelineKeyframeMarkerLayout(marker);
           const glyphOffset = (TIMELINE_KEYFRAME_MARKER_HIT_SIZE - TIMELINE_KEYFRAME_MARKER_SQUARE_SIZE) / 2;
           return (
             <button
-              key={marker.frame}
+              key={storedMarker.frame}
               type="button"
               aria-label={`Go to ${marker.channels.join(', ')} keyframe${marker.channels.length === 1 ? '' : 's'} at frame ${marker.frame}`}
               data-timeline-keyframe-marker=""
@@ -1189,10 +1274,33 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
               data-keyframe-frame={marker.frame}
               data-keyframe-count={marker.channels.length}
               data-keyframe-glyph="square"
+              data-keyframe-dragging={isDraggingMarker ? '' : undefined}
               title={`${marker.channels.map((channel) => KEYFRAME_CHANNEL_NAMES_ZH[channel] ?? channel).join(' + ')}关键帧 · ${formatTimecode(item.from + marker.frame, fps)}`}
-              onPointerDown={(event) => event.stopPropagation()}
+              // The marker owns its pointer gesture: stopping propagation keeps
+              // the clip's dnd-kit move and selection from starting underneath.
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                suppressKeyframeMarkerClickRef.current = false;
+                if (event.button !== 0) return;
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                setKeyframeDrag({
+                  originFrame: storedMarker.frame,
+                  pointerId: event.pointerId,
+                  startClientX: event.clientX,
+                  frame: storedMarker.frame,
+                  moved: false,
+                });
+              }}
+              onPointerMove={moveKeyframeFromPointer}
+              onPointerUp={finishKeyframeDrag}
+              onPointerCancel={() => setKeyframeDrag(null)}
+              onLostPointerCapture={() => setKeyframeDrag(null)}
               onClick={(event) => {
                 event.stopPropagation();
+                if (suppressKeyframeMarkerClickRef.current) {
+                  suppressKeyframeMarkerClickRef.current = false;
+                  return;
+                }
                 dispatch({
                   type: 'SET_CURRENT_FRAME',
                   payload: item.from + marker.frame,
@@ -1207,7 +1315,8 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
                 padding: 0,
                 border: 0,
                 background: 'transparent',
-                cursor: 'pointer',
+                cursor: isDraggingMarker ? 'grabbing' : 'grab',
+                touchAction: 'none',
                 transform: layout.buttonTransform,
                 // Above the full-width volume hit strip (32) so a marker stays
                 // clickable on clips with audio; fade handles (33+) stay on top.
