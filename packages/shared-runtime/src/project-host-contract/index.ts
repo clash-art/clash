@@ -242,6 +242,30 @@ export function describeProjectHostContract(
         },
       });
 
+    // ─── Remote plugin Action outputs ───────────────────────────────
+    // The signed grant in the path is the only authority, so a forged one is
+    // refused where the route exists; elsewhere the route answers 501.
+    const beginForgedPluginOutput = () =>
+      harness.fetch(`${harness.endpoint}/assets/plugin-output/forged.grant`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ byteLength: 1 }),
+      });
+    capability("actions.remote-outputs", {
+      supported: [
+        [
+          "refuses an upload session for a forged run grant",
+          async () => {
+            const response = await beginForgedPluginOutput();
+            expect(response.status).toBe(403);
+            expect((await json(response))?.error).toEqual(expect.any(String));
+          },
+        ],
+      ],
+      unavailable: async () =>
+        expectUnavailable(await beginForgedPluginOutput()),
+    });
+
     // ─── Timeline Host commands ─────────────────────────────────────
     const createTimeline = () => {
       const id = unique("contract-timeline");

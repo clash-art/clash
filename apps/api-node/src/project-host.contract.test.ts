@@ -51,6 +51,8 @@ describeProjectHostContract("api-node (Postgres + disk)", async () => {
       "catalog.generators": "supported",
       "catalog.views": "supported",
       "catalog.actions": "supported",
+      // Node runs no plugin Action (plugin-actions.ts, #238).
+      "actions.remote-outputs": "unavailable",
       "timeline.list": "supported",
       "timeline.create": "supported",
       "timeline.update": "supported",
