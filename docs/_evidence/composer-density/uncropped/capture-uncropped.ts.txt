@@ -1,0 +1,750 @@
+/**
+ * Density Evidence for #467 — wide labels vs narrow icon-only (≤32rem).
+ * Tip: feat/composer-shell-full @ 1c28dc4c — common fcddb1e openma-composer container
+ */
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdir, writeFile, rm } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadHostServer } from "../clash-composer-shell-wt/apps/web/e2e/host-artifacts.ts";
+import {
+  CdpClient,
+  assert,
+  capture,
+  chromeBinary,
+  click,
+  evaluate,
+  findFreePort,
+  sleep,
+  startViteDevServer,
+  stopProcess,
+  waitFor,
+  waitForHttp,
+  waitForTarget,
+} from "../clash-composer-shell-wt/scripts/e2e/harness.ts";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..", "clash-composer-shell-wt");
+const webDir = path.join(repoRoot, "apps", "web");
+const outDir = path.join(__dirname, "real-dsh-uncropped");
+const dataDir = path.join(__dirname, `data-dsh-uncropped-${Date.now()}`);
+const chromeDataDir = path.join(dataDir, "chrome");
+const HEAD = process.env.EVID_HEAD || "unknown";
+const PROMPT = "ping"; // short — do not burn DeepSeek quota
+const DSH_LABEL = "DeepSeek Harness";
+const HARNESS_PICKER_ARIA = "Session runtime, harness, and model";
+
+const L: string[] = [];
+const note = (s: string) => {
+  L.push(s);
+  console.log(s);
+};
+
+function harnessPickerExpression() {
+  return `(() => [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === ${JSON.stringify(HARNESS_PICKER_ARIA)}))()`;
+}
+
+async function clickAriaButton(cdp: CdpClient, ariaLabel: string) {
+  await click(
+    cdp,
+    `(() => [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === ${JSON.stringify(ariaLabel)}))()`,
+    ariaLabel,
+  );
+}
+
+async function captureClip(
+  cdp: CdpClient,
+  selectorExpr: string,
+  targetPath: string,
+  padding = 12,
+) {
+  const clip = await evaluate<{ x: number; y: number; width: number; height: number } | null>(
+    cdp,
+    `(() => {
+      const el = (${selectorExpr});
+      if (!el) return null;
+      el.scrollIntoView({ block: "center", inline: "nearest" });
+      const rect = el.getBoundingClientRect();
+      const pad = ${padding};
+      return {
+        x: Math.max(0, rect.left - pad),
+        y: Math.max(0, rect.top - pad),
+        width: Math.min(window.innerWidth, rect.width + pad * 2),
+        height: Math.min(window.innerHeight, rect.height + pad * 2),
+        scale: 1,
+      };
+    })()`,
+  );
+  assert(clip, `clip missing ${targetPath}`);
+  const shot = await cdp.send<{ data: string }>("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+    clip,
+  });
+  await writeFile(targetPath, Buffer.from(shot.data, "base64"));
+}
+
+async function waitForRuntimeAgent(apiOrigin: string, agentId: string) {
+  const deadline = Date.now() + 360_000;
+  while (Date.now() < deadline) {
+    const res = await fetch(`${apiOrigin}/api/v1/runtimes?refresh=1&probe=config`);
+    if (res.ok) {
+      const json = (await res.json()) as {
+        runtimes?: { agents?: { id: string }[] }[];
+      };
+      const ids = json.runtimes?.[0]?.agents?.map((a) => a.id) ?? [];
+      if (ids.includes(agentId)) return ids;
+    }
+    await sleep(2000);
+  }
+  throw new Error(`Timed out waiting for runtime agent ${agentId}`);
+}
+
+async function ensureHarnessEnabled(cdp: CdpClient, label: string) {
+  const alreadyEnabled = await evaluate<boolean>(
+    cdp,
+    `[...document.querySelectorAll("button,[role='switch']")].some((button) => {
+      const aria = button.getAttribute("aria-label") || "";
+      return aria === ${JSON.stringify(`Disable ${label} agent`)} || aria.includes(${JSON.stringify(`Disable ${label}`)});
+    })`,
+  );
+  if (alreadyEnabled) return;
+  const canEnable = await evaluate<boolean>(
+    cdp,
+    `[...document.querySelectorAll("button,[role='switch']")].some((button) => {
+      const aria = button.getAttribute("aria-label") || "";
+      return aria === ${JSON.stringify(`Enable ${label} agent`)} || aria.includes(${JSON.stringify(`Enable ${label}`)});
+    })`,
+  );
+  if (!canEnable) return;
+  await clickAriaButton(cdp, `Enable ${label} agent`);
+}
+
+async function waitForHarnessInstalled(cdp: CdpClient, label: string, timeoutMs = 360_000) {
+  await waitFor(
+    cdp,
+    `(() => {
+      const install = [...document.querySelectorAll("button")].find(
+        (button) => button.getAttribute("aria-label") === ${JSON.stringify(`Install ${label}`)},
+      );
+      return !install && (document.body.innerText || "").includes(${JSON.stringify(label)});
+    })()`,
+    `installed ${label}`,
+    timeoutMs,
+  );
+}
+
+async function waitForHarnessIdle(cdp: CdpClient, timeoutMs = 360_000) {
+  await waitFor(
+    cdp,
+    `!document.body.innerText.includes("Installing...") && !document.body.innerText.includes("Saving enablement...")`,
+    "harness UI idle",
+    timeoutMs,
+  );
+}
+
+async function agentsSetup(cdp: CdpClient, webOrigin: string, apiOrigin: string) {
+  await cdp.send("Page.navigate", { url: `${webOrigin}/settings?section=agents` });
+  await waitFor(
+    cdp,
+    `location.pathname === "/settings" && document.body.innerText.includes("Agents")`,
+    "agents settings",
+    60_000,
+  );
+  await waitFor(
+    cdp,
+    `[...document.querySelectorAll("button")].some((button) => {
+      const aria = button.getAttribute("aria-label") || "";
+      return aria === ${JSON.stringify(`Install ${DSH_LABEL}`)} ||
+        aria === ${JSON.stringify(`Upgrade ${DSH_LABEL}`)} ||
+        aria === ${JSON.stringify(`Disable ${DSH_LABEL} agent`)} ||
+        aria === ${JSON.stringify(`Enable ${DSH_LABEL} agent`)};
+    })`,
+    "DeepSeek harness row visible",
+    120_000,
+  );
+
+  const canInstall = await evaluate<boolean>(
+    cdp,
+    `[...document.querySelectorAll("button")].some((button) => button.getAttribute("aria-label") === ${JSON.stringify(`Install ${DSH_LABEL}`)})`,
+  );
+  if (canInstall) {
+    await evaluate(
+      cdp,
+      `(() => {
+        const button = [...document.querySelectorAll("button")].find(
+          (candidate) => candidate.getAttribute("aria-label") === ${JSON.stringify(`Install ${DSH_LABEL}`)},
+        );
+        button?.scrollIntoView({ block: "center", inline: "nearest" });
+        return !!button;
+      })()`,
+    );
+    await clickAriaButton(cdp, `Install ${DSH_LABEL}`);
+    await waitForHarnessInstalled(cdp, DSH_LABEL);
+  }
+  await waitForHarnessIdle(cdp);
+  await ensureHarnessEnabled(cdp, DSH_LABEL);
+  await waitForHarnessIdle(cdp);
+
+  // Check again for auth / probe
+  const checkAgain = await evaluate<boolean>(
+    cdp,
+    `[...document.querySelectorAll("button")].some((b) => {
+      const text = (b.innerText || b.textContent || "").trim();
+      return text === "Check again" && !b.disabled;
+    })`,
+  );
+  if (checkAgain) {
+    await click(
+      cdp,
+      `(() => [...document.querySelectorAll("button")].find((b) => {
+        const text = (b.innerText || b.textContent || "").trim();
+        return text === "Check again" && !b.disabled;
+      }))()`,
+      "agents Check again",
+    );
+    await waitFor(
+      cdp,
+      `!document.body.innerText.includes("Checking...")`,
+      "agents auth recheck",
+      360_000,
+    );
+  }
+  await waitForRuntimeAgent(apiOrigin, "dsh-acp");
+}
+
+async function selectDeepSeekHarness(cdp: CdpClient) {
+  const triggerShowsDsh = await evaluate<boolean>(
+    cdp,
+    `(() => {
+      const btn = (${harnessPickerExpression()});
+      if (!btn) return false;
+      const text = ((btn.innerText || btn.textContent || "") + " " + (btn.getAttribute("title") || "")).toLowerCase();
+      const brand = btn.querySelector("[data-agent-brand-id], [data-openma-agent-brand-icon]");
+      const brandId = (brand?.getAttribute("data-agent-brand-id") || "").toLowerCase();
+      const aria = (brand?.getAttribute("aria-label") || "").toLowerCase();
+      return text.includes("deepseek") || text.includes("dsh") || brandId.includes("dsh") || aria.includes("deepseek");
+    })()`,
+  );
+  await click(cdp, harnessPickerExpression(), "harness picker");
+  await waitFor(
+    cdp,
+    `document.body.innerText.includes("DeepSeek") || document.body.innerText.toLowerCase().includes("dsh")`,
+    "harness menu open",
+    30_000,
+  );
+  await capture(cdp, path.join(outDir, "01-harness-menu-deepseek.png"));
+
+  const needSelect = await evaluate<boolean>(
+    cdp,
+    `(() => {
+      const rows = [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio'], [data-value]")];
+      const deep = rows.find((el) => {
+        const text = (el.innerText || el.textContent || "").trim();
+        return text.includes("DeepSeek Harness") || text === "DeepSeek";
+      });
+      if (!deep) return false;
+      const checked = deep.getAttribute("aria-checked") === "true" || deep.getAttribute("data-state") === "checked";
+      return !checked;
+    })()`,
+  );
+  if (needSelect || !triggerShowsDsh) {
+    await click(
+      cdp,
+      `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio'], [data-value]")].find((el) => {
+        const text = (el.innerText || el.textContent || "").trim();
+        const value = el.getAttribute("data-value") || "";
+        return text.includes("DeepSeek") || value.includes("dsh-acp");
+      }))()`,
+      "select DeepSeek harness",
+    );
+  }
+  const flash = await evaluate<boolean>(
+    cdp,
+    `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio']")].some((el) => {
+      const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+      return text.includes("flash") || text.includes("deepseek-flash") || text.includes("deepseek flash");
+    }))()`,
+  );
+  if (flash) {
+    await click(
+      cdp,
+      `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio']")].find((el) => {
+        const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+        return text.includes("flash") || text.includes("deepseek-flash") || text.includes("deepseek flash");
+      }))()`,
+      "select DeepSeek Flash model",
+    );
+  }
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await waitFor(
+    cdp,
+    `(() => {
+      const btn = (${harnessPickerExpression()});
+      if (!btn) return false;
+      const text = ((btn.innerText || btn.textContent || "") + " " + (btn.getAttribute("title") || "")).toLowerCase();
+      const brand = btn.querySelector("[data-agent-brand-id], [data-openma-agent-brand-icon]");
+      const brandId = (brand?.getAttribute("data-agent-brand-id") || "").toLowerCase();
+      const aria = (brand?.getAttribute("aria-label") || "").toLowerCase();
+      // Effort-first chrome: visible label may be just "High" — brand icon / title still mark dsh.
+      return (
+        text.includes("deepseek") ||
+        text.includes("dsh") ||
+        brandId.includes("dsh") ||
+        aria.includes("deepseek") ||
+        (brand?.getAttribute("data-agent-icon-source") === "brand" && (text.includes("high") || text.includes("flash") || text.includes("standard")))
+      );
+    })()`,
+    "harness trigger shows DeepSeek/Dsh (or effort-first + brand)",
+    30_000,
+  );
+}
+
+async function probeChips(cdp: CdpClient) {
+  return evaluate(cdp, `(() => {
+    const surface = document.querySelector(".clash-chat-input-surface");
+    const shell = document.querySelector(".openma-composer-shell");
+    const perm = document.querySelector('[data-testid="session-permission-mode-trigger"], button[aria-label="Harness permission mode"]');
+    const plan = document.querySelector('[data-testid="session-plan-tag"]');
+    const goal = document.querySelector('[data-testid="session-goal-tag"]');
+    const start = document.querySelector(".clash-chat-input-toolbar-start, [data-composer-toolbar-start], .openma-composer-shell [data-slot='toolbar-start']");
+    const toolbarStartText = start ? (start.innerText || start.textContent || "").trim().slice(0, 200) : null;
+    const permText = perm ? (perm.innerText || perm.textContent || "").trim() : null;
+    const harness = (${harnessPickerExpression()});
+    const harnessText = harness ? (harness.innerText || harness.textContent || "").trim() : null;
+    const brand = harness?.querySelector?.("[data-openma-agent-brand-icon], [data-agent-brand-id], [data-slot='agent-provider-logo']")
+      || document.querySelector(".clash-session-config-trigger [data-openma-agent-brand-icon], .clash-session-config-trigger [data-agent-brand-id]");
+    const brandMeta = brand ? {
+      tag: brand.tagName,
+      brandId: brand.getAttribute("data-agent-brand-id"),
+      iconSource: brand.getAttribute("data-agent-icon-source"),
+      aria: brand.getAttribute("aria-label"),
+      viewBox: brand.getAttribute("viewBox"),
+      isGenericRobot: brand.getAttribute("data-agent-icon-source") === "generic",
+    } : null;
+    const run = document.querySelector(".openma-composer-run-action, [data-composer-submit='true'], button[aria-label='Send message']");
+    const chips = [...document.querySelectorAll(".clash-composer-footer-chip, .clash-session-permission-trigger, .clash-session-state-tag, .openma-composer-chip")].map((el) => ({
+      testid: el.getAttribute("data-testid"),
+      aria: el.getAttribute("aria-label"),
+      text: (el.innerText || el.textContent || "").trim().slice(0, 80),
+      className: el.className,
+      hasComposerChipClass: /\bopenma-composer-chip\b/.test(el.className || ""),
+    }));
+    const toolbarEnd = document.querySelector(".clash-chat-input-toolbar-end, [data-composer-toolbar-end], .openma-composer-shell [data-slot='toolbar-end']");
+    return {
+      surface: !!surface,
+      openmaShell: !!shell,
+      hasPermissionChip: !!perm,
+      permissionLabel: permText,
+      hasPlanTag: !!plan,
+      hasGoalTag: !!goal,
+      toolbarStartText,
+      harnessText,
+      brandMeta,
+      hasBrandIcon: !!brand,
+      brandIsDeepSeek: !!(brandMeta && (brandMeta.aria === "DeepSeek" || brandMeta.brandId === "dsh-acp" || brandMeta.brandId === "dsh")),
+      runActionClass: run ? run.className : null,
+      hasRunActionClass: !!(run && /\bopenma-composer-run-action\b/.test(run.className || "")),
+      toolbarEndText: toolbarEnd ? (toolbarEnd.innerText || toolbarEnd.textContent || "").trim().slice(0, 120) : null,
+      chips,
+      path: location.pathname,
+    };
+  })()`);
+}
+
+async function typeChatMessage(cdp: CdpClient, text: string) {
+  const inserted = await evaluate<boolean>(cdp, `(() => {
+    const editor = document.querySelector(".milkdown-chat-input [contenteditable='true']")
+      || document.querySelector(".ProseMirror[contenteditable='true']");
+    if (!editor) return false;
+    editor.focus();
+    document.execCommand("selectAll", false, null);
+    document.execCommand("insertText", false, ${JSON.stringify(text)});
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ${JSON.stringify(text)} }));
+    return (editor.innerText || editor.textContent || "").includes(${JSON.stringify(text)});
+  })()`);
+  assert(inserted, "type failed");
+}
+
+async function dismissOverlays(cdp: CdpClient) {
+  for (let i = 0; i < 3; i++) {
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await sleep(150);
+  }
+}
+
+async function main() {
+  if (!process.env.DEEPSEEK_API_KEY) {
+    throw new Error("DEEPSEEK_API_KEY required — real dsh, not Mock ACP");
+  }
+  // Refuse stubs / echo
+  delete process.env.CLASH_E2E_STUB_ACP;
+  delete process.env.CLASH_E2E_DSH_ECHO;
+  process.env.DSH_ACP_MODELS = "deepseek-flash";
+  process.env.DSH_MODEL = "deepseek-flash";
+  process.env.CHROME_BIN = process.env.CHROME_BIN ?? "/usr/bin/google-chrome";
+
+  await rm(dataDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+  await mkdir(chromeDataDir, { recursive: true });
+
+  note(`head=${HEAD}`);
+  note(`node=${process.version}`);
+  note(`chrome=${chromeBinary()}`);
+  note(`dsh-acp=${process.env.PATH?.split(":").map((p) => path.join(p, "dsh-acp")).find(() => true) ?? "?"}`);
+  note("runtime=dsh-acp + DeepSeek Flash (NO CLASH_E2E_STUB_ACP, NO ECHO)");
+
+  const apiPort = await findFreePort(49820);
+  const webPort = await findFreePort(49840);
+  const cdpPort = await findFreePort(49860);
+  const apiOrigin = `http://127.0.0.1:${apiPort}`;
+  const webOrigin = `http://127.0.0.1:${webPort}`;
+  note(`api=${apiOrigin} web=${webOrigin} cdp=${cdpPort}`);
+
+  const { startLocalApiServer } = await loadHostServer();
+  const apiServer = await startLocalApiServer({ port: apiPort, dataDir });
+  let web: ChildProcess | undefined;
+  let chrome: ChildProcess | undefined;
+  let cdp: CdpClient | undefined;
+  const chromeLogs: string[] = [];
+
+  try {
+    const started = await startViteDevServer({
+      webDir,
+      repoRoot,
+      port: webPort,
+      env: {
+        VITE_CLASH_API_BASE_URL: apiOrigin,
+        VITE_CLASH_WS_BASE_URL: apiOrigin.replace("http:", "ws:"),
+        CLASH_WEB_E2E_NO_CLOUDFLARE: "1",
+        // Explicitly do NOT set CLASH_E2E_STUB_ACP
+        DSH_ACP_MODELS: "deepseek-flash",
+        DSH_MODEL: "deepseek-flash",
+      },
+    });
+    web = started.child;
+    await waitForHttp(`${apiOrigin}/health`, "local-api");
+    await waitForHttp(webOrigin, "vite");
+    note("servers ready");
+
+    chrome = spawn(
+      chromeBinary(),
+      [
+        `--remote-debugging-port=${cdpPort}`,
+        `--user-data-dir=${chromeDataDir}`,
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-first-run",
+        "--window-size=1440,1100",
+        "about:blank",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    chrome.stdout?.on("data", (b) => chromeLogs.push(String(b)));
+    chrome.stderr?.on("data", (b) => chromeLogs.push(String(b)));
+
+    cdp = new CdpClient(await waitForTarget(cdpPort));
+    await cdp.ready();
+    await cdp.send("Runtime.enable");
+    await cdp.send("Page.enable");
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+
+    await agentsSetup(cdp, webOrigin, apiOrigin);
+    await capture(cdp, path.join(outDir, "00-agents-dsh-enabled.png"));
+    note("shot=00-agents-dsh-enabled");
+
+    const createRes = await fetch(`${apiOrigin}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "ComposerShell dsh evidence" }),
+    });
+    if (!createRes.ok) throw new Error(`project create failed: ${createRes.status}`);
+    const project = (await createRes.json()) as { id: string };
+    note(`projectId=${project.id}`);
+
+    await fetch(`${apiOrigin}/api/v1/runtimes?refresh=1&probe=config`).catch(() => undefined);
+    await waitForRuntimeAgent(apiOrigin, "dsh-acp");
+
+    await cdp.send("Page.navigate", { url: `${webOrigin}/projects/${project.id}` });
+    await waitFor(
+      cdp,
+      `location.pathname.includes(${JSON.stringify(project.id)}) && (!!document.querySelector("#editor-header") || document.body.innerText.includes("New chat") || document.body.innerText.includes("Canvases") || document.querySelector(".clash-chat-input-surface"))`,
+      "project editor",
+      180_000,
+    );
+    await sleep(1500);
+
+    await waitFor(
+      cdp,
+      `!!(${harnessPickerExpression()}) || document.querySelector(".clash-chat-input-surface, .milkdown-chat-input")`,
+      "composer chrome",
+      120_000,
+    );
+
+    // Ensure harness picker visible; may need to open copilot / new chat
+    const hasPicker = await evaluate<boolean>(cdp, `!!(${harnessPickerExpression()})`);
+    if (!hasPicker) {
+      // try New chat / open agent panel
+      await evaluate(cdp, `(() => {
+        const btn = [...document.querySelectorAll("button,a,[role='button']")].find((el) => {
+          const t = (el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim();
+          return t === "New chat" || t.includes("AI Copilot") || t === "Agent";
+        });
+        btn?.click();
+        return !!btn;
+      })()`);
+      await sleep(800);
+    }
+    await waitFor(cdp, `!!(${harnessPickerExpression()})`, "harness picker", 120_000);
+
+    await selectDeepSeekHarness(cdp);
+    await dismissOverlays(cdp);
+    await sleep(500);
+
+    let probe = await probeChips(cdp);
+    note(`probe-after-select=${JSON.stringify(probe)}`);
+    await writeFile(path.join(outDir, "probe-after-select.json"), JSON.stringify(probe, null, 2));
+
+    // Full panel before send
+    await capture(cdp, path.join(outDir, "02-project-agent-full.png"));
+    note("shot=02-project-agent-full");
+
+    // Composer close-up
+    await captureClip(
+      cdp,
+      `document.querySelector(".clash-chat-input-surface") || document.querySelector(".openma-composer-shell")`,
+      path.join(outDir, "03-composer-closeup.png"),
+      16,
+    );
+    note("shot=03-composer-closeup");
+
+    // If permission chip not yet visible, starting a session usually advertises modes.
+    // Send a short ping so ACP session/new returns modes.
+    await typeChatMessage(cdp, PROMPT);
+    await sleep(300);
+    probe = await probeChips(cdp);
+    note(`probe-typed=${JSON.stringify(probe)}`);
+
+    // Submit
+    const submitExpr = `document.querySelector("button[data-composer-submit='true']") || [...document.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Send message")`;
+    await waitFor(cdp, `(() => { const b = ${submitExpr}; return !!b && !b.disabled; })()`, "send enabled", 15_000);
+    await click(cdp, `(() => ${submitExpr})()`, "send");
+    note("sent short ping via ComposerShell");
+
+    // Wait for either permission chip OR any non-Mock reply / activity
+    try {
+      await waitFor(
+        cdp,
+        `(() => {
+          const perm = document.querySelector('[data-testid="session-permission-mode-trigger"], button[aria-label="Harness permission mode"]');
+          const body = document.body.innerText || "";
+          const notMock = !body.includes("Mock ACP");
+          const hasWork = body.includes("已工作") || body.includes("Working") || body.includes("已执行") || body.includes("ping");
+          return !!perm || (notMock && hasWork && body.toLowerCase().includes("deepseek") === false) || !!perm;
+        })()`,
+        "permission chip or live session activity",
+        120_000,
+      );
+    } catch (e) {
+      note(`wait-chips-timeout: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Extra settle for ACP modes notification
+    for (let i = 0; i < 20; i++) {
+      probe = await probeChips(cdp);
+      if (probe && (probe as { hasPermissionChip?: boolean }).hasPermissionChip) break;
+      await sleep(1000);
+    }
+    note(`probe-after-send=${JSON.stringify(probe)}`);
+    await writeFile(path.join(outDir, "probe-after-send.json"), JSON.stringify(probe, null, 2));
+
+    await dismissOverlays(cdp);
+    await sleep(400);
+
+    await capture(cdp, path.join(outDir, "04-project-session-after-send.png"));
+    note("shot=04-project-session-after-send");
+
+    await captureClip(
+      cdp,
+      `document.querySelector(".clash-chat-input-surface") || document.querySelector(".openma-composer-shell")`,
+      path.join(outDir, "05-composer-with-chips.png"),
+      16,
+    );
+    note("shot=05-composer-with-chips");
+
+    // Toolbar-start close-up if present
+    try {
+      await captureClip(
+        cdp,
+        `document.querySelector(".clash-chat-input-toolbar-start") || document.querySelector('[data-testid="session-permission-mode-trigger"]')?.closest("div") || document.querySelector(".clash-chat-input-surface")`,
+        path.join(outDir, "06-toolbar-start-chips.png"),
+        8,
+      );
+      note("shot=06-toolbar-start-chips");
+    } catch (e) {
+      note(`toolbar-clip-skip: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // If permission menu exists, open it for evidence of modes
+    const hasPerm = await evaluate<boolean>(
+      cdp,
+      `!!document.querySelector('[data-testid="session-permission-mode-trigger"], button[aria-label="Harness permission mode"]')`,
+    );
+    if (hasPerm) {
+      await click(
+        cdp,
+        `(() => document.querySelector('[data-testid="session-permission-mode-trigger"], button[aria-label="Harness permission mode"]'))()`,
+        "permission mode chip",
+      );
+      await sleep(400);
+      await captureClip(
+        cdp,
+        `document.querySelector(".clash-chat-input-surface") || document.body`,
+        path.join(outDir, "07-permission-menu-open.png"),
+        20,
+      );
+      note("shot=07-permission-menu-open");
+      await dismissOverlays(cdp);
+    } else {
+      note("GAP: permission chip not rendered after dsh session — sessionModes may not have arrived");
+    }
+
+    // ── Uncropped density evidence: real panel widths + containment asserts ──
+    const results: any[] = [];
+    const ASSERT_EXPR = `(() => {
+      const shell = document.querySelector(".openma-composer-shell");
+      if (!shell) return { error: "no shell" };
+      const surface = document.querySelector(".clash-chat-input-surface") || shell;
+      const panel = surface.closest("aside, [data-copilot-panel], .clash-copilot-panel") || null;
+      const r = (el) => { const b = el.getBoundingClientRect(); return { l: Math.round(b.left*10)/10, r: Math.round(b.right*10)/10, t: Math.round(b.top*10)/10, b: Math.round(b.bottom*10)/10, w: Math.round(b.width*10)/10 }; };
+      const sb = shell.getBoundingClientRect();
+      const surf = surface.getBoundingClientRect();
+      const box = { left: Math.min(sb.left, surf.left), right: Math.max(sb.right, surf.right) };
+      // the visible outer border is on the surface; controls must be inside BOTH
+      const inner = { left: Math.max(sb.left, surf.left), right: Math.min(sb.right, surf.right), top: Math.max(sb.top, surf.top), bottom: Math.min(sb.bottom, surf.bottom) };
+      const toolbar = shell.querySelector(".openma-composer-toolbar");
+      const start = shell.querySelector(".openma-composer-toolbar-start");
+      const end = shell.querySelector(".openma-composer-toolbar-end");
+      const controls = [...shell.querySelectorAll(".openma-composer-toolbar button")].filter((b) => b.getClientRects().length > 0);
+      const lane = (b) => start && start.contains(b) ? "start" : end && end.contains(b) ? "end" : "other";
+      const ctl = controls.map((b) => {
+        const bb = b.getBoundingClientRect();
+        const label = (b.getAttribute("aria-label") || b.innerText || "").trim().slice(0, 40);
+        // also check visibility: not clipped by start lane overflow:hidden
+        const clipBy = lane(b) === "start" ? start.getBoundingClientRect() : null;
+        const inside = bb.left >= inner.left - 0.5 && bb.right <= inner.right + 0.5 && bb.top >= inner.top - 0.5 && bb.bottom <= inner.bottom + 0.5;
+        const notClipped = !clipBy || (bb.left >= clipBy.left - 0.5 && bb.right <= clipBy.right + 0.5);
+        return { lane: lane(b), label, text: (b.innerText||"").trim().slice(0,30), l: Math.round(bb.left), r: Math.round(bb.right), w: Math.round(bb.width), inside, notClipped };
+      });
+      const ov = (el) => el ? { sw: el.scrollWidth, cw: el.clientWidth, ok: el.scrollWidth <= el.clientWidth } : null;
+      const panelEl = surface.parentElement && (() => { let e = surface; let last = null; while (e && e.parentElement) { const s = getComputedStyle(e); const bb = e.getBoundingClientRect(); if (bb.width >= innerWidth * 0.7) break; if (bb.height >= innerHeight * 0.6 && bb.width >= surf.width) last = e; e = e.parentElement; } return last; })();
+      return {
+        viewport: innerWidth,
+        panelW: panelEl ? Math.round(panelEl.getBoundingClientRect().width) : null,
+        shellW: Math.round(sb.width), surfaceW: Math.round(surf.width),
+        inner: { l: Math.round(inner.left), r: Math.round(inner.right) },
+        startLabelsHidden: [...shell.querySelectorAll(".openma-composer-toolbar-start .openma-composer-chip-label, .openma-composer-toolbar-start .openma-composer-chip > span.min-w-0.flex-1.truncate")].map((e) => getComputedStyle(e).display === "none"),
+        endText: end ? end.innerText.trim() : null,
+        controls: ctl,
+        allInside: ctl.every((c) => c.inside && c.notClipped),
+        overflow: { shell: ov(shell), surface: ov(surface), toolbar: ov(toolbar), start: ov(start), end: ov(end) },
+        noOverflow: [shell, surface, toolbar, end].filter(Boolean).every((e) => e.scrollWidth <= e.clientWidth),
+      };
+    })()`;
+
+    async function setPanelWidth(viewport: number, panel: number | null, forceDomPx?: number) {
+      await cdp!.send("Emulation.setDeviceMetricsOverride", { width: viewport, height: 900, deviceScaleFactor: 1, mobile: false });
+      if (panel != null) {
+        await evaluate(cdp!, `localStorage.setItem("copilot-sidebar-width", "${panel}")`);
+      }
+      await cdp!.send("Page.reload", {});
+      await sleep(2500);
+      await waitFor(cdp!, `!!document.querySelector(".openma-composer-shell")`, "composer after reload", 120_000);
+      await sleep(1500);
+      if (forceDomPx) {
+        // App clamps panel to >=420px; emulate a narrower host panel by constraining the
+        // composer's panel container in DOM (documented as forced).
+        await evaluate(cdp!, `(() => {
+          const surf = document.querySelector(".clash-chat-input-surface") || document.querySelector(".openma-composer-shell");
+          let e = surf; const chain = [];
+          while (e && e.parentElement) { e = e.parentElement; const bb = e.getBoundingClientRect(); if (bb.width >= innerWidth * 0.7) break; if (bb.height >= innerHeight * 0.6) chain.push(e); }
+          if (!chain.length) return false;
+          for (const panel of chain) { panel.style.width = "${forceDomPx}px"; panel.style.minWidth = "${forceDomPx}px"; panel.style.maxWidth = "${forceDomPx}px"; panel.style.flex = "0 0 ${forceDomPx}px"; panel.style.marginLeft = "auto"; }
+          const panel = chain[chain.length - 1];
+          panel.setAttribute("data-evidence-forced-width", "${forceDomPx}");
+          return true;
+        })()`);
+        await sleep(600);
+      }
+    }
+
+    async function shotPanel(name: string) {
+      // whole agent panel: the ancestor of the composer that spans the panel, uncropped
+      const clip = await evaluate<any>(cdp!, `(() => {
+        const surf = document.querySelector(".clash-chat-input-surface") || document.querySelector(".openma-composer-shell");
+        let e = surf; let best = surf;
+        const sw = surf.getBoundingClientRect().width;
+        while (e && e.parentElement) { e = e.parentElement; const bb = e.getBoundingClientRect(); if (bb.width >= innerWidth * 0.7) break; if (bb.height >= innerHeight * 0.6 && bb.width >= sw) best = e; }
+        const b = best.getBoundingClientRect();
+        const pad = 8;
+        const x = Math.max(0, b.left - pad), y = Math.max(0, b.top - pad);
+        return { x, y, width: Math.min(innerWidth - x, b.width + pad*2), height: Math.min(innerHeight - y, b.height + pad*2), scale: 1 };
+      })()`);
+      const s = await cdp!.send<{ data: string }>("Page.captureScreenshot", { format: "png", clip });
+      await writeFile(path.join(outDir, `${name}-panel.png`), Buffer.from(s.data, "base64"));
+      await capture(cdp!, path.join(outDir, `${name}-window.png`));
+    }
+
+    const cases: { name: string; viewport: number; panel: number; force?: number }[] = [
+      { name: "w360", viewport: 1440, panel: 420, force: 360 },
+      { name: "w430", viewport: 1440, panel: 430 },
+      { name: "w560", viewport: 1440, panel: 572 },
+      { name: "w720", viewport: 1840, panel: 744 },
+    ];
+    for (const c of cases) {
+      await setPanelWidth(c.viewport, c.panel, c.force);
+      await dismissOverlays(cdp);
+      const a = await evaluate<any>(cdp, ASSERT_EXPR);
+      a.case = c;
+      results.push(a);
+      note(`assert-${c.name}=${JSON.stringify(a)}`);
+      await shotPanel(c.name);
+    }
+    await writeFile(path.join(outDir, "assertions.json"), JSON.stringify(results, null, 2));
+    const failed = results.filter((x) => !x.allInside || !x.noOverflow);
+    note(`ASSERT_SUMMARY failed=${failed.map((x) => x.case.name).join(",") || "none"}`);
+    const transcript = await evaluate<string>(cdp, `(document.body.innerText || "").slice(0, 4000)`);
+    note(`mockAcpLeak=${(transcript || "").includes("Mock ACP")}`);
+    await writeFile(path.join(outDir, "NOTES.md"), L.join("\n") + "\n", "utf8");
+    console.log(JSON.stringify({ ok: true, outDir, notes: L, probe }, null, 2));
+  } catch (error) {
+    process.exitCode = 1;
+    note(`ERROR: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+    if (cdp) {
+      try {
+        await capture(cdp, path.join(outDir, "00-failure.png"));
+      } catch {
+        /* ignore */
+      }
+    }
+    await writeFile(path.join(outDir, "NOTES.md"), L.join("\n") + "\n", "utf8").catch(() => undefined);
+    await writeFile(path.join(outDir, "chrome-tail.txt"), chromeLogs.slice(-80).join(""), "utf8").catch(() => undefined);
+    console.error(error);
+    throw error;
+  } finally {
+    cdp?.close();
+    await stopProcess(chrome);
+    await stopProcess(web);
+    await new Promise<void>((resolve, reject) => {
+      apiServer.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+}
+
+void main();

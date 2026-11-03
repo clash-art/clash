@@ -1,0 +1,491 @@
+[
+  {
+    "viewport": 1440,
+    "panelW": 360,
+    "shellW": 310,
+    "surfaceW": 328,
+    "inner": {
+      "l": 1088,
+      "r": 1398
+    },
+    "startLabelsHidden": [
+      true,
+      true,
+      true
+    ],
+    "endText": "",
+    "controls": [
+      {
+        "lane": "start",
+        "label": "Add media",
+        "text": "",
+        "l": 1088,
+        "r": 1116,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Follow agent actions",
+        "text": "",
+        "l": 1118,
+        "r": 1150,
+        "w": 32,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Harness permission mode",
+        "text": "",
+        "l": 1152,
+        "r": 1192,
+        "w": 40,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Agent",
+        "text": "",
+        "l": 1194,
+        "r": 1234,
+        "w": 40,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Session runtime, harness, and model",
+        "text": "",
+        "l": 1276,
+        "r": 1338,
+        "w": 62,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Voice input",
+        "text": "",
+        "l": 1340,
+        "r": 1368,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Send message",
+        "text": "",
+        "l": 1370,
+        "r": 1398,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      }
+    ],
+    "allInside": true,
+    "overflow": {
+      "shell": {
+        "sw": 310,
+        "cw": 310,
+        "ok": true
+      },
+      "surface": {
+        "sw": 326,
+        "cw": 326,
+        "ok": true
+      },
+      "toolbar": {
+        "sw": 310,
+        "cw": 310,
+        "ok": true
+      },
+      "start": {
+        "sw": 190,
+        "cw": 190,
+        "ok": true
+      },
+      "end": {
+        "sw": 122,
+        "cw": 122,
+        "ok": true
+      }
+    },
+    "noOverflow": true,
+    "case": {
+      "name": "w360",
+      "viewport": 1440,
+      "panel": 420,
+      "force": 360
+    }
+  },
+  {
+    "viewport": 1440,
+    "panelW": 430,
+    "shellW": 378,
+    "surfaceW": 396,
+    "inner": {
+      "l": 1018,
+      "r": 1396
+    },
+    "startLabelsHidden": [
+      true,
+      true,
+      true
+    ],
+    "endText": "High",
+    "controls": [
+      {
+        "lane": "start",
+        "label": "Add media",
+        "text": "",
+        "l": 1018,
+        "r": 1046,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Follow agent actions",
+        "text": "",
+        "l": 1048,
+        "r": 1080,
+        "w": 32,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Harness permission mode",
+        "text": "",
+        "l": 1082,
+        "r": 1140,
+        "w": 58,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Agent",
+        "text": "",
+        "l": 1142,
+        "r": 1200,
+        "w": 58,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Session runtime, harness, and model",
+        "text": "High",
+        "l": 1245,
+        "r": 1336,
+        "w": 91,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Voice input",
+        "text": "",
+        "l": 1338,
+        "r": 1366,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Send message",
+        "text": "",
+        "l": 1368,
+        "r": 1396,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      }
+    ],
+    "allInside": true,
+    "overflow": {
+      "shell": {
+        "sw": 378,
+        "cw": 378,
+        "ok": true
+      },
+      "surface": {
+        "sw": 394,
+        "cw": 394,
+        "ok": true
+      },
+      "toolbar": {
+        "sw": 378,
+        "cw": 378,
+        "ok": true
+      },
+      "start": {
+        "sw": 229,
+        "cw": 229,
+        "ok": true
+      },
+      "end": {
+        "sw": 151,
+        "cw": 151,
+        "ok": true
+      }
+    },
+    "noOverflow": true,
+    "case": {
+      "name": "w430",
+      "viewport": 1440,
+      "panel": 430
+    }
+  },
+  {
+    "viewport": 1440,
+    "panelW": 572,
+    "shellW": 520,
+    "surfaceW": 538,
+    "inner": {
+      "l": 876,
+      "r": 1396
+    },
+    "startLabelsHidden": [
+      false,
+      false,
+      false
+    ],
+    "endText": "High",
+    "controls": [
+      {
+        "lane": "start",
+        "label": "Add media",
+        "text": "",
+        "l": 876,
+        "r": 904,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Follow agent actions",
+        "text": "",
+        "l": 906,
+        "r": 938,
+        "w": 32,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Harness permission mode",
+        "text": "Workspace write",
+        "l": 942,
+        "r": 1093,
+        "w": 151,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Agent",
+        "text": "Standard",
+        "l": 1097,
+        "r": 1207,
+        "w": 110,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Session runtime, harness, and model",
+        "text": "High",
+        "l": 1245,
+        "r": 1336,
+        "w": 91,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Voice input",
+        "text": "",
+        "l": 1338,
+        "r": 1366,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Send message",
+        "text": "",
+        "l": 1368,
+        "r": 1396,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      }
+    ],
+    "allInside": true,
+    "overflow": {
+      "shell": {
+        "sw": 520,
+        "cw": 520,
+        "ok": true
+      },
+      "surface": {
+        "sw": 536,
+        "cw": 536,
+        "ok": true
+      },
+      "toolbar": {
+        "sw": 520,
+        "cw": 520,
+        "ok": true
+      },
+      "start": {
+        "sw": 371,
+        "cw": 371,
+        "ok": true
+      },
+      "end": {
+        "sw": 151,
+        "cw": 151,
+        "ok": true
+      }
+    },
+    "noOverflow": true,
+    "case": {
+      "name": "w560",
+      "viewport": 1440,
+      "panel": 572
+    }
+  },
+  {
+    "viewport": 1840,
+    "panelW": 744,
+    "shellW": 692,
+    "surfaceW": 710,
+    "inner": {
+      "l": 1104,
+      "r": 1796
+    },
+    "startLabelsHidden": [
+      false,
+      false,
+      false
+    ],
+    "endText": "High",
+    "controls": [
+      {
+        "lane": "start",
+        "label": "Add media",
+        "text": "",
+        "l": 1104,
+        "r": 1132,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Follow agent actions",
+        "text": "",
+        "l": 1134,
+        "r": 1166,
+        "w": 32,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Harness permission mode",
+        "text": "Workspace write",
+        "l": 1170,
+        "r": 1321,
+        "w": 151,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "start",
+        "label": "Agent",
+        "text": "Standard",
+        "l": 1325,
+        "r": 1435,
+        "w": 110,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Session runtime, harness, and model",
+        "text": "High",
+        "l": 1645,
+        "r": 1736,
+        "w": 91,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Voice input",
+        "text": "",
+        "l": 1738,
+        "r": 1766,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      },
+      {
+        "lane": "end",
+        "label": "Send message",
+        "text": "",
+        "l": 1768,
+        "r": 1796,
+        "w": 28,
+        "inside": true,
+        "notClipped": true
+      }
+    ],
+    "allInside": true,
+    "overflow": {
+      "shell": {
+        "sw": 692,
+        "cw": 692,
+        "ok": true
+      },
+      "surface": {
+        "sw": 708,
+        "cw": 708,
+        "ok": true
+      },
+      "toolbar": {
+        "sw": 692,
+        "cw": 692,
+        "ok": true
+      },
+      "start": {
+        "sw": 543,
+        "cw": 543,
+        "ok": true
+      },
+      "end": {
+        "sw": 151,
+        "cw": 151,
+        "ok": true
+      }
+    },
+    "noOverflow": true,
+    "case": {
+      "name": "w720",
+      "viewport": 1840,
+      "panel": 744
+    }
+  }
+]

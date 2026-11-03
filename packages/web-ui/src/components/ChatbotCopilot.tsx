@@ -57,6 +57,11 @@ import type { ClashProjectEntity } from "./copilot/AcpInlineRenderers";
 import { AgentMotion, type AgentMotionState } from "./copilot/AgentMotion";
 import { RuntimeSessionTimeline } from "./copilot/RuntimeSessionTimeline";
 import { AcpAgentLogo } from "./copilot/AcpAgentLogo";
+import {
+  COMPOSER_CHIP_CLASS,
+  DshPresetStandardIcon,
+  agentPresetIcon,
+} from "@openma/common/chat-ui";
 import { CopilotRailSlot } from "./copilot/CopilotRail";
 import { MessageErrorBoundary } from "./copilot/MessageErrorBoundary";
 import { RuntimePickerDialog } from "./copilot/RuntimePickerDialog";
@@ -164,6 +169,7 @@ import {
   buildRunMenuConfigOptions,
   configModeOptionPresentation,
   findSelectConfigOption,
+  isAgentPresetConfigOption,
   isFastSessionConfigOption,
   sessionConfigOptionEnabled,
   withSessionStateCommands,
@@ -478,10 +484,9 @@ function sessionTitleForHeader(
   return title || fallback;
 }
 
+/** Prefer CSS truncate against available header width; keep full title in `title`. */
 function compactSessionTitleForHeader(title: string): string {
-  const characters = Array.from(title);
-  if (characters.length <= 28) return title;
-  return `${characters.slice(0, 27).join("")}…`;
+  return title;
 }
 
 function normalizedRuntimeSessionTitle(
@@ -4715,7 +4720,7 @@ export function SessionConfigSelector({
           ? "relative flex justify-start"
           : "relative flex justify-start px-4 pb-2"
       }
-      triggerClassName="clash-session-config-trigger max-w-full text-left"
+      triggerClassName={`clash-session-config-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} max-w-full text-left text-xs`}
       triggerTestId="session-harness-config-trigger"
       open={open}
       onOpenChange={onOpenChange}
@@ -4765,11 +4770,14 @@ export function SessionConfigSelector({
       stopPropagation
       triggerPrefix={
         <>
-          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center text-slate-700 dark:text-slate-200">
+          <span
+            data-control-icon=""
+            className="flex size-3.5 flex-shrink-0 items-center justify-center text-slate-700 dark:text-slate-200"
+          >
             <AcpAgentLogo
               agentId={selectedHarnessId}
               title={agentDisplayName(selectedHarnessId)}
-              className="h-[18px] w-[18px]"
+              className="size-3.5"
             />
           </span>
           <span
@@ -4795,12 +4803,10 @@ export function SessionConfigSelector({
               weight="fill"
             />
           ) : null}
-          <span className="shrink-0">{modelLabel}</span>
-          {selectedEffort ? (
-            <span className="clash-session-config-effort truncate font-normal text-stone-500 dark:text-stone-400">
-              {selectedEffort.name}
-            </span>
-          ) : null}
+          {/* Backchat topology: brand icon + effort/thinking chip label ("High"). */}
+          <span className="shrink-0">
+            {selectedEffort?.name ?? modelLabel}
+          </span>
         </span>
       }
     />
@@ -4913,7 +4919,7 @@ export function HarnessPermissionSelector({
   return (
     <SelectMenu
       className="relative flex shrink-0 justify-start"
-      triggerClassName="clash-session-permission-trigger shrink-0 text-left text-status-down focus-visible:bg-warm-muted focus-visible:ring-0 focus-visible:ring-offset-0"
+      triggerClassName={`clash-session-permission-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} shrink-0 text-left text-xs focus-visible:bg-warm-muted focus-visible:ring-0 focus-visible:ring-offset-0`}
       triggerTestId="session-permission-mode-trigger"
       value={selectedMode.value}
       sections={sections}
@@ -4926,12 +4932,15 @@ export function HarnessPermissionSelector({
       maxMenuHeight={280}
       stopPropagation
       triggerPrefix={
-        <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center text-status-down">
-          <SelectedModeIcon className="h-4 w-4" aria-hidden="true" />
+        <span
+          data-control-icon=""
+          className="flex size-3.5 flex-shrink-0 items-center justify-center"
+        >
+          <SelectedModeIcon className="size-3.5" aria-hidden="true" />
         </span>
       }
       triggerLabel={
-        <span className="clash-session-permission-label truncate">
+        <span className="clash-session-permission-label openma-composer-chip-label truncate">
           {selectedMode.label}
         </span>
       }
@@ -4962,7 +4971,7 @@ export function SessionPlanTag({
   return (
     <span
       data-testid="session-plan-tag"
-      className="clash-session-state-tag inline-flex h-8 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-semibold text-content-primary"
+      className="clash-session-state-tag inline-flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-medium text-content-primary"
     >
       <Lightbulb
         className="h-4 w-4 shrink-0 text-stone-600 dark:text-stone-300"
@@ -4985,7 +4994,7 @@ function SessionGoalTag({ onClear }: { onClear: () => void }) {
   return (
     <span
       data-testid="session-goal-tag"
-      className="clash-session-state-tag inline-flex h-8 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-semibold text-content-primary"
+      className="clash-session-state-tag inline-flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md bg-warm-muted/75 pl-2 pr-1 text-xs font-medium text-content-primary"
     >
       <Target
         className="h-4 w-4 shrink-0 text-stone-600 dark:text-stone-300"
@@ -5180,12 +5189,18 @@ export function InlineSessionConfigControls({
                 onSelectConfigOption(option.id, !option.currentValue)
               }
               size="sm"
-              className={`clash-inline-session-config-trigger h-9 min-h-9 shrink-0 gap-1 rounded-md border-transparent px-1.5 text-sm font-semibold shadow-none ${
+              className={`clash-inline-session-config-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} h-7 min-h-7 shrink-0 gap-1 rounded-md border-transparent px-1.5 text-xs font-normal shadow-none ${
                 option.currentValue
                   ? "bg-brand/[0.08] text-slate-900 dark:bg-brand/[0.12] dark:text-neutral-50"
                   : "bg-transparent text-stone-600 hover:bg-warm-muted/60 dark:text-stone-300"
               }`}
-              leftIcon={<SlidersHorizontal className="h-4 w-4" />}
+              leftIcon={
+                isAgentPresetConfigOption(option) ? (
+                  <DshPresetStandardIcon className="size-3.5" />
+                ) : (
+                  <SlidersHorizontal className="size-3.5" />
+                )
+              }
             >
               <span className="clash-inline-session-config-label">
                 {option.name}
@@ -5202,7 +5217,7 @@ export function InlineSessionConfigControls({
           <SelectMenu
             key={option.id}
             className="relative flex justify-start"
-            triggerClassName="clash-inline-session-config-trigger max-w-[180px] text-left"
+            triggerClassName={`clash-inline-session-config-trigger clash-composer-footer-chip ${COMPOSER_CHIP_CLASS} max-w-[180px] text-left text-xs`}
             value={selected.value}
             sections={[
               {
@@ -5225,9 +5240,23 @@ export function InlineSessionConfigControls({
             maxMenuHeight={320}
             stopPropagation
             triggerPrefix={
-              <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+              <span data-control-icon="">
+                {(() => {
+                  if (isAgentPresetConfigOption(option)) {
+                    const PresetIcon = agentPresetIcon(selected.value);
+                    return <PresetIcon className="size-3.5" />;
+                  }
+                  return (
+                    <SlidersHorizontal className="size-3.5" aria-hidden="true" />
+                  );
+                })()}
+              </span>
             }
-            triggerLabel={`${option.name} · ${selected.name}`}
+            triggerLabel={
+              isAgentPresetConfigOption(option)
+                ? selected.name
+                : `${option.name} · ${selected.name}`
+            }
           />
         );
       })}
