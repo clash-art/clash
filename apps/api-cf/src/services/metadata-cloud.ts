@@ -19,6 +19,10 @@ import { createD1ProjectMetadataStore } from "./cloud-project-metadata";
 import { getUserIdFromApiToken } from "./api-token";
 import { signAssetPath } from "./asset-signing";
 import {
+  readProjectRoomAssetIds,
+  type ProjectRoomNamespace,
+} from "./project-room-asset-ids";
+import {
   leanSessionCookieParams,
   verifySessionCookie,
   type FastSession,
@@ -26,7 +30,7 @@ import {
 
 export interface MetadataCloudEnv {
   DB: D1Database;
-  ROOM?: { idFromName(name: string): unknown; get(id: unknown): { fetch(input: string): Promise<Response> } };
+  ROOM?: ProjectRoomNamespace;
   JWT_SECRET?: string;
   BETTER_AUTH_URL?: string;
   BETTER_AUTH_SECURE_COOKIES?: string;
@@ -151,6 +155,14 @@ export function createCloudflareMetadataPorts(
             `https://room/sync/${projectId}/nodes`,
           );
           return res.ok ? ((await res.json()) as unknown[]) : [];
+        } catch {
+          return [];
+        }
+      },
+      async projectAssetIds(projectId) {
+        if (!env.ROOM) return [];
+        try {
+          return await readProjectRoomAssetIds(env.ROOM, projectId);
         } catch {
           return [];
         }

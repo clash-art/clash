@@ -26,6 +26,20 @@ export interface ProjectPreviewPorts {
   importedAssets(projectId: string, userId: string): Promise<PreviewRefRow[]>;
   /** Signed, short-lived delivery URL for a stored object. */
   sign(storageKey: string): Promise<string>;
+  /**
+   * Project Asset ids in the Project's Loro replica (the Asset authority of
+   * synced and hosted-generated media); [] when unavailable. Legacy D1 Asset
+   * rows never describe them, so a card without this port counts 0.
+   */
+  projectAssetIds?(projectId: string): Promise<string[]>;
+}
+
+/** Card Asset count: legacy previews plus Project Assets, each Asset once. */
+export function projectAssetCount(
+  previews: readonly Pick<ProjectPreview, "assetId">[],
+  projectAssetIds: readonly string[],
+): number {
+  return new Set([...previews.map((p) => p.assetId), ...projectAssetIds]).size;
 }
 
 interface MediaNode {

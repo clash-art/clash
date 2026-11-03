@@ -112,6 +112,95 @@ describe("listProjectsWithAssets", () => {
   });
 });
 
+describe("synced Project Assets (#84)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function emptyLegacyDb(found: "findMany" | "findFirst") {
+    return {
+      query: {
+        projects: {
+          [found]: vi
+            .fn()
+            .mockResolvedValue(found === "findMany" ? [project()] : project()),
+        },
+      },
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    };
+  }
+
+  function room(assetIds: string[] | null) {
+    const requests: Request[] = [];
+    const fetch = vi.fn(async (input: Request | string) => {
+      const request = typeof input === "string" ? new Request(input) : input;
+      requests.push(request);
+      if (new URL(request.url).pathname.endsWith("/nodes"))
+        return Response.json(
+          assetIds?.map((assetId, i) => ({
+            id: `node-${i}`,
+            type: "image",
+            data: { assetId },
+          })) ?? [],
+        );
+      return assetIds
+        ? Response.json({ assets: assetIds.map((id) => ({ id })) })
+        : new Response("unavailable", { status: 503 });
+    });
+    return {
+      requests,
+      ROOM: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch }),
+      } as never,
+    };
+  }
+
+  it("counts Project Assets the room holds, not only legacy D1 Asset rows", async () => {
+    vi.mocked(getDb).mockReturnValue(
+      emptyLegacyDb("findMany") as unknown as ReturnType<typeof getDb>,
+    );
+    const { ROOM, requests } = room(["asset-a", "asset-b"]);
+
+    const [result] = await listProjectsWithAssets(
+      { DB: {} as D1Database, ROOM },
+      "user-1",
+      1,
+    );
+
+    expect(result.assetCount).toBe(2);
+    const list = requests.find((r) => r.url.endsWith("/assets-list"));
+    expect(list?.headers.get("x-internal-loro")).toBe("true");
+    expect(list?.headers.get("x-loro-project-id")).toBe("project-1");
+  });
+
+  it("keeps the legacy count when the room cannot list Project Assets", async () => {
+    vi.mocked(getDb).mockReturnValue(
+      emptyLegacyDb("findFirst") as unknown as ReturnType<typeof getDb>,
+    );
+    const { ROOM } = room(null);
+
+    const result = await getProjectById(
+      { DB: {} as D1Database, ROOM },
+      "user-1",
+      "project-1",
+    );
+
+    expect(result?.assetCount).toBe(0);
+  });
+});
+
 describe("getProjectById", () => {
   beforeEach(() => {
     vi.clearAllMocks();
