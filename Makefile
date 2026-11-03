@@ -1,4 +1,4 @@
-.PHONY: install dev dev-desktop dev-web dev-api-cf dev-full build test lint typecheck clean format setup db-web-local check-tools help bundle remotion-bundle remotion-render deploy deploy-api deploy-web predeploy-check wrangler-whoami deploy-staging deploy-api-staging deploy-web-staging
+.PHONY: install dev dev-desktop dev-web dev-api-cf dev-full build test lint typecheck clean format setup db-web-local check-tools help bundle remotion-bundle remotion-render deploy deploy-api deploy-web predeploy-check d1-schema-check wrangler-whoami deploy-staging deploy-api-staging deploy-web-staging
 
 # Use interactive shell to load .zshrc environment
 
@@ -246,7 +246,22 @@ predeploy-check: ## Run lint (skip with SKIP_CHECKS=1) and the D1 migration chec
 		node scripts/d1-migration-check.ts --remote $(if $(D1_CHECK_ENV),--env $(D1_CHECK_ENV)) $(D1_CHECK_ARGS) || { echo "$(RED)The target D1 is behind the repo migrations or missing columns. See apps/docs/guide/d1-migrations.md$(NC)"; exit 1; }; \
 	fi
 
+# Read-only D1 gate (#64): a Worker deployed against a D1 that lacks a migration,
+# or an object an applied migration now creates, fails requests with
+# `D1_ERROR: no such table/column`. Not covered by SKIP_CHECKS (the combined
+# deploys pass that to their steps); SKIP_D1_SCHEMA_CHECK=1 is the explicit override.
+# $(1) = wrangler config, $(2) = optional wrangler env.
+d1-schema-check-for = if [ "$(SKIP_D1_SCHEMA_CHECK)" = "1" ]; then \
+		echo "$(YELLOW)⚠ SKIP_D1_SCHEMA_CHECK=1 — deploying without comparing D1 to apps/web/drizzle$(NC)"; \
+	else \
+		node scripts/check-d1-schema.ts --config $(1) $(if $(2),--env $(2)) --remote || { echo "$(RED)The bound D1 does not match apps/web/drizzle; deploy refused.$(NC)"; exit 1; }; \
+	fi
+
+d1-schema-check: ## Compare a bound D1 with apps/web/drizzle, read-only (D1_CONFIG=apps/api-cf/wrangler.toml D1_ENV=staging)
+	@$(call d1-schema-check-for,$(or $(D1_CONFIG),apps/api-cf/wrangler.toml),$(D1_ENV))
+
 deploy-api: predeploy-check ## Deploy api-cf (Workers + RenderContainer image)
+	@$(call d1-schema-check-for,apps/api-cf/wrangler.toml)
 	@echo "$(BLUE)Deploying clash-api → Cloudflare Workers...$(NC)"
 	@# `pnpm run deploy` (not `pnpm deploy`) — the latter is pnpm's built-in
 	@# workspace-deployment command and does NOT execute package.json scripts.
@@ -254,6 +269,7 @@ deploy-api: predeploy-check ## Deploy api-cf (Workers + RenderContainer image)
 	@echo "$(GREEN)✓ api-cf deployed$(NC)"
 
 deploy-web: predeploy-check ## Build + deploy web (Pages/Worker)
+	@$(call d1-schema-check-for,apps/web/wrangler.toml)
 	@echo "$(BLUE)Deploying clash-web → Cloudflare...$(NC)"
 	@pnpm build:package @clash/web
 	@pnpm --filter @clash/web run deploy
@@ -274,11 +290,13 @@ deploy: predeploy-check ## Deploy api-cf then web (the standard production path)
 # production data.
 
 deploy-api-staging: predeploy-check ## Deploy clash-api-staging (isolated staging data)
+	@$(call d1-schema-check-for,apps/api-cf/wrangler.toml,staging)
 	@echo "$(BLUE)Deploying clash-api-staging → Cloudflare Workers...$(NC)"
 	@cd apps/api-cf && pnpm exec wrangler deploy --env staging
 	@echo "$(GREEN)✓ api-cf staging deployed$(NC)"
 
 deploy-web-staging: predeploy-check ## Build + deploy clash-web-staging (isolated staging data)
+	@$(call d1-schema-check-for,apps/web/wrangler.toml,staging)
 	@echo "$(BLUE)Deploying clash-web-staging → Cloudflare...$(NC)"
 	@pnpm build:package @clash/web
 	@pnpm --filter @clash/web exec wrangler deploy --env staging

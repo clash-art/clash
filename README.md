@@ -248,6 +248,13 @@ cd apps/web    && pnpm run deploy
 cd apps/api-cf && pnpm run deploy
 ```
 
+`make deploy*` first runs a read-only check that the bound D1 has applied
+every migration in `apps/web/drizzle` and still has every table, column,
+index and trigger they create (`make d1-schema-check D1_ENV=staging` runs it
+alone). Code deployed against a database that fails it answers with
+`D1_ERROR: no such table/column`. Never edit a migration that has shipped;
+add a new one.
+
 Render container: build the heavy image once (chromium + ffmpeg + node
 prod deps) and push to a registry. `apps/render-server/Dockerfile.cf`
 is just `FROM <your-registry>/clash-render:latest`, so subsequent

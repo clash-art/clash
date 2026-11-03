@@ -239,6 +239,12 @@ cd apps/web    && pnpm run deploy
 cd apps/api-cf && pnpm run deploy
 ```
 
+`make deploy*` 会先做只读检查：绑定的 D1 是否已应用 `apps/web/drizzle`
+中的每个 migration，并且仍有这些 migration 创建的每个表、列、索引和触发器
+（单独运行：`make d1-schema-check D1_ENV=staging`）。检查不通过的数据库上
+部署的代码会返回 `D1_ERROR: no such table/column`。已发布的 migration 不要
+原地修改，新增一个。
+
 Render container：先构一次重镜像（chromium + ffmpeg + node prod deps）
 推到 registry。`apps/render-server/Dockerfile.cf` 只是 `FROM
 <your-registry>/clash-render:latest`，之后每次 `wrangler deploy` 只 pull。
