@@ -132,6 +132,8 @@ export async function runAcpAgentSession(input: {
   timeoutMs: number;
   /** File descriptor that receives the agent's stderr. */
   stderrFd: number;
+  /** Starts the agent as this uid/gid instead of the runner's own. */
+  identity?: { uid?: number; gid?: number };
   /** Receives one JSON line per session event; ended when the turn settles. */
   events: Writable;
   onSpawn?: (child: ChildProcess) => void;
@@ -151,6 +153,7 @@ export async function runAcpAgentSession(input: {
         const spawned = spawn(spec.command, spec.args ?? [], {
           cwd: spec.cwd,
           env: input.env,
+          ...input.identity,
           shell: false,
           detached: process.platform !== "win32",
           stdio: ["pipe", "pipe", input.stderrFd],

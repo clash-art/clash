@@ -163,8 +163,15 @@ export {
 } from "./backend-claude-cloud";
 export {
   createContainerBackend,
+  DEFAULT_CONTAINER_AGENT_USER,
   type ContainerBackendOptions,
 } from "./backend-container";
+export {
+  AgentIsolationError,
+  type AgentIsolation,
+  type AgentIsolationErrorCode,
+  type ProcessIdentity,
+} from "./agent-isolation";
 export type {
   BenchmarkAttemptCompletion,
   BenchmarkAttemptDispatch,

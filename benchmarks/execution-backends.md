@@ -69,7 +69,7 @@ infrastructure failure; the rejected output is kept under
 | Backend                       | Isolation actually established                                                                                                                                                                                                                                             | Recorded as                                                                                                                                                                             |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `native-local`                | Fresh temporary workspace and per-case `CLASH_HOME` on the host. No container, no network isolation.                                                                                                                                                                       | `isolation.container: "none"`                                                                                                                                                           |
-| `container`                   | Fresh container from a content-addressed image; suite, runner, and plugin mounted read-only; one writable mount (the Attempt directory); `--network none` or the engine default; container removed afterwards. No resource limits or extra syscall filtering are asserted. | `level: "container"`, image id, engine version, `attestation: "dispatcher-asserted-worker-observed"`. The worker must see a container marker or the lock refuses to record `container`. |
+| `container`                   | Fresh container from a content-addressed image; suite and plugin mounted read-only, runner piped in; one writable mount (the Attempt directory); Agent under its own uid, without access to the suite or Attempt directory; `--network none` or the engine default; container removed afterwards. No resource limits or extra syscall filtering are asserted. | `level: "container"`, image id, engine version, `attestation: "dispatcher-asserted-worker-observed"`. The worker must see a container marker or the lock refuses to record `container`. |
 | `claude-cloud` (experimental) | None the runner can observe. The Attempt runs in a Claude Code cloud session; its sandbox and network policy belong to the environment that hosts it.                                                                                                                      | `level: "provider-managed-vm"`, `attestation: "dispatcher-declared"`, pool (`anthropic-managed` or `self-hosted` + `ccpool_…` id)                                                       |
 
 ### Container backend
@@ -88,9 +88,25 @@ Node binary is mounted read-only and starts the worker by absolute path, so the
 image needs no Node; combined with a self-contained subject and a mounted ACP
 harness (below), a bare image is enough (`debian:bookworm-slim` has been run
 this way with Pi). The runner checkout (with dependencies installed)
-is mounted read-only at the same absolute path; the Attempt directory is mounted
-at its host path, so absolute paths in current-view reports stay valid. The image
-tag is resolved to its content id once per run.
+is never mounted: the worker is bundled from it once and piped to each container
+on standard input. The Attempt directory is mounted at its host path, so absolute
+paths in current-view reports stay valid. The image tag is resolved to its
+content id once per run.
+
+The Agent cannot read what it is graded on. The worker runs as container root
+(`--user 0:0`, `--security-opt no-new-privileges`) and starts the Agent as a
+separate unprivileged uid (`agentUser`, default `65532:65532`). The worker hands
+the Agent its workspace and home and nothing else. The suite (with its rubrics)
+and the task's skill sources are mounted only inside the unit directory. That
+directory and the Attempt directory are mode 0700 and owned by the dispatching
+user, so the Agent's uid cannot open them. The worker's `/proc` entries and
+environment belong to another uid, and the judge's variables are not passed on
+to the Agent. Only the runner manifest and the runner Node, ACP harness and
+subject paths are mounted where the Agent can reach them; a run that would
+expose the suite through one of them is refused. When the worker finishes, it
+hands the Attempt directory back to the dispatching uid. The Agent uid must be
+neither 0 nor the dispatching uid, and an image or engine that cannot run the
+worker as root fails the Attempt as infrastructure.
 
 Rendering is the one thing a bare image cannot do. Clash downloads Remotion's
 pinned Chrome Headless Shell into `$CLASH_HOME/cache/browser` on demand, and the

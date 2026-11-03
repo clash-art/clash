@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
+import type { AgentIsolation } from "./agent-isolation";
 import type {
   BenchmarkRuntimeClaim,
   BenchmarkSubjectRecord,
@@ -44,7 +45,10 @@ export type AttemptUnit = {
   caseSha256: string;
   /** Suite file, relative to `suiteRoot`. */
   suiteFile: string;
-  /** Absolute at the worker. For container backends this equals the host path. */
+  /**
+   * Absolute at the worker. The container backend mounts it inside the
+   * worker-private unit directory, so it is not the host path there.
+   */
   suiteRoot: string;
   /** Absolute at the worker. The dispatcher guarantees it exists and is empty. */
   caseRoot: string;
@@ -63,6 +67,8 @@ export type AttemptUnit = {
    */
   judgeEnvNames?: string[];
   runtime: BenchmarkRuntimeClaim;
+  /** Run the Agent as a uid of its own; see `AgentIsolation`. */
+  agentIsolation?: AgentIsolation;
   subject?: {
     record: BenchmarkSubjectRecord;
     /** Mounted plugin root, when the dispatcher provides the build itself. */
@@ -115,6 +121,9 @@ export function createAttemptUnit(input: {
   suiteFile: string;
   claim: BenchmarkRuntimeClaim;
   forwardEnv: readonly string[];
+  /** Where the worker finds the suite, when it differs from the dispatcher's. */
+  suiteRoot?: string;
+  agentIsolation?: AgentIsolation;
   subject?: AttemptUnit["subject"];
 }): AttemptUnit {
   const { dispatch } = input;
@@ -128,7 +137,7 @@ export function createAttemptUnit(input: {
     caseId: dispatch.benchmark.id,
     caseSha256: benchmarkCaseSha256(dispatch.benchmark),
     suiteFile: input.suiteFile,
-    suiteRoot: dispatch.suiteRoot,
+    suiteRoot: input.suiteRoot ?? dispatch.suiteRoot,
     caseRoot: dispatch.caseRoot,
     attempt: dispatch.attempt,
     trial: dispatch.trial,
@@ -142,6 +151,7 @@ export function createAttemptUnit(input: {
       : {}),
     ...(judgeEnvNames.length > 0 ? { judgeEnvNames } : {}),
     runtime: input.claim,
+    ...(input.agentIsolation ? { agentIsolation: input.agentIsolation } : {}),
     ...(input.subject ? { subject: input.subject } : {}),
   };
 }
