@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import {
+  ProjectAssetHttpError,
   createPersonalGlobalAssetHttpClient,
   createProjectAssetHttpClient,
 } from "@clash/asset-sdk";
@@ -268,7 +269,13 @@ export function watchAssetProjection(input: {
 export async function importProjectAssetFile(
   projectId: string,
   file: File,
-  options: { kind: AssetKind; projectAssetId?: string; chunked?: boolean },
+  options: {
+    kind: AssetKind;
+    projectAssetId?: string;
+    chunked?: boolean;
+    /** `reject` fails with a coded conflict instead of adding a second Asset over the same bytes. */
+    duplicateContent?: "allow" | "reject";
+  },
 ): Promise<ResolvedAsset> {
   const projectAssetId =
     options.projectAssetId ?? `asset-${crypto.randomUUID()}`;
@@ -280,6 +287,9 @@ export async function importProjectAssetFile(
     projectAssetId,
     metadataHints,
     ...(options.chunked ? { chunked: true } : {}),
+    ...(options.duplicateContent
+      ? { duplicateContent: options.duplicateContent }
+      : {}),
   });
   if (asset.id !== projectAssetId) {
     throw new Error(
@@ -288,6 +298,44 @@ export async function importProjectAssetFile(
   }
   cacheAsset(projectId, asset);
   return asset;
+}
+
+/** What a rejected-duplicate import already holds, and where it is. */
+export interface ProjectAssetImportConflict {
+  /** `trashed`: the only holder is in the trash and should be restored. */
+  kind: "duplicate" | "trashed";
+  /** The existing Asset that holds the same bytes. */
+  projectAssetId: string;
+}
+
+/**
+ * Reads the Host's coded answer to a `duplicateContent: "reject"` import.
+ * Any other failure is not a conflict and stays the caller's error.
+ */
+export function projectAssetImportConflict(
+  error: unknown,
+): ProjectAssetImportConflict | undefined {
+  if (!(error instanceof ProjectAssetHttpError)) return undefined;
+  const body =
+    error.body && typeof error.body === "object"
+      ? (error.body as Record<string, unknown>)
+      : {};
+  const holders = Array.isArray(body.existingProjectAssetIds)
+    ? body.existingProjectAssetIds.filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      )
+    : [];
+  if (body.code === "PROJECT_ASSET_DUPLICATE_CONTENT" && holders[0]) {
+    return { kind: "duplicate", projectAssetId: holders[0] };
+  }
+  // A re-import of the trashed id itself names it as `projectAssetId`.
+  const trashed =
+    holders[0] ??
+    (typeof body.projectAssetId === "string" ? body.projectAssetId : undefined);
+  if (body.code === "PROJECT_ASSET_TRASHED" && trashed) {
+    return { kind: "trashed", projectAssetId: trashed };
+  }
+  return undefined;
 }
 
 /**

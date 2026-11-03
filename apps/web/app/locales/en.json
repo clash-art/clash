@@ -139,7 +139,15 @@
       "stop": "Stop generating",
       "uploading_one": "Uploading {{count}} file...",
       "uploading_other": "Uploading {{count}} files...",
-      "uploadFailed": "⚠️ Failed to upload {{name}} "
+      "uploadFailed": "⚠️ Failed to upload {{name}} ",
+      "importConflict": {
+        "duplicate": "{{name}} is already in this project as {{asset}}. Nothing new was imported.",
+        "trashed": "{{name}} is in the trash as {{asset}}. Nothing new was imported.",
+        "useExisting": "Use existing",
+        "importAnyway": "Import anyway",
+        "restore": "Restore",
+        "dismiss": "Dismiss"
+      }
     },
     "dashboardComposer": {
       "configureAgent": "Configure Agent",

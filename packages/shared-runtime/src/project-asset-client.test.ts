@@ -1011,6 +1011,23 @@ describe("Project Asset Host client", () => {
       expect.objectContaining({ operation: "get", assetId: "asset:one" }),
       expect.objectContaining({ operation: "restore", assetId: "asset:one" }),
     ]);
+    // A fresh id whose bytes are trashed under another id restores the holder,
+    // not the id that was never created.
+    const trashedElsewhere = recovery({
+      code: "PROJECT_ASSET_TRASHED",
+      projectAssetId: "fresh",
+      existingProjectAssetIds: ["asset:one"],
+    });
+    expect(trashedElsewhere?.problem).toContain("asset:one");
+    expect(trashedElsewhere?.steps).toEqual([
+      expect.objectContaining({ operation: "get", assetId: "asset:one" }),
+      expect.objectContaining({ operation: "restore", assetId: "asset:one" }),
+      expect.objectContaining({
+        operation: "import",
+        projectAssetId: "fresh",
+        allowDuplicate: true,
+      }),
+    ]);
     expect(
       recovery({
         code: "PROJECT_ASSET_ID_COLLISION",
