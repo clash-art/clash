@@ -79,6 +79,11 @@ import {
   type AcpBenchmarkAgent,
 } from "./acp-harness";
 import { createIsolatedAgentHome } from "./agent-home";
+import {
+  agentSpawnIdentity,
+  handOverTree,
+  type AgentProcessIsolation,
+} from "./agent-isolation";
 import { loadSubmission } from "./artifacts";
 import { writeAtifTrajectory } from "./atif";
 import {
@@ -953,6 +958,7 @@ async function startTrustedCliProxy(input: {
   workspace: string;
   logsRoot: string;
   processScope: BenchmarkProcessScope;
+  agentIsolation?: AgentProcessIsolation;
 }): Promise<TrustedCliProxy> {
   const tracePath = join(input.logsRoot, "clash-cli-events.jsonl");
   await writeFile(tracePath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
@@ -1044,6 +1050,10 @@ async function startTrustedCliProxy(input: {
           });
         },
       });
+      // The CLI runs as the worker; what it wrote must stay the Agent's to edit.
+      if (input.agentIsolation) {
+        await handOverTree(input.workspace, input.agentIsolation.agent);
+      }
       // The import's own output is the only place a minted identity appears.
       const importedProjectAssetId =
         result.exitCode === 0 && result.signal === null && !result.error
@@ -1122,7 +1132,8 @@ async function startTrustedCliProxy(input: {
       "process.exitCode = Number.isInteger(result.exitCode) ? result.exitCode : 1",
       '})().catch((error) => { fs.writeSync(2, Buffer.from(String(error && error.stack || error) + "\\n")); process.exitCode = 1 })',
     ].join("\n"),
-    { encoding: "utf8", mode: 0o500 },
+    // An isolated Agent runs the shim as another uid; it still cannot edit it.
+    { encoding: "utf8", mode: input.agentIsolation ? 0o555 : 0o500 },
   );
   let closePromise: Promise<void> | undefined;
   return {
@@ -1197,6 +1208,7 @@ async function startTrustedMcpRelay(input: {
   workspace: string;
   logsRoot: string;
   processScope: BenchmarkProcessScope;
+  agentIsolation?: AgentProcessIsolation;
 }): Promise<TrustedMcpRelay> {
   const recorder = createRunnerMcpTraceRecorder();
   const stderr = await open(join(input.logsRoot, "clash-mcp.stderr.log"), "w");
@@ -1291,7 +1303,7 @@ async function startTrustedMcpRelay(input: {
       'socket.once("error", (error) => { process.stderr.write(String(error && error.stack || error) + "\\n"); process.exitCode = 1 })',
       'process.stdin.once("error", (error) => socket.destroy(error))',
     ].join("\n"),
-    { encoding: "utf8", mode: 0o500 },
+    { encoding: "utf8", mode: input.agentIsolation ? 0o555 : 0o500 },
   );
   let closePromise: Promise<void> | undefined;
   return {
@@ -1684,6 +1696,7 @@ async function runAgent(input: {
   prompt: string;
   clashAccess?: AgentClashAccess;
   processScope: BenchmarkProcessScope;
+  agentIsolation?: AgentProcessIsolation;
 }): Promise<AgentRunReport> {
   await mkdir(input.logsRoot, { recursive: true });
   const taskSkillContext =
@@ -1724,8 +1737,11 @@ async function runAgent(input: {
   if (resolvedAgent && input.lockedExecutablePath) {
     resolvedAgent.command = input.lockedExecutablePath;
   }
-  const inheritedEnvironment =
-    input.agent.inheritEnv === false ? {} : process.env;
+  const inheritedEnvironment: NodeJS.ProcessEnv =
+    input.agent.inheritEnv === false ? {} : { ...process.env };
+  for (const name of input.agentIsolation?.withheldEnv ?? []) {
+    delete inheritedEnvironment[name];
+  }
   const env = isolatedAgentEnvironment(
     {
       ...inheritedEnvironment,
@@ -1782,6 +1798,9 @@ async function runAgent(input: {
         ...acpAgent.env,
       });
       const home = await createIsolatedAgentHome(agentHomeRoot);
+      if (input.agentIsolation) {
+        await handOverTree(agentHomeRoot, input.agentIsolation.agent);
+      }
       const launch = acpHeadlessLaunch(acpAgent, home);
       const mcp = input.clashAccess?.mcp;
       result = await runAcpAgentSession({
@@ -1803,6 +1822,7 @@ async function runAgent(input: {
           : [],
         timeoutMs: input.benchmark.timeoutMs,
         stderrFd: stderr.fd,
+        identity: agentSpawnIdentity(input.agentIsolation),
         events,
         ...(launch.thinkingLevel ? { thinkingLevel: launch.thinkingLevel } : {}),
         onSpawn: (spawned) => {
@@ -1847,6 +1867,7 @@ async function runAgent(input: {
       spawn(resolvedAgent!.command, resolvedAgent!.args, {
         cwd: input.workspace,
         env,
+        ...agentSpawnIdentity(input.agentIsolation),
         shell: false,
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", stderr.fd],
@@ -3827,8 +3848,10 @@ async function runCase(input: {
   runtime?: BenchmarkRuntimeClaim;
   subject?: BenchmarkLockSubject;
   adoptCaseRoot?: boolean;
+  agentIsolation?: AgentProcessIsolation;
 }): Promise<BenchmarkCaseReport> {
   assertSafePathSegment(input.benchmark.id, "Benchmark case id");
+  const agentIsolation = input.agentIsolation;
   const caseRoot = input.caseRoot;
   await claimCaseRoot(caseRoot, input.adoptCaseRoot);
   if (input.benchmark.execution?.environment) {
@@ -3858,6 +3881,10 @@ async function runCase(input: {
   let completedAgent: AgentRunReport | undefined;
   try {
     clashHostConfig = await resolveClashHost(input.agent, caseRoot, workspace);
+    if (agentIsolation && clashHostConfig) {
+      // The Agent may reach the relay shims below it but not list it.
+      await chmod(clashHostConfig.runtimeRoot, 0o711);
+    }
     if (environment) {
       const inputWorkspace = environment.initialState?.workspace;
       if (!inputWorkspace || !clashHostConfig) {
@@ -4083,6 +4110,7 @@ async function runCase(input: {
             workspace,
             logsRoot,
             processScope: input.processScope,
+            ...(agentIsolation ? { agentIsolation } : {}),
           })
         : undefined;
       trustedMcpRelay =
@@ -4098,6 +4126,7 @@ async function runCase(input: {
               workspace,
               logsRoot,
               processScope: input.processScope,
+              ...(agentIsolation ? { agentIsolation } : {}),
             })
           : undefined;
       const agentClashAccess: AgentClashAccess | undefined = clashHost
@@ -4130,6 +4159,10 @@ async function runCase(input: {
           installedSkillNames,
         });
       }
+      if (agentIsolation) {
+        // Everything set up so far is the Agent's to work on, and nothing else.
+        await handOverTree(executionWorkspaceRoot, agentIsolation.agent);
+      }
       agent = await runAgent({
         agent: input.agent,
         ...(executionLockReceipt?.sources.executable
@@ -4146,6 +4179,7 @@ async function runCase(input: {
         prompt,
         clashAccess: agentClashAccess,
         processScope: input.processScope,
+        ...(agentIsolation ? { agentIsolation } : {}),
       });
       completedAgent = agent;
       if (executionLockReceipt) {
@@ -5509,6 +5543,8 @@ export type BenchmarkAttemptExecutionInput = {
   subject?: BenchmarkLockSubject;
   /** `caseRoot` already exists, is empty, and is a dispatcher-provided mount. */
   adoptCaseRoot?: boolean;
+  /** Run the Agent as its own uid, apart from this (root) worker. */
+  agentIsolation?: AgentProcessIsolation;
   /** The dispatcher failed before the Attempt could run; seal it as infrastructure. */
   dispatchFailure?: unknown;
 };
@@ -5559,6 +5595,9 @@ export async function executeBenchmarkAttempt(
             ...(input.runtime ? { runtime: input.runtime } : {}),
             ...(input.subject ? { subject: input.subject } : {}),
             ...(input.adoptCaseRoot ? { adoptCaseRoot: true } : {}),
+            ...(input.agentIsolation
+              ? { agentIsolation: input.agentIsolation }
+              : {}),
           });
   } catch (error) {
     report = await createInfrastructureFailureReport({

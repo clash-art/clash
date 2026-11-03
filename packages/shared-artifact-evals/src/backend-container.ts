@@ -1,11 +1,16 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { BENCHMARK_ACP_BIN_DIR_VARIABLE } from "./acp-harness";
+import {
+  assertAgentIsolation,
+  type AgentIsolation,
+  type ProcessIdentity,
+} from "./agent-isolation";
 import {
   collectWorkerAttempt,
   createAttemptUnit,
@@ -116,7 +121,18 @@ export type ContainerBackendOptions = {
    * benchmark's own directory, never a product's managed ACP bin directory.
    */
   acpBinDir?: string;
+  /**
+   * The unprivileged uid/gid the worker runs the Agent as. It must differ
+   * from root and from this process's uid, which owns the private mounts.
+   */
+  agentUser?: ProcessIdentity;
   run?: ContainerCommandRunner;
+};
+
+/** The `nonroot` user of distroless images; any uid the host does not use works. */
+export const DEFAULT_CONTAINER_AGENT_USER: ProcessIdentity = {
+  uid: 65_532,
+  gid: 65_532,
 };
 
 const RUNNER_PACKAGE = join("packages", "shared-artifact-evals");
@@ -174,6 +190,14 @@ function isInside(parent: string, child: string): boolean {
   );
 }
 
+/** Drops roots nested in another one: mounting the outer one exposes them. */
+function outermost(paths: string[]): string[] {
+  const unique = [...new Set(paths)];
+  return unique.filter(
+    (path) => !unique.some((other) => other !== path && isInside(other, path)),
+  );
+}
+
 /**
  * Runs each Attempt in a fresh container. Isolation that is actually
  * established, and therefore recorded: a private root filesystem from the
@@ -181,9 +205,13 @@ function isInside(parent: string, child: string): boolean {
  * Attempt directory), the selected network mode, and a per-Attempt container
  * that is removed afterwards. The runner checkout is not mounted; the worker
  * arrives on standard input, so grader source is not a file the Agent can
- * read. The suite file and the worker's memory are not hidden from an Agent
- * that shares the worker's user. Not established: any resource limit, syscall
- * filtering beyond the engine default, or egress filtering in `default` mode.
+ * read. The worker runs as container root and starts the Agent as
+ * `agentUser`; the suite (rubrics included) and the task's skill sources are
+ * mounted only inside the unit directory and the Attempt directory is mode
+ * 0700, both owned by this process's uid, so the Agent cannot open them, and
+ * the worker's `/proc` entries belong to another uid. Not established: any
+ * resource limit, syscall filtering beyond the engine default, or egress
+ * filtering in `default` mode.
  */
 export function createContainerBackend(
   options: ContainerBackendOptions,
@@ -192,6 +220,10 @@ export function createContainerBackend(
   const run = options.run ?? spawnContainerCommand;
   const network = options.network ?? "default";
   const bundleWorker = options.bundleWorker ?? bundleContainerWorker;
+  const agentIsolation: AgentIsolation = {
+    agent: options.agentUser ?? DEFAULT_CONTAINER_AGENT_USER,
+    owner: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
+  };
   let claim: Promise<BenchmarkRuntimeClaim> | undefined;
   let worker: Promise<string> | undefined;
 
@@ -237,14 +269,21 @@ export function createContainerBackend(
         "A container Attempt that uses Clash needs an explicit subject to mount",
       );
     }
+    // Owner-only (mkdtemp creates 0700): what is mounted below `privateRoot`
+    // is reachable by the root worker and not by the Agent's uid.
     const unitDir = await mkdtemp(join(tmpdir(), "clash-bench-unit-"));
+    const privateRoot = join(unitDir, "ro");
     const containerName = `clash-bench-${randomUUID().slice(0, 12)}`;
     try {
+      assertAgentIsolation(agentIsolation, undefined);
       await mkdir(dirname(dispatch.caseRoot), { recursive: true });
-      await mkdir(dispatch.caseRoot);
+      // The worker writes grading records here while the Agent still runs.
+      await mkdir(dispatch.caseRoot, { mode: 0o700 });
       const unit = createAttemptUnit({
         dispatch,
         suiteFile: options.suiteFile,
+        suiteRoot: join(privateRoot, dispatch.suiteRoot),
+        agentIsolation,
         claim: claimed,
         forwardEnv: options.forwardEnv ?? [],
         ...(dispatch.subject
@@ -267,32 +306,49 @@ export function createContainerBackend(
       }
       const runnerPackage = join(options.runnerRoot, RUNNER_PACKAGE);
       const skillPack = dispatch.benchmark.skillPack;
-      const candidates = [
-        ...new Set([
-          dispatch.suiteRoot,
-          // The Environment lock hashes the runner manifest by path.
-          join(runnerPackage, "package.json"),
-          ...(skillPack ? [resolve(dispatch.suiteRoot, skillPack.path)] : []),
-          ...(
-            await resolveTaskSkillPack(dispatch.benchmark, dispatch.suiteRoot)
-          ).map((path) => resolve(dispatch.suiteRoot, path)),
-          ...(options.runnerNode ? [options.runnerNode] : []),
-          ...(options.acpBinDir ? [options.acpBinDir] : []),
-          ...(dispatch.subject ? [dispatch.subject.pluginRoot] : []),
-        ]),
-      ];
-      // A root nested in another mounted root is already visible read-only.
-      const readOnlyRoots = candidates.filter(
-        (path) =>
-          !candidates.some((other) => other !== path && isInside(other, path)),
-      );
-      const exposed = readOnlyRoots.find((path) =>
+      // Grader inputs: the suite carries the rubrics, and the worker copies
+      // the skills into the workspace. Mounted inside `privateRoot` at their
+      // host path, so suite-relative paths still resolve.
+      const privateRoots = outermost([
+        dispatch.suiteRoot,
+        ...(skillPack ? [resolve(dispatch.suiteRoot, skillPack.path)] : []),
+        ...(
+          await resolveTaskSkillPack(dispatch.benchmark, dispatch.suiteRoot)
+        ).map((path) => resolve(dispatch.suiteRoot, path)),
+      ]);
+      // What the Agent's own processes run, at the host path they name.
+      const sharedRoots = outermost([
+        // The Environment lock hashes the runner manifest by path.
+        join(runnerPackage, "package.json"),
+        ...(options.runnerNode ? [options.runnerNode] : []),
+        ...(options.acpBinDir ? [options.acpBinDir] : []),
+        ...(dispatch.subject ? [dispatch.subject.pluginRoot] : []),
+      ]);
+      const exposed = [...privateRoots, ...sharedRoots].find((path) =>
         isInside(path, join(runnerPackage, "src")),
       );
       if (exposed) {
         throw new Error(
           `Refusing to mount ${exposed}: it contains the benchmark runner's grader source`,
         );
+      }
+      for (const shared of sharedRoots) {
+        const hidden = privateRoots.find((path) => isInside(shared, path));
+        if (hidden) {
+          throw new Error(
+            `Refusing to mount ${shared}: the Agent could read the grader input ${hidden} through it`,
+          );
+        }
+      }
+      // The unit directory is mounted read-only, so mount points must exist.
+      for (const path of privateRoots) {
+        const target = join(privateRoot, path);
+        if ((await stat(path)).isDirectory()) {
+          await mkdir(target, { recursive: true });
+        } else {
+          await mkdir(dirname(target), { recursive: true });
+          await writeFile(target, "");
+        }
       }
       const env: NodeJS.ProcessEnv = { ...process.env };
       const agentEnv = (dispatch.agent as { env?: Record<string, string> }).env;
@@ -306,11 +362,19 @@ export function createContainerBackend(
         "--name",
         containerName,
         ...(network === "none" ? ["--network", "none"] : []),
+        // Root only to start the Agent as `agentUser`; nothing it starts can
+        // gain privilege back through a setuid binary in the image.
         "--user",
-        `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}`,
-        ...readOnlyRoots.flatMap((path) => ["--volume", `${path}:${path}:ro`]),
+        "0:0",
+        "--security-opt",
+        "no-new-privileges",
+        ...sharedRoots.flatMap((path) => ["--volume", `${path}:${path}:ro`]),
         "--volume",
         `${unitDir}:${unitDir}:ro`,
+        ...privateRoots.flatMap((path) => [
+          "--volume",
+          `${path}:${join(privateRoot, path)}:ro`,
+        ]),
         "--volume",
         `${dispatch.caseRoot}:${dispatch.caseRoot}`,
         "--workdir",

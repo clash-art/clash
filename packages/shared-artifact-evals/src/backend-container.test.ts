@@ -1,21 +1,27 @@
+import type * as ChildProcessModule from "node:child_process";
+import type * as FsPromisesModule from "node:fs/promises";
 import {
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   rm,
+  stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { assertSealedRuntimeMatches } from "./attempt-unit";
+import type { ProcessIdentity } from "./agent-isolation";
+import { assertSealedRuntimeMatches, type AttemptUnit } from "./attempt-unit";
 import { runAttemptUnit } from "./attempt-worker";
 import {
   bundleContainerWorker,
   createContainerBackend,
+  DEFAULT_CONTAINER_AGENT_USER,
   spawnContainerCommand,
   type ContainerCommandRunner,
 } from "./backend-container";
@@ -26,6 +32,45 @@ import {
   runBenchmarkSuite,
 } from "./runner";
 import type { ArtifactBenchmarkCase, BenchmarkAgent } from "./types";
+
+// This suite is not root, so it cannot switch uid. A process the worker starts
+// as another uid is recorded and started as this one; a handover is recorded
+// and skipped. Everything else runs unchanged.
+const isolated = vi.hoisted(() => ({
+  spawns: [] as Array<{ command: string; uid?: number; gid?: number }>,
+  handovers: [] as Array<{ path: string; uid: number; gid: number }>,
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcessModule>();
+  const spawn = ((
+    command: string,
+    args: readonly string[],
+    options: ChildProcessModule.SpawnOptions,
+  ) => {
+    if (options?.uid === undefined && options?.gid === undefined) {
+      return actual.spawn(command, args, options);
+    }
+    const { uid, gid, ...rest } = options;
+    isolated.spawns.push({
+      command,
+      ...(uid === undefined ? {} : { uid }),
+      ...(gid === undefined ? {} : { gid }),
+    });
+    return actual.spawn(command, args, rest);
+  }) as typeof actual.spawn;
+  return { ...actual, spawn };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromisesModule>();
+  return {
+    ...actual,
+    lchown: async (path: string, uid: number, gid: number) => {
+      isolated.handovers.push({ path: String(path), uid, gid });
+    },
+  };
+});
 
 const SECRET = "sk-test-credential-that-must-never-leave-the-environment";
 const IMAGE_ID = `sha256:${"b".repeat(64)}`;
@@ -103,10 +148,96 @@ function mounts(args: string[]): Array<{ source: string; target: string }> {
   });
 }
 
+/** Where the worker's grader inputs are mounted: inside the unit directory. */
+function privateRootOf(args: string[]): string {
+  return join(dirname(args[args.length - 1]!), "ro");
+}
+
 /** True when `path` is `root` or a file below it, so mounting `root` exposes it. */
 function reaches(root: string, path: string): boolean {
   const local = relative(root, path);
   return !local.startsWith("..") && !isAbsolute(local);
+}
+
+/** The host file behind a container path: the deepest mount that covers it. */
+function hostPathOf(
+  mounted: Array<{ source: string; target: string }>,
+  path: string,
+): string | undefined {
+  const covering = mounted
+    .filter(({ target }) => reaches(target, path))
+    .sort((left, right) => right.target.length - left.target.length)[0];
+  return covering && join(covering.source, relative(covering.target, path));
+}
+
+async function permits(
+  hostPath: string,
+  who: ProcessIdentity,
+  bit: number,
+): Promise<boolean> {
+  const info = await stat(hostPath);
+  const shift = info.uid === who.uid ? 6 : info.gid === who.gid ? 3 : 0;
+  return ((info.mode >> shift) & bit) !== 0;
+}
+
+/**
+ * Whether `who` could open a container path under ordinary Unix permissions:
+ * every mounted directory on the way must be searchable and the file readable.
+ * Directories no mount covers come from the image and are taken as open.
+ */
+async function canRead(
+  mounted: Array<{ source: string; target: string }>,
+  path: string,
+  who: ProcessIdentity,
+): Promise<boolean> {
+  const parts = path.split(sep).filter(Boolean);
+  for (let depth = 1; depth < parts.length; depth += 1) {
+    const directory = hostPathOf(
+      mounted,
+      `${sep}${parts.slice(0, depth).join(sep)}`,
+    );
+    if (directory && !(await permits(directory, who, 0o1))) return false;
+  }
+  const file = hostPathOf(mounted, path);
+  return file !== undefined && (await permits(file, who, 0o4));
+}
+
+/** Every file a container sees through its mounts, by container path. */
+async function mountedFiles(
+  mounted: Array<{ source: string; target: string }>,
+): Promise<string[]> {
+  const files = new Set<string>();
+  for (const { source, target } of mounted) {
+    const info = await stat(source).catch(() => undefined);
+    if (!info) continue;
+    if (!info.isDirectory()) {
+      files.add(target);
+      continue;
+    }
+    for (const entry of await readdir(source, {
+      recursive: true,
+      withFileTypes: true,
+    })) {
+      if (entry.isFile()) {
+        files.add(
+          join(target, relative(source, join(entry.parentPath, entry.name))),
+        );
+      }
+    }
+  }
+  return [...files];
+}
+
+/**
+ * Stands in for the engine's bind mounts: a target that is not the source's
+ * own path becomes a link to the source, so the worker finds it.
+ */
+async function simulateMounts(args: string[]): Promise<void> {
+  for (const { source, target } of mounts(args)) {
+    if (source === target) continue;
+    await rm(target, { recursive: true, force: true });
+    await symlink(source, target);
+  }
 }
 
 /** An engine that answers metadata calls and runs the worker with only the env it was handed by name. */
@@ -118,6 +249,10 @@ function fakeEngine(
       args: string[],
       env: NodeJS.ProcessEnv,
     ) => Promise<{ code: number; stderr: string }>;
+    /** The worker is container root unless this is false. */
+    privileged?: boolean;
+    /** Called while the container still exists, after the worker returned. */
+    inspect?: (args: string[], unit: AttemptUnit) => Promise<void>;
   } = {},
 ): ContainerCommandRunner {
   return async (_command, args, options) => {
@@ -152,16 +287,28 @@ function fakeEngine(
       ),
     );
     const unitPath = args[args.length - 1]!;
-    if (behavior.runWorker) {
-      const result = await behavior.runWorker(args, containerEnv);
-      return {
-        code: result.code,
-        signal: null,
-        stdout: "",
-        stderr: result.stderr,
-      };
+    const unit = JSON.parse(await readFile(unitPath, "utf8")) as AttemptUnit;
+    await simulateMounts(args);
+    const user = args[args.indexOf("--user") + 1];
+    const root =
+      behavior.privileged !== false && user === "0:0"
+        ? vi.spyOn(process, "getuid").mockReturnValue(0)
+        : undefined;
+    try {
+      if (behavior.runWorker) {
+        const result = await behavior.runWorker(args, containerEnv);
+        return {
+          code: result.code,
+          signal: null,
+          stdout: "",
+          stderr: result.stderr,
+        };
+      }
+      await runAttemptUnit(unitPath, { env: containerEnv });
+    } finally {
+      root?.mockRestore();
     }
-    await runAttemptUnit(unitPath, { env: containerEnv });
+    await behavior.inspect?.(args, unit);
     return ok("");
   };
 }
@@ -236,8 +383,11 @@ describe("container backend", () => {
       }
     }
     expect(mounted.map(({ source }) => source)).not.toContain(REPO_ROOT);
-    // What the worker does need from outside the suite is mounted by itself.
-    expect(call.args).toContain(`${skill}:${skill}:ro`);
+    // What the worker does need from outside the suite is mounted by itself,
+    // beside the suite inside the private root, so its suite path resolves.
+    expect(call.args).toContain(
+      `${skill}:${join(privateRootOf(call.args), skill)}:ro`,
+    );
     // The worker program is piped in rather than read from a mounted file.
     expect(call.stdin).toBe(WORKER_PROGRAM);
     expect(call.args).toContain("--interactive");
@@ -248,6 +398,139 @@ describe("container backend", () => {
       "worker",
       "--unit",
     ]);
+  });
+
+  it("leaves the Agent no readable path to the rubrics and runs it as a uid apart from the worker's", async () => {
+    const { suiteRoot, outputRoot, suite } = await fixture();
+    const rubric = "grader-only-rubric-7c41e2";
+    suite.cases[0]!.rubric[0]!.id = rubric;
+    await writeFile(join(suiteRoot, "suite.json"), JSON.stringify(suite));
+    isolated.spawns.length = 0;
+    isolated.handovers.length = 0;
+    const calls: EngineCall[] = [];
+    const graderInputs: string[] = [];
+    const agentReadable: string[] = [];
+    let unitIsolation: AttemptUnit["agentIsolation"];
+    const report = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: REPO_ROOT,
+          suiteFile: "suite.json",
+          bundleWorker,
+          run: fakeEngine(calls, {
+            // While the container exists: the rubric is in the suite and in
+            // the grading records the worker has written by now.
+            inspect: async (args, unit) => {
+              unitIsolation = unit.agentIsolation;
+              const mounted = mounts(args);
+              for (const path of await mountedFiles(mounted)) {
+                const text = await readFile(hostPathOf(mounted, path)!, "utf8");
+                if (!text.includes(rubric)) continue;
+                graderInputs.push(path);
+                if (await canRead(mounted, path, unit.agentIsolation!.agent)) {
+                  agentReadable.push(path);
+                }
+              }
+            },
+          }),
+        }),
+      ],
+    });
+    expect(report.status).toBe("pass");
+    // The worker still graded against the rubric it alone could read.
+    expect(JSON.stringify(report.cases[0])).toContain(rubric);
+    const runCall = calls.find(({ args }) => args[0] === "run")!;
+    expect(graderInputs).toContain(
+      join(privateRootOf(runCall.args), suiteRoot, "suite.json"),
+    );
+    expect(agentReadable).toEqual([]);
+
+    const [workerUid] =
+      runCall.args[runCall.args.indexOf("--user") + 1]!.split(":").map(Number);
+    expect(workerUid).toBe(0);
+    expect(runCall.args[runCall.args.indexOf("--security-opt") + 1]).toBe(
+      "no-new-privileges",
+    );
+    const owner = { uid: process.getuid!(), gid: process.getgid!() };
+    expect(unitIsolation).toEqual({
+      agent: DEFAULT_CONTAINER_AGENT_USER,
+      owner,
+    });
+    // Only the Agent is started as the Agent's uid, and that is not the worker's.
+    expect(isolated.spawns).toEqual([
+      // `agent` runs `process.execPath -e …`.
+      { command: process.execPath, ...DEFAULT_CONTAINER_AGENT_USER },
+    ]);
+    expect(isolated.spawns[0]!.uid).not.toBe(workerUid);
+    expect(isolated.spawns[0]!.uid).not.toBe(owner.uid);
+    // The Agent owns its workspace; the dispatcher gets the Attempt back.
+    expect(
+      isolated.handovers.some(
+        ({ path, uid }) =>
+          uid === DEFAULT_CONTAINER_AGENT_USER.uid &&
+          path.endsWith(`${sep}workspace${sep}outcome.json`),
+      ),
+    ).toBe(true);
+    expect(isolated.handovers).toContainEqual({
+      path: join(outputRoot, "run", "task"),
+      ...owner,
+    });
+  });
+
+  it("refuses an Agent uid that owns the private mounts, and a worker that cannot switch away from its own", async () => {
+    const { suiteRoot, outputRoot, suite } = await fixture();
+    const calls: EngineCall[] = [];
+    const shared = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "shared",
+      agent,
+      maxInfrastructureAttempts: 1,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: REPO_ROOT,
+          suiteFile: "suite.json",
+          bundleWorker,
+          agentUser: { uid: process.getuid!(), gid: process.getgid!() },
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+    expect(shared.cases[0]?.failure).toMatchObject({
+      classification: "infrastructure",
+      detail: expect.stringContaining("must differ"),
+    });
+    expect(calls.some(({ args }) => args[0] === "run")).toBe(false);
+
+    const unprivileged = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "unprivileged",
+      agent,
+      maxInfrastructureAttempts: 1,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: REPO_ROOT,
+          suiteFile: "suite.json",
+          bundleWorker,
+          run: fakeEngine([], { privileged: false }),
+        }),
+      ],
+    });
+    expect(unprivileged.cases[0]?.failure).toMatchObject({
+      classification: "infrastructure",
+      detail: expect.stringContaining("must run as root"),
+    });
   });
 
   it("refuses a suite root that would mount the runner's grader source", async () => {
@@ -379,7 +662,9 @@ describe("container backend", () => {
     const volumes = runCall.args.flatMap((arg, index) =>
       runCall.args[index - 1] === "--volume" ? [arg] : [],
     );
-    expect(volumes).toContain(`${suiteRoot}:${suiteRoot}:ro`);
+    expect(volumes).toContain(
+      `${suiteRoot}:${join(privateRootOf(runCall.args), suiteRoot)}:ro`,
+    );
     const caseRoot = join(outputRoot, "run", "task");
     expect(volumes).toContain(`${caseRoot}:${caseRoot}`);
     expect(runCall.args).toContain("--rm");

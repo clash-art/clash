@@ -2,6 +2,11 @@ import { mkdir, readdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  assertAgentIsolation,
+  handOverTree,
+  type AgentProcessIsolation,
+} from "./agent-isolation";
+import {
   benchmarkCaseSha256,
   readAttemptUnit,
   type AttemptUnit,
@@ -113,6 +118,32 @@ export async function runAttemptUnit(
   } = {},
 ): Promise<void> {
   const unit = await readAttemptUnit(unitPath);
+  const isolation = unit.agentIsolation;
+  if (!isolation) return await runUnit(unit, options);
+  assertAgentIsolation(isolation, process.getuid?.());
+  try {
+    await runUnit(unit, options, {
+      ...isolation,
+      // The judge's variables are the worker's; the Agent does not inherit them.
+      withheldEnv: (unit.judgeEnvNames ?? []).filter(
+        (name) => !unit.envNames.includes(name),
+      ),
+    });
+  } finally {
+    // The worker wrote as root; the dispatcher must be able to manage the result.
+    await handOverTree(unit.caseRoot, isolation.owner);
+  }
+}
+
+async function runUnit(
+  unit: AttemptUnit,
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    suiteRoot?: string;
+  },
+  agentIsolation?: AgentProcessIsolation,
+): Promise<void> {
   const suiteRoot = await realpath(options.suiteRoot ?? unit.suiteRoot);
   const suite = await loadBenchmarkSuite(join(suiteRoot, unit.suiteFile));
   const benchmark = suite.cases.find(({ id }) => id === unit.caseId);
@@ -171,6 +202,7 @@ export async function runAttemptUnit(
       startedAt: unit.startedAt,
       processScope,
       runtime: unit.runtime,
+      ...(agentIsolation ? { agentIsolation } : {}),
       adoptCaseRoot: true,
       ...(subject
         ? {
