@@ -47,6 +47,30 @@ describe("metadata service routes", () => {
     expect(one).toMatchObject({ id: "p1", assets: [], assetCount: 0 });
   });
 
+  it("counts the Project's Project Assets once alongside legacy previews", async () => {
+    const { state } = setup();
+    const memory = createMemoryMetadataPorts(state);
+    const requested: string[] = [];
+    const service = createMetadataService({
+      ...memory,
+      previews: {
+        ...memory.previews,
+        nodes: async () => [{ id: "n1", type: "image", data: { assetId: "legacy-1" } }],
+        assetsByIds: async (ids) => ids.map((id) => ({ id, srcR2Key: `k/${id}`, coverR2Key: null })),
+        projectAssetIds: async (projectId) => {
+          requested.push(projectId);
+          return ["asset-a", "asset-b", "legacy-1"];
+        },
+      },
+    });
+    const card = await (
+      (await service.handle(new Request("https://svc.test/api/projects/p1", { headers: cookie }))) as Response
+    ).json();
+    expect(requested).toEqual(["p1"]);
+    expect(card.assets.map((a: { assetId: string }) => a.assetId)).toEqual(["legacy-1"]);
+    expect(card.assetCount).toBe(3);
+  });
+
   it("keeps api-cf's 401 shapes and session-only semantics", async () => {
     const { call } = setup();
     expect(await (await call("/api/projects")).json()).toEqual({ error: "Unauthorized" });

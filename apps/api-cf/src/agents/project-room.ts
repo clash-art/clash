@@ -1583,6 +1583,25 @@ export class ProjectRoom extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Project ID of an internal `/sync/:projectId/<op>` read. These requests
+   * often reach a cold instance (no socket has initialized it), so the room
+   * must load its persisted replica rather than answer from an empty doc.
+   */
+  private extractSyncProjectId(request: Request, url: URL): string {
+    const headerProjectId = request.headers.get("x-loro-project-id");
+    if (headerProjectId) return headerProjectId;
+
+    const pathParts = url.pathname.split("/").filter(Boolean);
+    if (pathParts[0] !== "sync" || pathParts.length < 3) return this.projectId;
+    const encodedProjectId = pathParts.slice(1, -1).join("/");
+    try {
+      return decodeURIComponent(encodedProjectId);
+    } catch {
+      return encodedProjectId;
+    }
+  }
+
   private async ensureRoomInitialized(
     projectId: string,
     options: { reconcilePendingNodes?: boolean } = {},
@@ -1830,6 +1849,11 @@ export class ProjectRoom extends DurableObject<Env> {
 
     // Handle /update-node internal request
     if (url.pathname.endsWith("/update-node") && request.method === "POST") {
+      const initError = await this.ensureRoomInitialized(
+        this.extractSyncProjectId(request, url),
+        { reconcilePendingNodes: false },
+      );
+      if (initError) return initError;
       try {
         const body = (await request.json()) as {
           nodeId: string;
@@ -1837,8 +1861,6 @@ export class ProjectRoom extends DurableObject<Env> {
           /** Optional log line to append to node.data._log (kept visible in UI). */
           log?: string;
         };
-
-        if (this.initPromise) await this.initPromise;
 
         updateNodeData(this.doc, body.nodeId, body.updates, (data) =>
           this.broadcastBinary(data),
@@ -1861,9 +1883,12 @@ export class ProjectRoom extends DurableObject<Env> {
 
     // Handle /nodes GET request
     if (url.pathname.endsWith("/nodes") && request.method === "GET") {
+      const initError = await this.ensureRoomInitialized(
+        this.extractSyncProjectId(request, url),
+        { reconcilePendingNodes: false },
+      );
+      if (initError) return initError;
       try {
-        if (this.initPromise) await this.initPromise;
-
         const nodesMap = this.doc.getMap("nodes");
         const nodesObj = nodesMap.toJSON() as Record<string, any>;
         const nodesArray = Object.values(nodesObj);
@@ -1879,9 +1904,12 @@ export class ProjectRoom extends DurableObject<Env> {
     // Curl it to see exactly what the source of truth has — way faster than
     // hunting down race conditions through frontend console.log.
     if (url.pathname.endsWith("/loro-dump") && request.method === "GET") {
+      const initError = await this.ensureRoomInitialized(
+        this.extractSyncProjectId(request, url),
+        { reconcilePendingNodes: false },
+      );
+      if (initError) return initError;
       try {
-        if (this.initPromise) await this.initPromise;
-
         const nodes = this.doc.getMap("nodes").toJSON() as Record<string, any>;
         const edges = Object.fromEntries(
           listNodeOwnedEdges(this.doc).map(({ id, ...edge }) => [id, edge]),

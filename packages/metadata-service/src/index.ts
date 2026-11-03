@@ -21,6 +21,7 @@ import {
   type ProjectMetadata,
 } from "@clash/shared-types/project-metadata";
 import {
+  projectAssetCount,
   resolveProjectPreviews,
   type ProjectPreview,
   type ProjectPreviewPorts,
@@ -120,8 +121,11 @@ class Deferred extends Error {}
 
 export function createMetadataService(ports: MetadataServicePorts) {
   const card = async (userId: string, project: ProjectRow) => {
-    const assets: ProjectPreview[] = await resolveProjectPreviews(ports.previews, userId, project);
-    return { ...project, assets, assetCount: assets.length };
+    const [assets, projectAssetIds]: [ProjectPreview[], string[]] = await Promise.all([
+      resolveProjectPreviews(ports.previews, userId, project),
+      ports.previews.projectAssetIds?.(project.id) ?? [],
+    ]);
+    return { ...project, assets, assetCount: projectAssetCount(assets, projectAssetIds) };
   };
   const who = async (request: Request, accept: "session" | "any") => {
     const verdict = await ports.identity.verify(request, accept);

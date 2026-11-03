@@ -8,7 +8,7 @@
   ],
   "key_files": {
     "src/index.ts": "Ports, route table and createMetadataService.",
-    "src/previews.ts": "Project card asset preview selection (placed media nodes first, then imported Asset refs).",
+    "src/previews.ts": "Project card asset preview selection (placed media nodes first, then imported Asset refs) and the card assetCount, which also counts the Project Assets of the Project Loro replica (optional projectAssetIds port).",
     "src/memory.ts": "In-memory adapters for tests and the Node smoke composition."
   }
 }

@@ -4,6 +4,8 @@ import { getDb } from "../db";
 import { DEV_USER_ID } from "./session";
 import { projects, assets, assetRefs } from "../db/app.schema";
 import { signAssetPath } from "./asset-signing";
+import { readProjectRoomAssetIds } from "./project-room-asset-ids";
+import { projectAssetCount } from "@clash/metadata-service";
 import type { Env as AppEnv } from "../config";
 
 const projectsLog = serverLog.child("projects-d1");
@@ -79,6 +81,16 @@ async function fetchNodes(env: Env, projectId: string): Promise<unknown[]> {
     }
   }
   return [];
+}
+
+async function readProjectAssetIds(env: Env, projectId: string): Promise<string[]> {
+  if (!env.ROOM) return [];
+  try {
+    return await readProjectRoomAssetIds(env.ROOM as never, projectId);
+  } catch (err) {
+    projectsLog.warn("project_assets.list_failed", { project_id: projectId, error: err });
+    return [];
+  }
 }
 
 async function resolveProjectAssets(
@@ -218,16 +230,14 @@ export async function listProjectsWithAssets(
 
   return Promise.all(
     projectsData.map(async (project) => {
-      const resolvedAssets = await resolveProjectAssets(
-        env,
-        db,
-        userId,
-        project,
-      );
+      const [resolvedAssets, projectAssetIds] = await Promise.all([
+        resolveProjectAssets(env, db, userId, project),
+        readProjectAssetIds(env, project.id),
+      ]);
       return {
         ...project,
         assets: resolvedAssets.slice(0, 4),
-        assetCount: resolvedAssets.length,
+        assetCount: projectAssetCount(resolvedAssets, projectAssetIds),
       };
     }),
   );
@@ -244,11 +254,14 @@ export async function getProjectById(env: Env, userId: string, id: string) {
     ),
   });
   if (!project) return project;
-  const resolvedAssets = await resolveProjectAssets(env, db, userId, project);
+  const [resolvedAssets, projectAssetIds] = await Promise.all([
+    resolveProjectAssets(env, db, userId, project),
+    readProjectAssetIds(env, project.id),
+  ]);
   return {
     ...project,
     assets: resolvedAssets,
-    assetCount: resolvedAssets.length,
+    assetCount: projectAssetCount(resolvedAssets, projectAssetIds),
   };
 }
 
