@@ -16,6 +16,8 @@ import {
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
 import { projectSyncContent } from "@clash/shared-types/project-sync-content";
 import {
+  listProjectAssets,
+  listProjectTimelines,
   ResourceSchema,
   type ProjectCloudAdmission,
   type ProjectMetadata,
@@ -47,6 +49,14 @@ import {
   validateCloudContentResponse,
   verifyCloudContentFile,
 } from "./project-cloud-content.js";
+import {
+  createLocalResourcePrefetcher,
+  LocalResourceDownloadError,
+  PREFETCH_RANK,
+  type LocalResourceDownloadContext,
+  type LocalResourcePrefetchPlanItem,
+  type LocalResourcePrefetchRef,
+} from "./local-resource-prefetch.js";
 import type { LocalAssetInspectionService } from "./local-asset-inspections.js";
 import type { LocalLoroRoomHub, RemoteLoroPersistence } from "./sync.js";
 
@@ -65,7 +75,8 @@ class ProjectContentHttpError extends Error {
 
 export interface LocalProjectCloudSyncOptions {
   dataDir: string;
-  rooms: Pick<LocalLoroRoomHub, "mergeRemoteSnapshot" | "inspectProject">;
+  rooms: Pick<LocalLoroRoomHub, "mergeRemoteSnapshot" | "inspectProject"> &
+    Partial<Pick<LocalLoroRoomHub, "reportResourceStoreState">>;
   remote(projectId: string): Promise<RemoteLoroPersistence | undefined>;
   metadata: {
     list(): Promise<string[]>;
@@ -106,6 +117,14 @@ export interface LocalProjectCloudSyncOptions {
    * window is flushed once this elapses even while edits continue.
    */
   mutationMaxWaitMs?: number;
+  /** Background download of an opened Project's missing Resource bytes. */
+  prefetch?: {
+    freeBytes?(path: string): Promise<number>;
+    reserveBytes?: number;
+    maxConcurrent?: number;
+    retryBaseMs?: number;
+    diskRetryMs?: number;
+  };
 }
 
 /** Node adapter around the shared coordinator. All triggers use this one queue;
@@ -122,47 +141,20 @@ export function createLocalProjectCloudSync(
   let timer: ReturnType<typeof setInterval> | undefined;
   const fetcher = options.fetch ?? globalThis.fetch;
 
-  async function runOnce(projectId: string) {
-    const signal = AbortSignal.any([
+  const runSignal = () =>
+    AbortSignal.any([
       shutdown.signal,
       AbortSignal.timeout(options.networkTimeoutMs ?? 600_000),
     ]);
+
+  /**
+   * The authenticated cloud transport of one admitted Project, bound to one
+   * attempt's signal. Every request re-checks the admission first.
+   */
+  async function projectTransport(projectId: string, signal: AbortSignal) {
     const replicaId = await getLocalReplicaId(options.dataDir);
     const initial = await store.getProjectCloudSyncState(projectId, replicaId);
-    if (!initial || initial.admission.status === "local-only") return;
-    let remote: RemoteLoroPersistence;
-    let refs: ReturnType<typeof projectSyncContent> = {
-      resources: [],
-      documents: [],
-    };
-    // The soft-delete tombstone lives in Project metadata, and the cloud
-    // refuses every other transport once it is set. Reconcile it first so a
-    // remote delete is pulled (and a local restore pushed) instead of
-    // surfacing as an authorization failure on the snapshot.
-    const syncTombstone = async (configured: RemoteLoroPersistence) => {
-      const pulled = await configured.loadProjectMetadata!(projectId, signal);
-      const local = await options.metadata.read(projectId);
-      if (!local || !pulled || (!local.deletedAt && !pulled.deletedAt)) return;
-      await createProjectMetadataReplicator({
-        enabled: true,
-        local: { read: async () => local, write: options.metadata.write },
-        remote: {
-          pull: async () => pulled,
-          push: (metadata) =>
-            configured.saveProjectMetadata!(projectId, metadata, signal),
-        },
-      }).sync();
-    };
-    if ((await options.metadata.read(projectId))?.deletedAt) {
-      // A locally deleted Project replicates nothing but its tombstone; this
-      // is how a restore made on another Host reaches this one.
-      const configured = initial.admission.capabilities.projectMetadata
-        ? await options.remote(projectId)
-        : undefined;
-      if (configured?.loadProjectMetadata && configured.saveProjectMetadata)
-        await syncTombstone(configured);
-      if ((await options.metadata.read(projectId))?.deletedAt) return;
-    }
+    if (!initial || initial.admission.status === "local-only") return undefined;
     const assertCurrent = async () => {
       signal.throwIfAborted();
       const current = await store.getProjectCloudAdmission(
@@ -203,21 +195,6 @@ export function createLocalProjectCloudSync(
       return response;
     };
     const base = `/api/v1/projects/${encodeURIComponent(projectId)}`;
-    // Mirrors what the cloud binds a staging session to, so a restarted Host
-    // finds the session it left behind and never one for different bytes.
-    const uploadSession = (kind: string, id: string, digest: string) =>
-      cloudContentUploadSession(
-        options.dataDir,
-        JSON.stringify([
-          initial.admission.syncBaseUrl,
-          initial.admission.tenantId,
-          projectId,
-          replicaId,
-          kind,
-          id,
-          digest,
-        ]),
-      );
     const deliveryFor = (resource: Resource): AssetDeliveryPort => {
       const issue = async (
         operation: "read" | "upload",
@@ -257,19 +234,29 @@ export function createLocalProjectCloudSync(
         issueUploadUrl: () => issue("upload"),
       };
     };
-    const readLocalBytes = async (
-      path: string,
-    ): Promise<Uint8Array | undefined> => {
-      const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
-      });
-      if (!info) return undefined;
-      assertContentTransferSize(info.size, options.maxBytes);
-      return readBoundedContent(
-        Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>,
-        options,
-      );
+    /** Remote immutable facts for a Resource this Host has not registered. */
+    const remoteFacts = async (resourceId: string): Promise<Resource> => {
+      const response = (await (
+        await authenticated(
+          `${base}/resources/${encodeURIComponent(resourceId)}/delivery`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              operation: "read",
+              localReplicaId: replicaId,
+            }),
+          },
+        )
+      ).json()) as { resource: unknown };
+      return ResourceSchema.parse(response.resource);
+    };
+    const guardedFetch = async (
+      input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ) => {
+      await assertCurrent();
+      return fetcher(input, { ...init, signal });
     };
     /**
      * Seals staged download bytes under their replicated identity. A failed
@@ -307,6 +294,197 @@ export function createLocalProjectCloudSync(
         });
         throw error;
       }
+    };
+    /**
+     * The one cloud → store download path, shared by the coordinator and the
+     * prefetch queue. The digest is verified once, while streaming.
+     */
+    const download = async (
+      ref: LocalResourcePrefetchRef,
+      context: LocalResourceDownloadContext,
+    ): Promise<void> => {
+      await assertCurrent();
+      let resource = await resources.readFacts(ref.resourceId);
+      if (!resource) {
+        try {
+          resource = await remoteFacts(ref.resourceId);
+        } catch (error) {
+          if (error instanceof ProjectContentHttpError && error.status === 404)
+            throw new LocalResourceDownloadError(
+              "LOCAL_RESOURCE_REMOTE_MISSING",
+              `Resource ${ref.resourceId} has no bytes in the Project cloud.`,
+              { cause: error },
+            );
+          throw error;
+        }
+      }
+      assertContentTransferSize(resource.byteLength, options.maxBytes);
+      if (resource.id !== ref.resourceId || resource.kind !== ref.kind)
+        throw new Error("Project Resource facts conflict");
+      await context.preflight(resource.byteLength);
+      const capability = await deliveryFor(resource).issueReadUrl({
+        resourceId: resource.id,
+        scope: {
+          tenantId: initial.admission.tenantId,
+          projectId,
+          localReplicaId: replicaId,
+        },
+        purpose: "download",
+      });
+      const response = await guardedFetch(capability.url, {
+        headers: capability.headers,
+      });
+      if (!response.ok)
+        throw (
+          (await readContentTransferLimitError(response)) ??
+          new ProjectContentHttpError(response.status)
+        );
+      await validateCloudContentResponse(
+        response,
+        resource.byteLength,
+        options.maxBytes,
+      );
+      if (!response.body) throw new Error("Remote Resource bytes unavailable");
+      const byteLength = resource.byteLength;
+      async function* counted(source: AsyncIterable<Uint8Array>) {
+        let received = 0;
+        for await (const chunk of source) {
+          received += chunk.byteLength;
+          context.progress(received, byteLength);
+          yield chunk;
+        }
+      }
+      const staged = await resources.stageStream({
+        source: counted(cloudContentChunks(response.body, signal)),
+        declaredByteLength: resource.byteLength,
+        maxByteLength: contentTransferMaxBytes(options.maxBytes),
+        expectedDigest: resource.digest.value,
+      });
+      await installPulled(resource, staged.resourceId);
+    };
+    return {
+      replicaId,
+      initial,
+      base,
+      assertCurrent,
+      authenticated,
+      deliveryFor,
+      guardedFetch,
+      installPulled,
+      download,
+    };
+  }
+
+  /** Resolves the bytes of an admitted Project's Resource on the queue's own attempt. */
+  async function prefetchDownload(
+    projectId: string,
+    ref: LocalResourcePrefetchRef,
+    context: LocalResourceDownloadContext,
+  ): Promise<void> {
+    const transport = await projectTransport(projectId, runSignal());
+    // A Project that left the cloud has nothing to fetch; its Assets fall
+    // back to the coded `unavailable` state.
+    if (!transport) return;
+    // The coordinator may have installed it since the plan was made.
+    if (await resources.resolve(ref.resourceId).catch(() => undefined)) return;
+    await transport.download(ref, context);
+  }
+
+  const prefetcher = createLocalResourcePrefetcher({
+    storePath: options.dataDir,
+    download: prefetchDownload,
+    ...(options.prefetch?.freeBytes ? { freeBytes: options.prefetch.freeBytes } : {}),
+    ...(options.prefetch?.reserveBytes !== undefined
+      ? { reserveBytes: options.prefetch.reserveBytes }
+      : {}),
+    ...(options.prefetch?.maxConcurrent !== undefined
+      ? { maxConcurrent: options.prefetch.maxConcurrent }
+      : {}),
+    ...(options.prefetch?.retryBaseMs !== undefined
+      ? { retryBaseMs: options.prefetch.retryBaseMs }
+      : {}),
+    ...(options.prefetch?.diskRetryMs !== undefined
+      ? { diskRetryMs: options.prefetch.diskRetryMs }
+      : {}),
+    onStoreState: (projectId, state) =>
+      options.rooms.reportResourceStoreState?.(projectId, state),
+  });
+
+  async function runOnce(projectId: string) {
+    const signal = runSignal();
+    const transport = await projectTransport(projectId, signal);
+    if (!transport) return;
+    const {
+      replicaId,
+      initial,
+      base,
+      assertCurrent,
+      authenticated,
+      deliveryFor,
+      guardedFetch,
+      installPulled,
+    } = transport;
+    let remote: RemoteLoroPersistence;
+    let refs: ReturnType<typeof projectSyncContent> = {
+      resources: [],
+      documents: [],
+    };
+    // The soft-delete tombstone lives in Project metadata, and the cloud
+    // refuses every other transport once it is set. Reconcile it first so a
+    // remote delete is pulled (and a local restore pushed) instead of
+    // surfacing as an authorization failure on the snapshot.
+    const syncTombstone = async (configured: RemoteLoroPersistence) => {
+      const pulled = await configured.loadProjectMetadata!(projectId, signal);
+      const local = await options.metadata.read(projectId);
+      if (!local || !pulled || (!local.deletedAt && !pulled.deletedAt)) return;
+      await createProjectMetadataReplicator({
+        enabled: true,
+        local: { read: async () => local, write: options.metadata.write },
+        remote: {
+          pull: async () => pulled,
+          push: (metadata) =>
+            configured.saveProjectMetadata!(projectId, metadata, signal),
+        },
+      }).sync();
+    };
+    if ((await options.metadata.read(projectId))?.deletedAt) {
+      // A locally deleted Project replicates nothing but its tombstone; this
+      // is how a restore made on another Host reaches this one.
+      const configured = initial.admission.capabilities.projectMetadata
+        ? await options.remote(projectId)
+        : undefined;
+      if (configured?.loadProjectMetadata && configured.saveProjectMetadata)
+        await syncTombstone(configured);
+      if ((await options.metadata.read(projectId))?.deletedAt) return;
+    }
+    // Mirrors what the cloud binds a staging session to, so a restarted Host
+    // finds the session it left behind and never one for different bytes.
+    const uploadSession = (kind: string, id: string, digest: string) =>
+      cloudContentUploadSession(
+        options.dataDir,
+        JSON.stringify([
+          initial.admission.syncBaseUrl,
+          initial.admission.tenantId,
+          projectId,
+          replicaId,
+          kind,
+          id,
+          digest,
+        ]),
+      );
+    const readLocalBytes = async (
+      path: string,
+    ): Promise<Uint8Array | undefined> => {
+      const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!info) return undefined;
+      assertContentTransferSize(info.size, options.maxBytes);
+      return readBoundedContent(
+        Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>,
+        options,
+      );
     };
     const bytes: ResourceByteStore = {
       async read(id) {
@@ -451,29 +629,20 @@ export function createLocalProjectCloudSync(
         async syncResources() {
           for (const ref of refs.resources) {
             await assertCurrent();
-            let resource = await resources.readFacts(ref.resourceId);
+            const resource = await resources.readFacts(ref.resourceId);
             if (resource)
               assertContentTransferSize(resource.byteLength, options.maxBytes);
             const local = resource
               ? await resources.resolve(ref.resourceId).catch(() => undefined)
               : undefined;
-            if (!resource) {
-              const response = (await (
-                await authenticated(
-                  `${base}/resources/${encodeURIComponent(ref.resourceId)}/delivery`,
-                  {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({
-                      operation: "read",
-                      localReplicaId: replicaId,
-                    }),
-                  },
-                )
-              ).json()) as { resource: unknown };
-              resource = ResourceSchema.parse(response.resource);
+            if (!resource || !local) {
+              // Joins a prefetch already downloading this Resource instead of
+              // fetching it a second time.
+              await prefetcher.run(projectId, ref, (context) =>
+                transport.download(ref, context),
+              );
+              continue;
             }
-            assertContentTransferSize(resource.byteLength, options.maxBytes);
             if (resource.id !== ref.resourceId || resource.kind !== ref.kind)
               throw new Error("Project Resource facts conflict");
             const common = {
@@ -486,99 +655,63 @@ export function createLocalProjectCloudSync(
                 projectId,
                 localReplicaId: replicaId,
               },
-              fetch: async (
-                input: Parameters<typeof fetch>[0],
-                init?: RequestInit,
-              ) => {
-                await assertCurrent();
-                return fetcher(input, { ...init, signal });
-              },
+              fetch: guardedFetch,
             };
-            if (local) {
-              // A read capability is issued only for a verified stored object.
-              // Missing bytes trigger a safe upload; auth/server errors remain failures.
-              try {
-                await common.delivery.issueReadUrl({
-                  resourceId: resource.id,
-                  scope: common.scope,
-                  purpose: "download",
-                });
-              } catch (error) {
-                if (
-                  !(error instanceof ProjectContentHttpError) ||
-                  error.status !== 404
-                )
-                  throw error;
-                if (resource.byteLength > PROJECT_CLOUD_CONTENT_PART_BYTES) {
-                  const capability = await common.delivery.issueUploadUrl({
-                    resourceId: resource.id,
-                    scope: common.scope,
-                    purpose: "host-staging",
-                    byteLength: resource.byteLength,
-                    digest: `sha256:${resource.digest.value}`,
-                    contentType: resource.contentType,
-                  });
-                  await uploadCloudContentFile({
-                    path: local.path,
-                    byteLength: resource.byteLength,
-                    digest: `sha256:${resource.digest.value}`,
-                    maxBytes: options.maxBytes,
-                    signal,
-                    url: capability.url,
-                    headers: capability.headers,
-                    fetch: common.fetch,
-                    session: uploadSession(
-                      "resource",
-                      resource.id,
-                      resource.digest.value,
-                    ),
-                  });
-                } else {
-                  // pushResource verifies the bytes it read against the
-                  // Resource digest before it requests an upload URL.
-                  await pushResource(common).catch((error: unknown) => {
-                    if (
-                      error instanceof ResourceReplicationError &&
-                      (error.code === "LOCAL_RESOURCE_DIGEST_MISMATCH" ||
-                        error.code === "LOCAL_RESOURCE_SIZE_MISMATCH")
-                    )
-                      throw new LocalResourceError(
-                        error.code,
-                        `${error.message} Nothing was uploaded.`,
-                        { cause: error, resourceId: resource.id },
-                      );
-                    throw error;
-                  });
-                }
-              }
-            } else {
-              const capability = await common.delivery.issueReadUrl({
+            // A read capability is issued only for a verified stored object.
+            // Missing bytes trigger a safe upload; auth/server errors remain failures.
+            try {
+              await common.delivery.issueReadUrl({
                 resourceId: resource.id,
                 scope: common.scope,
                 purpose: "download",
               });
-              const response = await common.fetch(capability.url, {
-                headers: capability.headers,
-              });
-              if (!response.ok)
-                throw (
-                  (await readContentTransferLimitError(response)) ??
-                  new ProjectContentHttpError(response.status)
-                );
-              await validateCloudContentResponse(
-                response,
-                resource.byteLength,
-                options.maxBytes,
-              );
-              if (!response.body)
-                throw new Error("Remote Resource bytes unavailable");
-              const staged = await resources.stageStream({
-                source: cloudContentChunks(response.body, signal),
-                declaredByteLength: resource.byteLength,
-                maxByteLength: contentTransferMaxBytes(options.maxBytes),
-                expectedDigest: resource.digest.value,
-              });
-              await installPulled(resource, staged.resourceId);
+            } catch (error) {
+              if (
+                !(error instanceof ProjectContentHttpError) ||
+                error.status !== 404
+              )
+                throw error;
+              if (resource.byteLength > PROJECT_CLOUD_CONTENT_PART_BYTES) {
+                const capability = await common.delivery.issueUploadUrl({
+                  resourceId: resource.id,
+                  scope: common.scope,
+                  purpose: "host-staging",
+                  byteLength: resource.byteLength,
+                  digest: `sha256:${resource.digest.value}`,
+                  contentType: resource.contentType,
+                });
+                await uploadCloudContentFile({
+                  path: local.path,
+                  byteLength: resource.byteLength,
+                  digest: `sha256:${resource.digest.value}`,
+                  maxBytes: options.maxBytes,
+                  signal,
+                  url: capability.url,
+                  headers: capability.headers,
+                  fetch: common.fetch,
+                  session: uploadSession(
+                    "resource",
+                    resource.id,
+                    resource.digest.value,
+                  ),
+                });
+              } else {
+                // pushResource verifies the bytes it read against the
+                // Resource digest before it requests an upload URL.
+                await pushResource(common).catch((error: unknown) => {
+                  if (
+                    error instanceof ResourceReplicationError &&
+                    (error.code === "LOCAL_RESOURCE_DIGEST_MISMATCH" ||
+                      error.code === "LOCAL_RESOURCE_SIZE_MISMATCH")
+                  )
+                    throw new LocalResourceError(
+                      error.code,
+                      `${error.message} Nothing was uploaded.`,
+                      { cause: error, resourceId: resource.id },
+                    );
+                  throw error;
+                });
+              }
             }
           }
           for (const body of refs.documents) {
@@ -1019,10 +1152,123 @@ export function createLocalProjectCloudSync(
     await scheduleBackoff(projectId);
   }
 
+  /** Pending visible-Asset hints per Project; a key means a plan is due. */
+  const prefetchRequests = new Map<string, Set<string>>();
+  const prefetchPlans = new Map<string, Promise<void>>();
+
+  /**
+   * Queues an admitted Project's missing Resources: visible Assets first, then
+   * Timeline media, then the rest by recency. A local-only Project costs one
+   * admission read and no fetch.
+   */
+  async function planPrefetch(
+    projectId: string,
+    visibleAssetIds: ReadonlySet<string>,
+  ): Promise<void> {
+    const replicaId = await getLocalReplicaId(options.dataDir);
+    const admission = await store.getProjectCloudAdmission(
+      projectId,
+      replicaId,
+    );
+    if (
+      closed ||
+      !admission ||
+      admission.status === "local-only" ||
+      !admission.capabilities.resources
+    )
+      return;
+    const planned = await options.rooms.inspectProject(projectId, (doc) => {
+      const onTimeline = new Set<string>();
+      for (const timeline of listProjectTimelines(doc)) {
+        const tracks = (timeline.state as { tracks?: unknown } | null)?.tracks;
+        if (!Array.isArray(tracks)) continue;
+        for (const track of tracks) {
+          const items = (track as { items?: unknown } | null)?.items;
+          if (!Array.isArray(items)) continue;
+          for (const item of items) {
+            const assetId = (item as { assetId?: unknown } | null)?.assetId;
+            if (typeof assetId === "string") onTimeline.add(assetId);
+          }
+        }
+      }
+      return listProjectAssets(doc)
+        .filter((asset) => asset.lifecycle.state === "active")
+        .map((asset) => ({
+          resourceId: asset.source.resourceId,
+          kind: asset.kind,
+          createdAt: asset.createdAt ?? 0,
+          rank: visibleAssetIds.has(asset.id)
+            ? PREFETCH_RANK.visible
+            : onTimeline.has(asset.id)
+              ? PREFETCH_RANK.timeline
+              : PREFETCH_RANK.rest,
+        }))
+        .sort((a, b) => a.rank - b.rank || b.createdAt - a.createdAt);
+    });
+    const items: LocalResourcePrefetchPlanItem[] = [];
+    const seen = new Set<string>();
+    for (const { createdAt: _createdAt, ...item } of planned) {
+      if (seen.has(item.resourceId)) continue;
+      seen.add(item.resourceId);
+      const installed = await resources
+        .resolve(item.resourceId)
+        .catch(() => undefined);
+      if (!installed) items.push(item);
+    }
+    if (items.length > 0 && !closed) prefetcher.enqueue(projectId, items);
+  }
+
+  /**
+   * Starts (or coalesces into) one prefetch plan for a Project. Open, remote
+   * merges and visible-Asset hints all land here.
+   */
+  function prefetch(
+    projectId: string,
+    input: { visibleAssetIds?: readonly string[] } = {},
+  ): Promise<void> {
+    if (closed) return Promise.resolve();
+    const pending = prefetchRequests.get(projectId) ?? new Set<string>();
+    for (const id of input.visibleAssetIds ?? []) pending.add(id);
+    prefetchRequests.set(projectId, pending);
+    const existing = prefetchPlans.get(projectId);
+    if (existing) return existing;
+    const task = (async () => {
+      for (;;) {
+        const visible = prefetchRequests.get(projectId);
+        if (closed || !visible) return;
+        prefetchRequests.delete(projectId);
+        await planPrefetch(projectId, visible);
+      }
+    })()
+      .catch((error) => {
+        projectCloudSyncLog.warn("project_cloud_sync.prefetch_plan_failed", {
+          projectId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        prefetchPlans.delete(projectId);
+        if (!closed && prefetchRequests.has(projectId))
+          void prefetch(projectId);
+      });
+    prefetchPlans.set(projectId, task);
+    return task;
+  }
+
   return {
     schedule,
     invalidate,
     reportMirrorFailure,
+    prefetch,
+    /** Download state of a Resource this Host has not installed yet. */
+    resourceAvailability: (resourceId: string) =>
+      prefetcher.availability(resourceId),
+    /** Settles once no prefetch plan or download is pending. */
+    async prefetchIdle(): Promise<void> {
+      while (prefetchPlans.size > 0)
+        await Promise.all(prefetchPlans.values());
+      await prefetcher.idle();
+    },
     async start() {
       // In the Host this runs after host.listening; it must never gate local
       // requests. No timer is armed while every Project is local-only.
@@ -1042,7 +1288,12 @@ export function createLocalProjectCloudSync(
       mirrorFailureEpisode.clear();
       backoffQueues.clear();
       retryStates.clear();
-      await Promise.all(runs.values());
+      prefetchRequests.clear();
+      await Promise.all([
+        ...runs.values(),
+        ...prefetchPlans.values(),
+        prefetcher.close(),
+      ]);
     },
   };
 }

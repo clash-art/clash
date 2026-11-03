@@ -1,9 +1,9 @@
-import { isAbsolute } from "node:path";
-
 import { codedError } from "./desktop-ipc";
 import {
   copyFileToTarget,
   downloadUrlToFile,
+  hostLocalFileUrl,
+  resolveHostLocalFile,
   type TransferOptions,
 } from "./file-transfer";
 
@@ -14,7 +14,6 @@ export type DesktopDirectorVideoExportRequest = {
 };
 
 export const DIRECTOR_VIDEO_EXPORT_TIMEOUT_MS = 10 * 60 * 1000;
-const LOCAL_FILE_TIMEOUT_MS = 30_000;
 
 function safePart(value: string): string {
   return value.trim()
@@ -68,68 +67,16 @@ export function directorVideoLocalFileUrl(
   sourceUrl: string,
   localFileOrigin?: string,
 ): string | undefined {
-  let url: URL;
-  try {
-    url = new URL(sourceUrl);
-  } catch {
-    return undefined;
-  }
-  if (localFileOrigin) {
-    let origin: string;
-    try {
-      origin = new URL(localFileOrigin).origin;
-    } catch {
-      return undefined;
-    }
-    if (url.origin !== origin) return undefined;
-  }
-  const hostname = url.hostname;
-  const loopback =
-    hostname === "localhost" ||
-    hostname === "::1" ||
-    hostname === "[::1]" ||
-    /^127(?:\.\d{1,3}){3}$/.test(hostname);
-  if (!loopback || !url.pathname.endsWith("/media")) return undefined;
-  url.pathname = `${url.pathname.slice(0, -"/media".length)}/local-file`;
-  url.search = "";
-  url.hash = "";
-  return url.href;
-}
-
-async function localVideoPath(
-  sourceUrl: string,
-  options: DirectorVideoExportOptions,
-): Promise<string | undefined> {
-  const localFileUrl = directorVideoLocalFileUrl(
-    sourceUrl,
-    options.localFileOrigin,
-  );
-  if (!localFileUrl) return undefined;
-  const timeoutMs = Math.min(
-    options.timeoutMs ?? LOCAL_FILE_TIMEOUT_MS,
-    LOCAL_FILE_TIMEOUT_MS,
-  );
-  try {
-    const response = await (options.fetchImpl ?? fetch)(localFileUrl, {
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!response.ok) return undefined;
-    const value = (await response.json()) as { path?: unknown };
-    return typeof value.path === "string" &&
-      value.path.length > 0 &&
-      isAbsolute(value.path)
-      ? value.path
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  return hostLocalFileUrl(sourceUrl, localFileOrigin);
 }
 
 /**
- * Copies the already-published camera video from the local Host to the save
- * target. The renderer never sends video bytes over IPC. When the Host does not
- * expose a local file (for example a remote Host), the response is streamed to
- * a temp file instead, and the target only appears after success.
+ * Copies the already-published camera video from the local Host's store to
+ * the save target. The renderer never sends video bytes over IPC. A local Host
+ * that cannot name its file fails with a coded error instead of serving the
+ * same bytes over loopback. Only a remote Host (whose bytes are not on this
+ * machine) streams the response to a temp file; the target only appears after
+ * success either way.
  */
 export async function exportDirectorVideoToFile(
   input: { targetPath: string; sourceUrl: string },
@@ -143,13 +90,24 @@ export async function exportDirectorVideoToFile(
     commitCode: "DIRECTOR_VIDEO_EXPORT_COMMIT_FAILED",
     label: "Director camera video",
   };
-  const localPath = await localVideoPath(sourceUrl, transferOptions);
-  if (localPath) {
-    const bytes = await copyFileToTarget(
-      localPath,
-      input.targetPath,
-      transferOptions,
-    );
+  const localFileUrl = directorVideoLocalFileUrl(
+    sourceUrl,
+    options.localFileOrigin,
+  );
+  if (localFileUrl) {
+    const localPath = await resolveHostLocalFile(localFileUrl, {
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      ...(options.timeoutMs !== undefined
+        ? { timeoutMs: options.timeoutMs }
+        : {}),
+      notLocalCode: "DIRECTOR_VIDEO_EXPORT_SOURCE_NOT_LOCAL",
+      failedCode: "DIRECTOR_VIDEO_EXPORT_LOCAL_FILE_FAILED",
+      label: "Director camera video",
+    });
+    const bytes = await copyFileToTarget(localPath, input.targetPath, {
+      ...transferOptions,
+      code: "DIRECTOR_VIDEO_EXPORT_LOCAL_FILE_FAILED",
+    });
     return { outputPath: input.targetPath, bytes };
   }
   const bytes = await downloadUrlToFile(

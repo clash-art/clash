@@ -239,12 +239,21 @@ async function resolveGlobalAsset(
         : { progress: registry.progress }),
     });
   }
+  if (registry.status === "downloading") {
+    return parseResolved({
+      ...base,
+      status: "downloading",
+      ...(registry.progress === undefined
+        ? {}
+        : { progress: registry.progress }),
+    });
+  }
   if (registry.status === "failed" || registry.status === "unavailable") {
     return parseResolved({
       ...base,
       status: registry.status,
       ...(registry.error === undefined ? {} : { error: registry.error }),
-      ...(registry.status === "failed" && registry.errorCode !== undefined
+      ...(registry.errorCode !== undefined
         ? { errorCode: registry.errorCode }
         : {}),
     });
@@ -351,7 +360,8 @@ export function createGlobalAssetClient(
           registry.error ?? `Resource ${requested.resourceId} is unavailable.`,
         );
       }
-      parseResource(registry.resource, requested);
+      if (registry.status !== "downloading")
+        parseResource(registry.resource, requested);
       if (registry.status !== "ready") {
         throw new AssetSdkContractError(
           "RESOURCE_NOT_READY",

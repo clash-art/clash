@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { copyFile, rename, rm, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -149,4 +150,104 @@ export async function downloadUrlToFile(
     throw codedError(commitCode, `Could not finalize ${label}.`, error);
   }
   return bytes;
+}
+
+/**
+ * Maps a local Host Asset `media` URL to its loopback-only `local-file`
+ * projection. Any other URL (a remote Host, another origin, a non-Asset route)
+ * has no store file to resolve and returns `undefined`.
+ */
+export function hostLocalFileUrl(
+  sourceUrl: string,
+  localFileOrigin?: string,
+): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(sourceUrl);
+  } catch {
+    return undefined;
+  }
+  if (localFileOrigin) {
+    let origin: string;
+    try {
+      origin = new URL(localFileOrigin).origin;
+    } catch {
+      return undefined;
+    }
+    if (url.origin !== origin) return undefined;
+  }
+  const hostname = url.hostname;
+  const loopback =
+    hostname === "localhost" ||
+    hostname === "::1" ||
+    hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  if (!loopback || !url.pathname.endsWith("/media")) return undefined;
+  url.pathname = `${url.pathname.slice(0, -"/media".length)}/local-file`;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+const LOCAL_FILE_TIMEOUT_MS = 30_000;
+
+/**
+ * Resolves the store file behind a local Host Asset. Bytes that are not on
+ * this Host yet (still downloading, or never fetched) fail with `notLocalCode`;
+ * every other failure fails with `failedCode`. There is no fallback to
+ * downloading the same bytes over loopback.
+ */
+export async function resolveHostLocalFile(
+  localFileUrl: string,
+  options: {
+    fetchImpl?: TransferFetch;
+    timeoutMs?: number;
+    notLocalCode: string;
+    failedCode: string;
+    label: string;
+  },
+): Promise<string> {
+  const timeoutMs = Math.min(
+    options.timeoutMs ?? LOCAL_FILE_TIMEOUT_MS,
+    LOCAL_FILE_TIMEOUT_MS,
+  );
+  let response: Response;
+  let body: { path?: unknown; code?: unknown; error?: unknown } | null;
+  try {
+    response = await (options.fetchImpl ?? fetch)(localFileUrl, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    body = (await response.json().catch(() => null)) as typeof body;
+  } catch (error) {
+    throw codedError(
+      options.failedCode,
+      `Could not resolve the local file for ${options.label}.`,
+      error,
+    );
+  }
+  const hostCode = typeof body?.code === "string" ? body.code : undefined;
+  const hostMessage = typeof body?.error === "string" ? ` ${body.error}` : "";
+  if (!response.ok) {
+    if (hostCode === "LOCAL_RESOURCE_MISSING") {
+      throw codedError(
+        options.notLocalCode,
+        `The ${options.label} is not on this computer yet. Wait for it to finish downloading, then try again.${hostMessage}`,
+      );
+    }
+    throw codedError(
+      options.failedCode,
+      `Could not resolve the local file for ${options.label} (${hostCode ?? response.status}).${hostMessage}`,
+    );
+  }
+  if (
+    typeof body?.path !== "string" ||
+    body.path.length === 0 ||
+    !isAbsolute(body.path)
+  ) {
+    throw codedError(
+      options.failedCode,
+      `The Host returned no local file for ${options.label}.`,
+    );
+  }
+  return body.path;
 }

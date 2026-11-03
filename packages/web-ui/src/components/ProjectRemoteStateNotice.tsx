@@ -13,14 +13,18 @@ export function ProjectRemoteStateNotice({
 }) {
   if (!state || state.state === "synced") return null;
   const retryAt = state.retryAt ? new Date(state.retryAt) : undefined;
+  // The Project itself is in sync; only its cloud media bytes are blocked.
+  const storeFull = state.code === "LOCAL_STORE_DISK_FULL";
   const title =
     state.state === "import-failed"
       ? "Cloud changes could not be loaded"
-      : state.code === "CLOUD_LINK_ACTION_REQUIRED"
-        ? "Cloud sync needs your attention"
-        : state.code?.startsWith("CLOUD_LINK_")
-          ? "Cloud sync is unavailable"
-          : "Cloud state is unavailable";
+      : storeFull
+        ? "Cloud media cannot download: disk full"
+        : state.code === "CLOUD_LINK_ACTION_REQUIRED"
+          ? "Cloud sync needs your attention"
+          : state.code?.startsWith("CLOUD_LINK_")
+            ? "Cloud sync is unavailable"
+            : "Cloud state is unavailable";
   return (
     <div
       role="status"
@@ -38,8 +42,9 @@ export function ProjectRemoteStateNotice({
       <div className="min-w-0 space-y-1">
         <p className="font-medium">{title}</p>
         <p className="text-xs leading-relaxed">
-          Showing the revision saved on this device. Your edits are saved
-          locally.
+          {storeFull
+            ? "Free some disk space on this device; downloads resume on their own. Your edits are saved locally."
+            : "Showing the revision saved on this device. Your edits are saved locally."}
         </p>
         <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-amber-800/90">
           {state.code && <code className="font-mono">{state.code}</code>}

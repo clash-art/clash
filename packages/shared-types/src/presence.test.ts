@@ -14,6 +14,10 @@ describe("isSidebandMessage project.remote-state", () => {
     expect(isSidebandMessage(remoteState("CLOUD_LINK_NOT_ADMITTED"))).toBe(true);
   });
 
+  it("accepts a full Host store code so clients can show why bytes stopped downloading", () => {
+    expect(isSidebandMessage(remoteState("LOCAL_STORE_DISK_FULL"))).toBe(true);
+  });
+
   it("rejects a code outside the contract", () => {
     expect(isSidebandMessage(remoteState("CLOUD_LINK_INVENTED"))).toBe(false);
   });

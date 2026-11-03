@@ -72,6 +72,28 @@ it("tells the user when cloud sync needs an action", () => {
   expect(notice).not.toHaveTextContent("Retrying at");
 });
 
+it("tells the user a full disk is blocking cloud media downloads", () => {
+  render(
+    <ProjectRemoteStateNotice
+      state={{
+        type: "project.remote-state",
+        projectId: "project-1",
+        state: "unavailable",
+        code: "LOCAL_STORE_DISK_FULL",
+        message: "Free some space to continue downloading.",
+      }}
+    />,
+  );
+  const notice = screen.getByRole("status");
+  expect(notice).toHaveAttribute(
+    "data-clash-remote-code",
+    "LOCAL_STORE_DISK_FULL",
+  );
+  expect(notice).toHaveTextContent("disk full");
+  expect(notice).toHaveTextContent("Free some disk space");
+  expect(notice).not.toHaveTextContent("Showing the revision saved");
+});
+
 it("renders nothing when the cloud replica is in sync", () => {
   render(
     <ProjectRemoteStateNotice

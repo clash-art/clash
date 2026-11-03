@@ -81,6 +81,15 @@ export function createDesktopWindowController({
   const windowRegistry = createWindowRegistry<BrowserWindow>();
   let captureCount = 0;
 
+  /** Origin of the Host whose media is served from this machine's store. */
+  function currentHostOrigin(): string | undefined {
+    try {
+      return new URL(currentRuntime().apiBaseUrl).origin;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function captureRenderer(label: string, window: BrowserWindow): Promise<void> {
     const captureDir = process.env.CLASH_DESKTOP_CAPTURE_DIR;
     if (!captureDir || window.isDestroyed()) return;
@@ -397,12 +406,7 @@ export function createDesktopWindowController({
             });
         if (save.canceled || !save.filePath) return { canceled: true as const };
         await mkdir(dirname(save.filePath), { recursive: true });
-        let hostOrigin: string | undefined;
-        try {
-          hostOrigin = new URL(currentRuntime().apiBaseUrl).origin;
-        } catch {
-          hostOrigin = undefined;
-        }
+        const hostOrigin = currentHostOrigin();
         const result = await exportDirectorVideoToFile(
           { targetPath: save.filePath, sourceUrl: request.sourceUrl },
           {
@@ -415,10 +419,14 @@ export function createDesktopWindowController({
     ));
     ipcMain.handle("clash:open-in-nle", async (_event, request: DesktopNleHandoffRequest) => (
       handleIpc("open in NLE", async () => {
+        const hostOrigin = currentHostOrigin();
         const documentPath = await materializeNleHandoff(
           join(dirname(dataDir), "nle-handoffs"),
           request,
-          { fetch: net.fetch },
+          {
+            fetch: net.fetch,
+            ...(hostOrigin ? { localFileOrigin: hostOrigin } : {}),
+          },
         );
         await openNleDocument(request.target, documentPath);
         return { documentPath };

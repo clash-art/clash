@@ -1506,6 +1506,282 @@ describe("durable cloud outbox (#292 / #299)", () => {
   });
 });
 
+/**
+ * A second admitted Host whose replica already holds the cloud Project doc but
+ * none of its Resource bytes, as after a snapshot-only sync. Its room hub asks
+ * the receiver to prefetch on open and merge, like the production Host.
+ */
+async function prefetchReceiverFor(
+  source: Awaited<ReturnType<typeof fixture>>,
+  input: {
+    prefetch?: Parameters<typeof createLocalProjectCloudSync>[0]["prefetch"];
+    /** Rewrites a cloud response before the receiver reads it. */
+    respond?: (request: Request, response: Response) => Response;
+  } = {},
+) {
+  const dataDir = await mkdtemp(join(tmpdir(), "cloud-prefetch-"));
+  cleanup.push(async () => {
+    await closeLocalSqliteClient();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const id = await getLocalReplicaId(dataDir),
+    metadata = createLocalMetadataStore(dataDir),
+    resources = createLocalResourceStore({ dataDir });
+  await metadata.upsertProjectCloudAdmission({
+    ...(await source.admission())!,
+    localReplicaId: id,
+    status: "ready",
+  });
+  source.allowReplica(id);
+  const seed = new LocalLoroRoomHub(dataDir, undefined, null);
+  await seed.mergeRemoteSnapshot(
+    "project",
+    source.currentRemoteDoc().export({ mode: "snapshot" }),
+  );
+  await seed.close();
+
+  /** Every cloud request, in order. */
+  const requests: Array<{ method: string; url: string }> = [];
+  const storeStates: Array<string | undefined> = [];
+  let receiver: ReturnType<typeof createLocalProjectCloudSync> | undefined;
+  const rooms = new LocalLoroRoomHub(
+    dataDir,
+    undefined,
+    null,
+    undefined,
+    undefined,
+    undefined,
+    {
+      prefetchResources: (projectId) => {
+        void receiver?.prefetch(projectId);
+      },
+    },
+  );
+  cleanup.push(() => rooms.close());
+  receiver = createLocalProjectCloudSync({
+    ...source.options,
+    dataDir,
+    rooms: {
+      mergeRemoteSnapshot: rooms.mergeRemoteSnapshot.bind(rooms),
+      inspectProject: rooms.inspectProject.bind(rooms),
+      reportResourceStoreState: (projectId, state) => {
+        storeStates.push(state?.code);
+        rooms.reportResourceStoreState(projectId, state);
+      },
+    },
+    fetch: async (requested, init) => {
+      const request = new Request(requested, init);
+      requests.push({ method: request.method, url: request.url });
+      const response = await source.options.fetch(requested, init);
+      return input.respond ? input.respond(request, response) : response;
+    },
+    inspection: {
+      finalize: async (finalize) => ({
+        source: await resources.seal(finalize),
+        facts: {} as any,
+      }),
+    },
+    ...(input.prefetch ? { prefetch: input.prefetch } : {}),
+  });
+  cleanup.push(() => receiver!.close());
+  const byteReads = () =>
+    requests.filter(
+      (request) =>
+        request.method === "GET" && request.url.includes("/assets/capability"),
+    ).length;
+  /** Resource ids in the order the receiver first asked the cloud for them. */
+  const deliveryOrder = () => [
+    ...new Set(
+      requests
+        .map((request) =>
+          /\/resources\/([^/]+)\/delivery$/.exec(new URL(request.url).pathname),
+        )
+        .filter((match): match is RegExpExecArray => Boolean(match))
+        .map((match) => decodeURIComponent(match[1]!)),
+    ),
+  ];
+  return {
+    dataDir,
+    resources,
+    rooms,
+    receiver,
+    requests,
+    storeStates,
+    byteReads,
+    deliveryOrder,
+    installed: async (resourceId: string) =>
+      Boolean(await resources.resolve(resourceId).catch(() => undefined)),
+  };
+}
+
+/** A cloud Project with these image Assets, in document order. */
+async function cloudProjectWith(ids: string[]) {
+  const source = await fixture();
+  const media: Record<string, Awaited<ReturnType<typeof source.addResource>>> =
+    {};
+  for (const id of ids) media[id] = await source.addResource(id);
+  await source.service.schedule("project");
+  expect((await source.admission())?.status).toBe("ready");
+  await source.service.close();
+  await source.rooms.close();
+  return { source, media };
+}
+
+describe("background prefetch of remote Project Asset bytes (#339)", () => {
+  it("opening an admitted Project downloads missing bytes in the open pass, a visible Asset first", async () => {
+    const { source, media } = await cloudProjectWith([
+      "first",
+      "visible",
+      "newest",
+    ]);
+    const r = await prefetchReceiverFor(source);
+    const visible = media.visible!.source.resource.id;
+    // Neither document order nor recency puts the middle Asset first; only
+    // the client's visible-Asset hint does.
+    const hinted = r.receiver.prefetch("project", {
+      visibleAssetIds: ["visible"],
+    });
+    await r.rooms.room("project");
+    await hinted;
+    await waitForAsync(async () => {
+      for (const { source: owned } of Object.values(media))
+        if (!(await r.installed(owned.resource.id))) return false;
+      return true;
+    });
+    await r.receiver.prefetchIdle();
+    expect(r.deliveryOrder()[0]).toBe(visible);
+    expect(r.byteReads()).toBe(3);
+    for (const { source: owned, bytes } of Object.values(media)) {
+      const local = await r.resources.resolve(owned.resource.id);
+      expect(new Uint8Array(await readFile(local!.path))).toEqual(bytes);
+    }
+  });
+
+  it("downloads a Resource once when the coordinator and the prefetcher both want it", async () => {
+    const { source, media } = await cloudProjectWith(["shared-a", "shared-b"]);
+    const r = await prefetchReceiverFor(source);
+    // Opening the room alone queues the downloads (no explicit prefetch call).
+    await r.rooms.room("project");
+    await waitFor(() => r.byteReads() > 0);
+    await r.receiver.schedule("project");
+    await r.receiver.prefetchIdle();
+    for (const { source: owned } of Object.values(media))
+      expect(await r.installed(owned.resource.id)).toBe(true);
+    expect(r.byteReads()).toBe(2);
+  });
+
+  it("an interrupted download publishes nothing, reports a coded failure, and the next attempt succeeds", async () => {
+    const { source, media } = await cloudProjectWith(["interrupted"]);
+    let interrupt = true;
+    const r = await prefetchReceiverFor(source, {
+      prefetch: { retryBaseMs: 60_000 },
+      respond: (request, response) => {
+        if (
+          !interrupt ||
+          request.method !== "GET" ||
+          !request.url.includes("/assets/capability")
+        )
+          return response;
+        const reader = response.body!.getReader();
+        let sent = false;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              if (sent) {
+                controller.error(new Error("connection reset"));
+                return;
+              }
+              const { value } = await reader.read();
+              sent = true;
+              controller.enqueue(value!.slice(0, 1));
+            },
+          }),
+          { status: response.status, headers: response.headers },
+        );
+      },
+    });
+    const resourceId = media.interrupted!.source.resource.id;
+    await r.receiver.prefetch("project");
+    await r.receiver.prefetchIdle();
+    expect(r.receiver.resourceAvailability(resourceId)).toMatchObject({
+      status: "failed",
+      errorCode: "LOCAL_RESOURCE_DOWNLOAD_FAILED",
+    });
+    expect(await r.installed(resourceId)).toBe(false);
+    expect(
+      await r.resources.resolveStaged(
+        `sha256:${media.interrupted!.source.resource.digest.value}`,
+      ),
+    ).toBeUndefined();
+    expect(await filesUnder(join(r.dataDir, "assets"))).toEqual([]);
+
+    interrupt = false;
+    await r.receiver.prefetch("project");
+    await r.receiver.prefetchIdle();
+    expect(r.receiver.resourceAvailability(resourceId)).toBeUndefined();
+    const local = await r.resources.resolve(resourceId);
+    expect(new Uint8Array(await readFile(local!.path))).toEqual(
+      media.interrupted!.bytes,
+    );
+  });
+
+  it("a store volume without room fails LOCAL_STORE_DISK_FULL before any byte read and resumes once space is free", async () => {
+    const { source, media } = await cloudProjectWith(["too-big"]);
+    let free = 0;
+    const r = await prefetchReceiverFor(source, {
+      prefetch: {
+        freeBytes: async () => free,
+        reserveBytes: 1024,
+        diskRetryMs: 60_000,
+      },
+    });
+    const resourceId = media["too-big"]!.source.resource.id;
+    await r.receiver.prefetch("project");
+    await r.receiver.prefetchIdle();
+    expect(r.receiver.resourceAvailability(resourceId)).toMatchObject({
+      status: "failed",
+      errorCode: "LOCAL_STORE_DISK_FULL",
+    });
+    expect(r.byteReads()).toBe(0);
+    expect(await r.installed(resourceId)).toBe(false);
+    expect(r.storeStates).toEqual(["LOCAL_STORE_DISK_FULL"]);
+
+    // The next open (or hint) after space is freed resumes the queue.
+    free = Number.MAX_SAFE_INTEGER;
+    await r.receiver.prefetch("project");
+    await r.receiver.prefetchIdle();
+    expect(await r.installed(resourceId)).toBe(true);
+    expect(r.byteReads()).toBe(1);
+    expect(r.storeStates).toEqual(["LOCAL_STORE_DISK_FULL", undefined]);
+  });
+
+  it("a local-only Project does no prefetch work: no cloud request and no Resource lookup", async () => {
+    const f = await fixture(false);
+    await f.addResource("local-media");
+    await f.metadataStore.upsertProjectCloudAdmission({
+      ...(await f.admission())!,
+      status: "local-only",
+    });
+    const requests: string[] = [];
+    const service = createLocalProjectCloudSync({
+      ...f.options,
+      fetch: async (input, init) => {
+        requests.push(new Request(input, init).url);
+        return f.options.fetch(input, init);
+      },
+      prefetch: {
+        freeBytes: async () => {
+          throw new Error("an all-local Project must not preflight the store");
+        },
+      },
+    });
+    cleanup.push(() => service.close());
+    await service.prefetch("project", { visibleAssetIds: ["local-media"] });
+    await service.prefetchIdle();
+    expect(requests).toEqual([]);
+  });
+});
+
 describe("Project cloud sync under idle eviction", () => {
   it("merges the remote snapshot when eviction races the network wait", async () => {
     const f = await fixture(false);

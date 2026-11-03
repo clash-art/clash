@@ -3818,6 +3818,61 @@ describe("LocalLoroRoom", () => {
     expect(room.snapshot().byteLength).toBeGreaterThan(0);
   });
 
+  it("asks for a Resource prefetch in the open background pass and after a cloud merge (#339)", async () => {
+    const requests: string[] = [];
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/prefetch-open",
+      workflowProcessor: null,
+      prefetchResources: (projectId) => requests.push(projectId),
+    });
+    // Opening returns before any background work runs.
+    expect(requests).toEqual([]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(requests).toEqual(["project/prefetch-open"]);
+
+    const remoteDoc = new LoroDoc();
+    remoteDoc.getMap("nodes").set("node-cloud", { data: { label: "Cloud" } });
+    await room.mergeRemoteSnapshot(remoteDoc.export({ mode: "snapshot" }));
+    expect(requests).toEqual([
+      "project/prefetch-open",
+      "project/prefetch-open",
+    ]);
+  });
+
+  it("publishes a full Host store as LOCAL_STORE_DISK_FULL and keeps it across a reopen until cleared (#339)", async () => {
+    const projectId = "project/store-full";
+    const hub = new LocalLoroRoomHub(dataDir, undefined, null);
+    const full = {
+      type: "project.remote-state",
+      projectId,
+      state: "unavailable",
+      code: "LOCAL_STORE_DISK_FULL",
+      message: "Free some space to continue downloading.",
+    };
+    try {
+      // Reported while no room is open (the prefetcher runs independently).
+      hub.reportResourceStoreState(projectId, {
+        code: "LOCAL_STORE_DISK_FULL",
+        message: full.message,
+      });
+      const joined: Array<Record<string, unknown>> = [];
+      (await hub.room(projectId)).addPeer(() => {}, {
+        sendJson: (message) => joined.push(message),
+      });
+      expect(joined).toContainEqual(full);
+
+      hub.reportResourceStoreState(projectId, undefined);
+      expect(joined.at(-1)).toEqual({
+        type: "project.remote-state",
+        projectId,
+        state: "synced",
+      });
+    } finally {
+      await hub.close();
+    }
+  });
+
   it("reports a failed cloud link start and its coded transport state on the room", async () => {
     const projectId = "project/cloud-link-start-failure";
     const room = await LocalLoroRoom.open({

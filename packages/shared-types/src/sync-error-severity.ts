@@ -71,6 +71,8 @@ const CODE_SEVERITY: Readonly<
   SIGNING_FAILED: ["transient", "none"],
   // Node fs errors surfaced by Host content writes
   ENOSPC: ["user_action_required", "free_disk"],
+  // Host store preflight: a cloud Resource does not fit on this volume
+  LOCAL_STORE_DISK_FULL: ["user_action_required", "free_disk"],
   EDQUOT: ["user_action_required", "free_disk"],
 };
 
