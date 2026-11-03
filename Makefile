@@ -211,17 +211,26 @@ format-check: ## Check if code is formatted (CI use)
 #
 # Pre-deploy gates:
 #   - `make lint` runs first (unless SKIP_CHECKS=1)
+#   - the target D1 must have applied every repo migration and carry every
+#     column those migrations define (read-only check; SKIP_CHECKS does not
+#     skip it, only an explicit SKIP_D1_CHECK=1 does). Repair runbook:
+#     apps/docs/guide/d1-migrations.md
 #   - wrangler must be authenticated; we surface `wrangler whoami` early
 #     so failures don't happen mid-deploy.
 
 WRANGLER ?= pnpm --silent dlx wrangler
+# wrangler env whose D1 the predeploy check reads; staging targets set it.
+# D1_CHECK_ARGS passes extra flags, e.g. a hosted overlay's `--config <path>`.
+D1_CHECK_ENV ?=
+D1_CHECK_ARGS ?=
+deploy-staging deploy-api-staging deploy-web-staging: D1_CHECK_ENV = staging
 
 wrangler-whoami: ## Confirm wrangler is logged in (warns, doesn't fail)
 	@echo "$(BLUE)Checking wrangler auth...$(NC)"
 	@cd apps/api-cf && pnpm exec wrangler whoami 2>&1 | tail -3 || \
 		echo "$(YELLOW)Not logged in. Run: pnpm exec wrangler login$(NC)"
 
-predeploy-check: ## Run lint before any deploy (skip with SKIP_CHECKS=1)
+predeploy-check: ## Run lint (skip with SKIP_CHECKS=1) and the D1 migration check before any deploy
 	@# Never skippable: a deploy config marked "development" ships fallback secrets.
 	@node --test scripts/deploy-config-environment.test.ts >/dev/null || { echo "$(RED)A wrangler deploy config sets ENVIRONMENT=development. Run: node --test scripts/deploy-config-environment.test.ts$(NC)"; exit 1; }
 	@if [ "$(SKIP_CHECKS)" = "1" ]; then \
@@ -229,6 +238,12 @@ predeploy-check: ## Run lint before any deploy (skip with SKIP_CHECKS=1)
 	else \
 		echo "$(BLUE)Pre-deploy lint...$(NC)"; \
 		$(MAKE) lint || { echo "$(RED)Pre-deploy lint failed. Fix or set SKIP_CHECKS=1 to override.$(NC)"; exit 1; }; \
+	fi
+	@if [ "$(SKIP_D1_CHECK)" = "1" ]; then \
+		echo "$(YELLOW)⚠ SKIP_D1_CHECK=1 — skipping the D1 applied-migrations check$(NC)"; \
+	else \
+		echo "$(BLUE)Checking the target D1 against repo migrations...$(NC)"; \
+		node scripts/d1-migration-check.ts --remote $(if $(D1_CHECK_ENV),--env $(D1_CHECK_ENV)) $(D1_CHECK_ARGS) || { echo "$(RED)The target D1 is behind the repo migrations or missing columns. See apps/docs/guide/d1-migrations.md$(NC)"; exit 1; }; \
 	fi
 
 deploy-api: predeploy-check ## Deploy api-cf (Workers + RenderContainer image)
@@ -246,8 +261,8 @@ deploy-web: predeploy-check ## Build + deploy web (Pages/Worker)
 
 deploy: predeploy-check ## Deploy api-cf then web (the standard production path)
 	@echo "$(BLUE)Deploying api-cf + web (in order)...$(NC)"
-	@$(MAKE) deploy-api SKIP_CHECKS=1
-	@$(MAKE) deploy-web SKIP_CHECKS=1
+	@$(MAKE) deploy-api SKIP_CHECKS=1 SKIP_D1_CHECK=1
+	@$(MAKE) deploy-web SKIP_CHECKS=1 SKIP_D1_CHECK=1
 	@echo ""
 	@echo "$(GREEN)✓ Standard deploy complete (api-cf + web)$(NC)"
 
@@ -271,8 +286,8 @@ deploy-web-staging: predeploy-check ## Build + deploy clash-web-staging (isolate
 
 deploy-staging: predeploy-check ## Deploy api-cf + web staging (in order)
 	@echo "$(BLUE)Deploying staging (api-cf → web)...$(NC)"
-	@$(MAKE) deploy-api-staging SKIP_CHECKS=1
-	@$(MAKE) deploy-web-staging SKIP_CHECKS=1
+	@$(MAKE) deploy-api-staging SKIP_CHECKS=1 SKIP_D1_CHECK=1
+	@$(MAKE) deploy-web-staging SKIP_CHECKS=1 SKIP_D1_CHECK=1
 	@echo ""
 	@echo "$(GREEN)✓ Staging deploy complete$(NC)"
 	@echo "$(YELLOW)Reminder: both staging Workers need the same BETTER_AUTH_SECRET; api-cf also needs JWT_SECRET.$(NC)"

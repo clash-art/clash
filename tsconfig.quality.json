@@ -22,6 +22,8 @@
     "scripts/runtime-dependency-identity.test.ts",
     "scripts/e2e/harness.test.ts",
     "scripts/check-anti-patterns.ts",
-    "scripts/check-anti-patterns.test.ts"
+    "scripts/check-anti-patterns.test.ts",
+    "scripts/d1-migration-check.ts",
+    "scripts/d1-migration-check.test.ts"
   ]
 }
