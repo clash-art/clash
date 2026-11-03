@@ -234,6 +234,124 @@ describe("executeTimelineHostCommand", () => {
     });
   });
 
+  it("answers a retried render under the same idempotency key with the original render", () => {
+    const withRender = (actorUserId = "user") => ({
+      ...ports,
+      timelineRender: { actorUserId },
+    });
+    const create = (timelineId: string) =>
+      body(
+        run({
+          action: "create_timeline",
+          timelineId,
+          name: "Cut",
+          state: {
+            tracks: [
+              {
+                id: "titles",
+                items: [
+                  { id: "title", type: "text", text: "Hi", from: 0, durationInFrames: 30 },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+    const created = create("tl");
+    const render = (
+      extra: Partial<Extract<ProjectHostCommand, { action: "request_timeline_render" }>>,
+      with_ = withRender(),
+    ) =>
+      run(
+        {
+          action: "request_timeline_render",
+          timelineId: "tl",
+          ifMatch: created.readToken,
+          ...extra,
+        } as ProjectHostCommand,
+        with_,
+      );
+
+    const first = render({ idempotencyKey: "intent-1" });
+    expect(first).toMatchObject({ status: 200, mutated: true });
+    const retried = render({ idempotencyKey: "intent-1" });
+    expect(retried).toEqual({ status: 200, mutated: false, body: body(first) });
+    expect(listTimelineExportProgress(doc, "tl")).toHaveLength(1);
+
+    // Another intent, and the same key from another actor, are new renders.
+    const second = render({ idempotencyKey: "intent-2" });
+    const otherActor = render({ idempotencyKey: "intent-1" }, withRender("other"));
+    const renderNodeIds = [first, second, otherActor].map(
+      (result) => body(result).renderNodeId,
+    );
+    expect(new Set(renderNodeIds).size).toBe(renderNodeIds.length);
+    expect(render({}).mutated).toBe(true);
+
+    // The same key for another request is refused without writing.
+    const nodeCount = doc.getMap("nodes").size;
+    const other = create("tl-2");
+    for (const reused of [
+      render({ idempotencyKey: "intent-1", actorAgentId: "agent" }),
+      run(
+        {
+          action: "request_timeline_render",
+          timelineId: "tl-2",
+          ifMatch: other.readToken,
+          idempotencyKey: "intent-1",
+        },
+        withRender(),
+      ),
+    ])
+      expect(reused).toMatchObject({
+        status: 409,
+        mutated: false,
+        body: { code: "IDEMPOTENCY_KEY_CONFLICT" },
+      });
+    expect(doc.getMap("nodes").size).toBe(nodeCount);
+  });
+
+  it("replays a keyed render of a Canvas-placed Timeline onto the same linked node", () => {
+    const withRender = { ...ports, timelineRender: { actorUserId: "user" } };
+    const created = body(
+      run({
+        action: "create_timeline",
+        timelineId: "tl",
+        name: "Cut",
+        state: {
+          tracks: [
+            {
+              id: "titles",
+              items: [
+                { id: "title", type: "text", text: "Hi", from: 0, durationInFrames: 30 },
+              ],
+            },
+          ],
+        },
+        placement: { canvasId: DEFAULT_CANVAS_ID, actionNodeId: "timeline-action" },
+      }),
+    );
+    const render = () =>
+      run(
+        {
+          action: "request_timeline_render",
+          timelineId: "tl",
+          ifMatch: created.readToken,
+          idempotencyKey: "intent",
+        },
+        withRender,
+      );
+    const first = body(render());
+    expect(body(render()).renderNodeId).toBe(first.renderNodeId);
+    const canvas = new Canvas(doc, () => {}, DEFAULT_CANVAS_ID);
+    expect(canvas.readNode(first.renderNodeId)).toMatchObject({
+      upstream: [{ nodeId: "timeline-action" }],
+      data: { status: "pending" },
+    });
+    expect(
+      canvas.listNodes("video").map((node) => node.id),
+    ).toEqual([first.renderNodeId]);
+  });
+
   it("fails closed when the Timeline projection surface is not installed", () => {
     expect(
       run({ action: "list_timelines" }, { ...ports, definitions: [] }),

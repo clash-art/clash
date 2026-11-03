@@ -94,6 +94,9 @@ z.discriminatedUnion("action", [
   command("request_timeline_render", {
     timelineId: id,
     actorAgentId: id.optional(),
+    // One key per user intent: a retry with the same key and request returns
+    // the original render; the same key with another request answers 409.
+    idempotencyKey: id.optional(),
     ...observed,
   }),
   command("list_director_stages"),

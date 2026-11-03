@@ -413,32 +413,35 @@ export function describeProjectHostContract(
         timelineId: unique("contract-timeline"),
       }),
     });
+    const createRenderableTimeline = () => {
+      const id = unique("contract-render-timeline");
+      return timelines.create({
+        id,
+        name: `Render ${id}`,
+        state: {
+          tracks: [
+            {
+              id: "track",
+              items: [
+                {
+                  id: "title",
+                  type: "text",
+                  text: "Contract",
+                  from: 0,
+                  durationInFrames: 30,
+                },
+              ],
+            },
+          ],
+        },
+      });
+    };
     capability("timeline.render", {
       supported: [
         [
           "submits a render of the observed revision",
           async () => {
-            const id = unique("contract-render-timeline");
-            const created = await timelines.create({
-              id,
-              name: `Render ${id}`,
-              state: {
-                tracks: [
-                  {
-                    id: "track",
-                    items: [
-                      {
-                        id: "title",
-                        type: "text",
-                        text: "Contract",
-                        from: 0,
-                        durationInFrames: 30,
-                      },
-                    ],
-                  },
-                ],
-              },
-            });
+            const created = await createRenderableTimeline();
             const submitted = await timelines.render(created);
             expect(submitted.renderNodeId).toEqual(expect.any(String));
             expect(submitted.actionRunId).toBe(
@@ -446,6 +449,38 @@ export function describeProjectHostContract(
                 ? projectTimelineRenderActionRunId(submitted.renderNodeId)
                 : submitted.renderNodeId,
             );
+          },
+        ],
+        [
+          "replays a retry under the same idempotency key and 409s a reused key",
+          async () => {
+            const idempotencyKey = unique("render-intent");
+            const request = (observed: ObservedProjectTimeline) =>
+              command({
+                action: "request_timeline_render",
+                timelineId: observed.timeline.id,
+                actorClientType: "browser",
+                ifMatch: observed.readToken,
+                idempotencyKey,
+              });
+            const created = await createRenderableTimeline();
+            const first = await request(created);
+            expect(first.status).toBe(200);
+            const original = await json(first);
+            expect(original?.renderNodeId).toEqual(expect.any(String));
+            // The response was lost; the client sends the same request again.
+            const retried = await request(created);
+            expect(retried.status).toBe(200);
+            expect(await json(retried)).toMatchObject({
+              submitted: true,
+              renderNodeId: original?.renderNodeId,
+              actionRunId: original?.actionRunId,
+            });
+            const reused = await request(await createRenderableTimeline());
+            expect(reused.status).toBe(409);
+            expect(await json(reused)).toMatchObject({
+              code: "IDEMPOTENCY_KEY_CONFLICT",
+            });
           },
         ],
       ],

@@ -315,6 +315,45 @@ export function requestTimelineRender(
 }
 
 /**
+ * The Host command retry key a render node was created under, scoped to the
+ * actor that sent it. `request` identifies what was asked for, so a replay can
+ * tell a retry of the same request from a reused key.
+ */
+export interface TimelineRenderIdempotency {
+  command: "request_timeline_render";
+  actorUserId: string;
+  key: string;
+  request: string;
+}
+
+/**
+ * The render node a Host command created under this actor's retry key, if any.
+ * The key lives on the node itself, so it replicates and is deleted with it;
+ * a copied node keeps another identity and never answers for the original.
+ */
+export function findTimelineRenderByIdempotencyKey(
+  doc: LoroDoc,
+  scope: { actorUserId: string; key: string },
+): { renderNodeId: string; request: string } | null {
+  for (const [renderNodeId, raw] of doc.getMap("nodes").entries()) {
+    const data = (raw as { data?: Record<string, unknown> } | undefined)?.data;
+    const entry = data?.hostCommandIdempotency as
+      | Partial<TimelineRenderIdempotency>
+      | undefined;
+    if (
+      entry?.command === "request_timeline_render" &&
+      entry.actorUserId === scope.actorUserId &&
+      entry.key === scope.key &&
+      typeof entry.request === "string" &&
+      data?.sourceTimelineActionRunId ===
+        projectTimelineRenderActionRunId(renderNodeId)
+    )
+      return { renderNodeId, request: entry.request };
+  }
+  return null;
+}
+
+/**
  * The same pending render node for a Timeline revision the caller has already
  * read, e.g. a Generator-backed Timeline on a cloud adapter. Generator
  * revisions are immutable and pin their own inputs, so there are no draft
@@ -324,6 +363,7 @@ export function requestTimelineRevisionRender(
   doc: LoroDoc,
   input: Omit<TimelineRenderRequestInput, "timelineId"> & {
     timeline: ProjectTimeline;
+    idempotency?: TimelineRenderIdempotency;
   },
 ): TimelineRenderRequestResult {
   const { timeline } = input;
@@ -344,15 +384,18 @@ export function requestTimelineRevisionRender(
           actionNodeId: timeline.owner.actionNodeId,
         }
       : { kind: "project-assets" };
-  const data = pendingTimelineRenderNodeData({
-    timeline,
-    timelineDsl,
-    sourceTimelineActionId: projectTimelineActionId(timeline.id, timeline.owner),
-    actionRunId: projectTimelineRenderActionRunId(renderNodeId),
-    actorUserId: input.actorUserId,
-    actorAgentId: input.actorAgentId,
-    target,
-  });
+  const data = {
+    ...pendingTimelineRenderNodeData({
+      timeline,
+      timelineDsl,
+      sourceTimelineActionId: projectTimelineActionId(timeline.id, timeline.owner),
+      actionRunId: projectTimelineRenderActionRunId(renderNodeId),
+      actorUserId: input.actorUserId,
+      actorAgentId: input.actorAgentId,
+      target,
+    }),
+    ...(input.idempotency ? { hostCommandIdempotency: input.idempotency } : {}),
+  };
   if (target.kind === "project-assets") {
     doc.getMap("nodes").set(renderNodeId, {
       canvasId: PROJECT_ASSET_RENDER_CANVAS_ID,

@@ -12,6 +12,7 @@ import {
   Canvas,
   ProjectHostCommandSchema,
   agentReadReceiptToken,
+  findTimelineRenderByIdempotencyKey,
   projectTimelineReadToken,
   projectTimelineRenderActionRunId,
   requestTimelineRevisionRender,
@@ -126,6 +127,11 @@ function unwrap<T extends { ok: boolean }>(
   return result as Extract<T, { ok: true }>;
 }
 
+/** A command answered from an earlier execution: nothing to persist. */
+class Replayed {
+  constructor(readonly body: unknown) {}
+}
+
 function isTimelineHostAction(
   action: ProjectHostCommand["action"],
 ): action is (typeof TIMELINE_HOST_ACTIONS)[number] {
@@ -223,24 +229,50 @@ function run(
   if (!proof.ok)
     throw new CommandFailure(proof.code ?? "READ_REQUIRED", proof.error);
   if (render && cmd.action === "request_timeline_render") {
+    const actorAgentId =
+      typeof cmd.actorAgentId === "string" ? cmd.actorAgentId : undefined;
+    const submitted = (renderNodeId: string) => ({
+      submitted: true,
+      actionRunId: projectTimelineRenderActionRunId(renderNodeId),
+      renderNodeId,
+    });
+    // A retry after a lost response carries the same key: answer with the
+    // render it already created instead of rendering the Timeline twice.
+    const idempotency =
+      typeof cmd.idempotencyKey === "string"
+        ? {
+            command: "request_timeline_render" as const,
+            actorUserId: render.actorUserId,
+            key: cmd.idempotencyKey,
+            request: JSON.stringify([
+              current.id,
+              current.revisionId,
+              actorAgentId ?? null,
+            ]),
+          }
+        : undefined;
+    const replayed =
+      idempotency && findTimelineRenderByIdempotencyKey(doc, idempotency);
+    if (replayed) {
+      if (replayed.request !== idempotency.request)
+        throw new CommandFailure(
+          "IDEMPOTENCY_KEY_CONFLICT",
+          "This idempotency key was already used for a different render request.",
+        );
+      return new Replayed(submitted(replayed.renderNodeId));
+    }
     // The pending render node every render request creates, for the
     // observed revision; the adapter's backend processor picks it up.
     const requested = requestTimelineRevisionRender(doc, {
       timeline: current,
       actorUserId: render.actorUserId,
-      ...("actorAgentId" in cmd &&
-      typeof cmd.actorAgentId === "string"
-        ? { actorAgentId: cmd.actorAgentId }
-        : {}),
+      ...(actorAgentId ? { actorAgentId } : {}),
+      ...(idempotency ? { idempotency } : {}),
       generateId: ports.newId,
     });
     if (!requested.ok)
       throw new CommandFailure("TIMELINE_RENDER_REJECTED", requested.error);
-    return {
-      submitted: true,
-      actionRunId: projectTimelineRenderActionRunId(requested.renderNodeId),
-      renderNodeId: requested.renderNodeId,
-    };
+    return submitted(requested.renderNodeId);
   }
   if (cmd.action === "update_timeline_state")
     return envelope(
@@ -344,11 +376,10 @@ export function executeTimelineHostCommand(
       mutated: false,
     };
   try {
-    return {
-      status: 200,
-      body: run(doc, command, resolved.definition, ports),
-      mutated: command.action !== "list_timelines",
-    };
+    const body = run(doc, command, resolved.definition, ports);
+    return body instanceof Replayed
+      ? { status: 200, body: body.body, mutated: false }
+      : { status: 200, body, mutated: command.action !== "list_timelines" };
   } catch (error) {
     if (error instanceof CommandFailure)
       return {
