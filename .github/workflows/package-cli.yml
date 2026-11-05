@@ -24,6 +24,7 @@ on:
   pull_request:
     branches: [master, main]
     types: [opened, synchronize, reopened, labeled]
+  merge_group:
 
 permissions: {}
 
